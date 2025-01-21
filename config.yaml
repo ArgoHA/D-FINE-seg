@@ -1,0 +1,101 @@
+project_name: custom_dfine
+exp_name: 1280
+
+# exp: ${exp_name}_${now_dir}
+exp: short_2025-01-20
+
+model_name: m
+
+train:
+  ### Paths ###
+  root: /home/argo/Desktop/Projects/deep_learning/kaggle/b_cars
+  pretrained_model_path: pretrained/dfine_m_coco.pth # dfine_m_obj2coco.pth
+
+  data_path: ${train.root}/data/dataset # path to dataset
+  path_to_test_data: ${train.root}/data/test
+  path_to_save: ${train.root}/output/models/${exp} # where to save output
+
+  ### Configs ###
+  device: cuda
+  amp_enabled: False
+  label_to_name: {0: "auto_rickshaw", 1: "bicycle", 2: "bus", 3: "car", 4: "cart_vehicle", 5: "construction_vehicle", 6: motorbike, 7: person, 8: priority_vehicle, 9: three_wheeler, 10: train, 11: truck, 12: wheelchair}
+
+  img_size: [640, 640] # (h, w)
+  keep_ratio: False
+  to_visualize_eval: True
+  train_single_class: False # TODO
+
+  # background images
+  # max_background_used_percent: 10 # from all samples. Not implemented yet
+
+  batch_size: 3
+  epochs: 40
+  warmup_epochs: 0 # during warmup background images are not used
+  num_workers: 10
+
+  conf_thresh: 0.5 # validation
+  iou_thresh: 0.5
+  train_conf_thresh: 0.001
+  validate_single_class: False
+
+  ### EMA ###
+  use_ema: True
+  ema_momentum: 0.9998
+
+  ### Optimizer ###
+  max_lr: 0.0005
+  cycler_pct_start: 0.1
+  weight_decay: 0.0005
+  momentum: 0.9
+  nesterov: True
+
+  ### Augs ###
+  mosaic_augs:
+    mosaic_prob: 0.9
+    no_mosaic_epochs: 5
+    mosaic_scale: [0.6, 1.4]
+    degrees: 10.0
+    translate: 0.2
+    shear: 2.0
+
+  augs:
+    rotate_90: 0.0
+    left_right_flip: 0.4
+    up_down_flip: 0.0
+    to_gray: 0.01
+    blur: 0.01
+    gamma: 0.02
+    brightness: 0.02
+    noise: 0.01
+
+  ### Reproducibility ###
+  seed: 42
+  cudnn_fixed: False
+  debug_img_processing: True
+
+
+split:
+  ignore_negatives: False # only use images with labels
+  train_split: 0.85
+  val_split: 0.15 # test_split = 1 - train_split - val_split
+
+
+export: # TensorRT must be done on the inference device
+  half: False # fp16, not needed for Openvino
+  max_batch_size: 1 # TODO
+  dynamic_input: True # not for TensorRT, limited for OpenVino
+
+
+
+### service ###
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
+now_dir: &nowdir ${now:%Y-%m-%d}

@@ -1,0 +1,102 @@
+import torch.nn as nn
+import torch.optim as optim
+
+from src.d_fine.dfine_criterion import DFINECriterion
+
+from .arch.dfine_decoder import DFINETransformer
+from .arch.hgnetv2 import HGNetv2
+from .arch.hybrid_encoder import HybridEncoder
+from .configs import models
+from .matcher import HungarianMatcher
+from .utils import load_tuning_state
+
+__all__ = ["DFINE"]
+
+
+class DFINE(nn.Module):
+    __inject__ = [
+        "backbone",
+        "encoder",
+        "decoder",
+    ]
+
+    def __init__(
+        self,
+        backbone: nn.Module,
+        encoder: nn.Module,
+        decoder: nn.Module,
+    ):
+        super().__init__()
+        self.backbone = backbone
+        self.decoder = decoder
+        self.encoder = encoder
+
+    def forward(self, x, targets=None):
+        x = self.backbone(x)
+        x = self.encoder(x)
+        x = self.decoder(x, targets)
+        return x
+
+    def deploy(self):
+        self.eval()
+        for m in self.modules():
+            if hasattr(m, "convert_to_deploy"):
+                m.convert_to_deploy()
+        return self
+
+
+def build_model(model_name, num_classes, device, pretrained_model_path=None):
+    model_cfg = models[model_name]
+    backbone = HGNetv2(**model_cfg["HGNetv2"])
+    encoder = HybridEncoder(**model_cfg["HybridEncoder"])
+    decoder = DFINETransformer(num_classes=num_classes, **model_cfg["DFINETransformer"])
+
+    model = DFINE(backbone, encoder, decoder)
+
+    if pretrained_model_path:
+        if not pretrained_model_path.exists():
+            raise FileNotFoundError(f"{pretrained_model_path} does not exist")
+        model = load_tuning_state(model, str(pretrained_model_path))
+    return model.to(device)
+
+
+def build_loss(model_name, num_classes):
+    model_cfg = models[model_name]
+    matcher = HungarianMatcher(**model_cfg["matcher"])
+    loss_fn = DFINECriterion(matcher, num_classes=num_classes, **model_cfg["DFINECriterion"])
+    return loss_fn
+
+
+def build_optimizer(model, lr, betas, weight_decay):
+    backbone_exclude_norm = []
+    backbone_norm = []
+    encdec_norm_bias = []
+    rest = []
+
+    for name, param in model.named_parameters():
+        # Group 1 and 2: "backbone" in name
+        if "backbone" in name:
+            if "norm" in name or "bn" in name:
+                # Group 2: backbone + norm/bn
+                backbone_norm.append(param)
+            else:
+                # Group 1: backbone but not norm/bn
+                backbone_exclude_norm.append(param)
+
+        # Group 3: "encoder" or "decoder" plus "norm"/"bn"/"bias"
+        elif ("encoder" in name or "decoder" in name) and (
+            "norm" in name or "bn" in name or "bias" in name
+        ):
+            encdec_norm_bias.append(param)
+
+        else:
+            rest.append(param)
+
+    group1 = {"params": backbone_exclude_norm, "lr": 2.5e-5}
+    group2 = {"params": backbone_norm, "lr": 2.5e-5, "weight_decay": 0.0}
+    group3 = {"params": encdec_norm_bias, "weight_decay": 0.0}
+    group4 = {"params": rest}
+
+    param_groups = [group1, group2, group3, group4]
+
+    return optim.AdamW(param_groups, lr=lr, betas=betas, weight_decay=weight_decay)
