@@ -32,7 +32,7 @@ class TRT_model:
         self.rect = rect
         self.half = half
         self.keep_ratio = keep_ratio
-        self.debug_mode = True
+        self.debug_mode = False
         self.conf_thresh = conf_thresh
         self.d_fine_postprocessor = DFINEPostProcessor(num_classes=n_outputs)
 

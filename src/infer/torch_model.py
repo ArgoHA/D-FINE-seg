@@ -37,7 +37,7 @@ class Torch_model:
         self.rect = rect
         self.half = half
         self.keep_ratio = keep_ratio
-        self.debug_mode = True
+        self.debug_mode = False
 
         self.conf_thresh = conf_thresh
 
