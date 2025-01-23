@@ -1,8 +1,8 @@
 project_name: custom_dfine
-exp_name: 1280
+exp_name: bs_10
 
-# exp: ${exp_name}_${now_dir}
-exp: short_2025-01-20
+exp: ${exp_name}_${now_dir}
+# exp: no_amp_bigger_batch_size_2025-01-22
 
 model_name: m
 
@@ -28,7 +28,7 @@ train:
   # background images
   # max_background_used_percent: 10 # from all samples. Not implemented yet
 
-  batch_size: 3
+  batch_size: 10
   epochs: 40
   warmup_epochs: 0 # during warmup background images are not used
   num_workers: 10

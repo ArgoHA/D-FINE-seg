@@ -134,18 +134,6 @@ def main(cfg: DictConfig):
     conf_thresh = 0.5
     iou_thresh = 0.5
 
-    trt_model = TRT_model(
-        model_path=Path(cfg.train.path_to_save) / "model.engine",
-        n_outputs=len(cfg.train.label_to_name),
-        input_width=cfg.train.img_size[1],
-        input_height=cfg.train.img_size[0],
-        conf_thresh=conf_thresh,
-        iou_thresh=iou_thresh,
-        rect=False,
-        half=cfg.export.half,
-        keep_ratio=cfg.train.keep_ratio,
-    )
-
     torch_model = Torch_model(
         model_name=cfg.model_name,
         model_path=Path(cfg.train.path_to_save) / "model.pt",
@@ -158,6 +146,18 @@ def main(cfg: DictConfig):
         half=cfg.export.half,
         keep_ratio=cfg.train.keep_ratio,
         # device="cpu",
+    )
+
+    trt_model = TRT_model(
+        model_path=Path(cfg.train.path_to_save) / "model.engine",
+        n_outputs=len(cfg.train.label_to_name),
+        input_width=cfg.train.img_size[1],
+        input_height=cfg.train.img_size[0],
+        conf_thresh=conf_thresh,
+        iou_thresh=iou_thresh,
+        rect=False,
+        half=cfg.export.half,
+        keep_ratio=cfg.train.keep_ratio,
     )
 
     single_class = False
@@ -173,8 +173,8 @@ def main(cfg: DictConfig):
 
     all_metrics = {}
     models = {
-        "trt_model": trt_model,
         "torch": torch_model,
+        "trt_model": trt_model,
     }
     for model_name, model in models.items():
         all_metrics[model_name] = test_model(

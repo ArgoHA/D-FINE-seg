@@ -379,6 +379,7 @@ if __name__ == "__main__":
 
 """
 - Fix visualizations when ratio is kept
+- try batch accumulation
 - Instance segmentation?
 - deal with a lot of background images. Don't use them during warmup?
 - Use max 10% of background images (from labeled data) and if there are more - sample them?

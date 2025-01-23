@@ -62,6 +62,12 @@ class Torch_model:
             torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))
         )
 
+        # self.model.load_state_dict(
+        #     torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))["ema"][
+        #         "module"
+        #     ], strict=False
+        # )
+
         if self.half:
             self.model.half()
         self.model.eval()
