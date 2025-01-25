@@ -63,6 +63,7 @@ class Trainer:
         self.path_to_save = Path(cfg.train.path_to_save)
         self.to_visualize_eval = cfg.train.to_visualize_eval
         self.amp_enabled = cfg.train.amp_enabled
+        self.b_accum_steps = cfg.train.b_accum_steps
 
         wandb.init(
             project=cfg.project_name,
@@ -249,7 +250,7 @@ class Trainer:
             losses = []
 
             with tqdm(self.train_loader, unit="batch") as tepoch:
-                for inputs, targets, _ in tepoch:
+                for batch_idx, (inputs, targets, _) in enumerate(tepoch):
                     tepoch.set_description(f"Epoch {epoch}/{self.epochs}")
                     cur_iter += 1
                     if inputs is None:
@@ -264,24 +265,28 @@ class Trainer:
                         for t in targets
                     ]
 
-                    self.optimizer.zero_grad()
+                    if batch_idx % self.b_accum_steps == 0:
+                        self.optimizer.zero_grad(set_to_none=True)
                     lr = self.optimizer.param_groups[0]["lr"]
 
                     if self.amp_enabled:
-                        with autocast(self.device):
+                        with autocast(self.device, dtype=torch.bfloat16):
                             loss = self._pred_and_loss(inputs, targets)
 
                         self.scaler.scale(loss).backward()
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                        self.scheduler.step()
+
+                        if (batch_idx + 1) % self.b_accum_steps == 0:
+                            self.scaler.step(self.optimizer)
+                            self.scaler.update()
+                            self.scheduler.step()
 
                     else:
                         loss = self._pred_and_loss(inputs, targets)
                         loss.backward()
 
-                        self.optimizer.step()
-                        self.scheduler.step()
+                        if (batch_idx + 1) % self.b_accum_steps == 0:
+                            self.optimizer.step()
+                            self.scheduler.step()
 
                     if self.ema_model:
                         self.ema_model.update(cur_iter, self.model)
