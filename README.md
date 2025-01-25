@@ -53,6 +53,7 @@ Use inference classes in `src/infer`. Currently available:
 - When ratio is kept, inference can be sped up with removal of grey paddings
 - Visualisation of preprocessed images, model predictions and ground truth
 - Warmup epochs to ignore background images for easier start of convirsion
+- OneCycler used as scheduler, AdamW as optimizer
 - Export to ONNX, OpenVino, TensorRT. Half precision included
 - Inference class for Torch and TensorRT
 - Unified configuration file for all scrips
@@ -72,7 +73,7 @@ Use inference classes in `src/infer`. Currently available:
 
 
 ## Acknowledgement
-This project is built upon original [D-FINE repo](https://github.com/Peterande/D-FINE).
+This project is built upon original [D-FINE repo](https://github.com/Peterande/D-FINE). Thank you to the D-FINE team for an awesome model!
 
 ``` bibtex
 @misc{peng2024dfine,
@@ -84,6 +85,3 @@ This project is built upon original [D-FINE repo](https://github.com/Peterande/D
       primaryClass={cs.CV}
 }
 ```
-
-
-[def]: assets/train.png

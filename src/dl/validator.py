@@ -9,16 +9,16 @@ import torch
 from loguru import logger
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from torchvision.ops import box_iou
+
 from src.dl.utils import filter_preds
 
 
 class Validator:
-    def __init__(self, gt, preds, conf_thresh=0.4, iou_thresh=0.4, single_class=False) -> None:
+    def __init__(self, gt, preds, conf_thresh=0.4, iou_thresh=0.4) -> None:
         self.gt = gt
         self.preds = preds
         self.conf_thresh = conf_thresh
         self.iou_thresh = iou_thresh
-        self.single_class = single_class
         self.thresholds = np.arange(0.2, 1.0, 0.05)
 
         self.torch_metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox")
@@ -38,35 +38,32 @@ class Validator:
         return metrics
 
     def _compute_main_metrics(self, preds):
-        if self.single_class:
-            tps, fps, fns, ious = self._compute_matrix_single_class(preds)
-        else:
-            (
-                self.metrics_per_class,
-                self.conf_matrix,
-                self.class_to_idx,
-            ) = self._compute_metrics_and_confusion_matrix(preds)
-            tps, fps, fns = 0, 0, 0
-            ious = []
-            extended_metrics = {}
-            for key, value in self.metrics_per_class.items():
-                tps += value["TPs"]
-                fps += value["FPs"]
-                fns += value["FNs"]
-                ious.extend(value["IoUs"])
+        (
+            self.metrics_per_class,
+            self.conf_matrix,
+            self.class_to_idx,
+        ) = self._compute_metrics_and_confusion_matrix(preds)
+        tps, fps, fns = 0, 0, 0
+        ious = []
+        extended_metrics = {}
+        for key, value in self.metrics_per_class.items():
+            tps += value["TPs"]
+            fps += value["FPs"]
+            fns += value["FNs"]
+            ious.extend(value["IoUs"])
 
-                extended_metrics[f"precision_{key}"] = (
-                    value["TPs"] / (value["TPs"] + value["FPs"])
-                    if value["TPs"] + value["FPs"] > 0
-                    else 0
-                )
-                extended_metrics[f"recall_{key}"] = (
-                    value["TPs"] / (value["TPs"] + value["FNs"])
-                    if value["TPs"] + value["FNs"] > 0
-                    else 0
-                )
+            extended_metrics[f"precision_{key}"] = (
+                value["TPs"] / (value["TPs"] + value["FPs"])
+                if value["TPs"] + value["FPs"] > 0
+                else 0
+            )
+            extended_metrics[f"recall_{key}"] = (
+                value["TPs"] / (value["TPs"] + value["FNs"])
+                if value["TPs"] + value["FNs"] > 0
+                else 0
+            )
 
-                extended_metrics[f"iou_{key}"] = np.mean(value["IoUs"])
+            extended_metrics[f"iou_{key}"] = np.mean(value["IoUs"])
 
         precision = tps / (tps + fps) if (tps + fps) > 0 else 0
         recall = tps / (tps + fns) if (tps + fns) > 0 else 0
@@ -81,31 +78,6 @@ class Validator:
             "FNs": fns,
             "extended_metrics": extended_metrics,
         }
-
-    def _compute_matrix_single_class(self, preds) -> Tuple[int, int, int, List[float]]:
-        tps, fps, fns = 0, 0, 0
-        ious = []
-        for pred, gt in zip(preds, self.gt):
-            matched_idxs = set()
-            for box in pred["boxes"]:
-                matched = False
-                for idx, gt_box in enumerate(gt["boxes"]):
-                    iou = box_iou(box[None], gt_box[None]).item()
-                    if iou >= self.iou_thresh:
-                        tps += 1
-                        ious.append(iou)
-                        matched_idxs.add(idx)
-                        matched = True
-                        break
-
-                if not matched:
-                    fps += 1
-                    ious.append(0)
-
-            new_fns = len(gt["boxes"]) - len(matched_idxs)
-            fns += new_fns
-            ious.extend([0] * new_fns)
-        return tps, fps, fns, ious
 
     def _compute_matrix_multi_class(self, preds):
         metrics_per_class = defaultdict(lambda: {"TPs": 0, "FPs": 0, "FNs": 0, "IoUs": []})

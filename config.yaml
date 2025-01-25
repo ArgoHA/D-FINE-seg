@@ -1,4 +1,4 @@
-project_name: custom_dfine
+project_name: custom_dfine # for wandb
 exp_name: bs_5_accum_10
 
 exp: ${exp_name}_${now_dir}
@@ -8,8 +8,8 @@ model_name: m
 
 train:
   ### Paths ###
-  root: /home/argo/Desktop/Projects/deep_learning/kaggle/b_cars
-  pretrained_model_path: pretrained/dfine_m_coco.pth # dfine_m_obj2coco.pth
+  root: /home/argo/Desktop/Projects/deep_learning/kaggle/b_cars # project root with dataset and outputs
+  pretrained_model_path: pretrained/dfine_m_coco.pth
 
   data_path: ${train.root}/data/dataset # path to dataset
   path_to_test_data: ${train.root}/data/test
@@ -23,32 +23,28 @@ train:
   img_size: [640, 640] # (h, w)
   keep_ratio: False
   to_visualize_eval: True
-  train_single_class: False # TODO
+  debug_img_processing: True
 
-  # background images
-  # max_background_used_percent: 10 # from all samples. Not implemented yet
-
-  batch_size: 5
-  b_accum_steps: 2 # use batch accumulation x * batch size
+  batch_size: 5 # physical, should fit on the device
+  b_accum_steps: 2 # use batch accumulation x * batch size. >= 1
   epochs: 40
   warmup_epochs: 0 # during warmup background images are not used
   num_workers: 10
 
-  conf_thresh: 0.5 # validation
+  ### Validation ###
+  conf_thresh: 0.5
   iou_thresh: 0.5
-  train_conf_thresh: 0.001
-  validate_single_class: False
 
   ### EMA ###
   use_ema: True
   ema_momentum: 0.9998
 
-  ### Optimizer ###
+  ### Optimizer and Scheduler ###
   max_lr: 0.0005
+  base_lr: 0.00025
   cycler_pct_start: 0.1
-  weight_decay: 0.0005
-  momentum: 0.9
-  nesterov: True
+  weight_decay: 0.000125
+  betas: [0.9, 0.999]
 
   ### Augs ###
   mosaic_augs:
@@ -72,7 +68,6 @@ train:
   ### Reproducibility ###
   seed: 42
   cudnn_fixed: False
-  debug_img_processing: True
 
 
 split:

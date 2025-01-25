@@ -54,9 +54,7 @@ class Trainer:
         self.cfg = cfg
         self.device = cfg.train.device
         self.conf_thresh = cfg.train.conf_thresh
-        self.train_conf_thresh = cfg.train.train_conf_thresh
         self.iou_thresh = cfg.train.iou_thresh
-        self.validate_single_class = cfg.train.validate_single_class
         self.epochs = cfg.train.epochs
         self.no_mosaic_epochs = cfg.train.mosaic_augs.no_mosaic_epochs
         self.warmup_epochs = cfg.train.warmup_epochs
@@ -100,13 +98,16 @@ class Trainer:
         self.loss_fn = build_loss(cfg.model_name, num_labels)
 
         self.optimizer = build_optimizer(
-            self.model, lr=0.00025, betas=[0.9, 0.999], weight_decay=0.000125
+            self.model,
+            lr=cfg.train.base_lr,
+            betas=cfg.train.betas,
+            weight_decay=cfg.train.weight_decay,
         )
         self.scheduler = OneCycleLR(
             self.optimizer,
             max_lr=cfg.train.max_lr,
             epochs=cfg.train.epochs,
-            steps_per_epoch=len(self.train_loader),
+            steps_per_epoch=len(self.train_loader) // self.b_accum_steps,
             pct_start=cfg.train.cycler_pct_start,
         )
 
@@ -189,7 +190,6 @@ class Trainer:
         preds,
         conf_thresh: float,
         iou_thresh: float,
-        single_class=False,
         path_to_save=None,
         mode=None,
     ):
@@ -198,7 +198,6 @@ class Trainer:
             preds,
             conf_thresh=conf_thresh,
             iou_thresh=iou_thresh,
-            single_class=single_class,
         )
         metrics = validator.compute_metrics()
         if path_to_save:  # val and test

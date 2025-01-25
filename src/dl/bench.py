@@ -78,7 +78,6 @@ def test_model(
     name: str,
     conf_thresh: float,
     iou_thresh: float,
-    single_class: bool,
     to_visualize: bool,
 ):
     logger.info(f"Testing {name} model")
@@ -122,7 +121,6 @@ def test_model(
         preds,
         conf_thresh=conf_thresh,
         iou_thresh=iou_thresh,
-        single_class=single_class,
     )
     metrics = validator.compute_metrics(extended=False)
     metrics["latency"] = round(np.mean(latency[1:]), 1)
@@ -160,7 +158,6 @@ def main(cfg: DictConfig):
         keep_ratio=cfg.train.keep_ratio,
     )
 
-    single_class = False
     data_path = Path(cfg.train.data_path)
     val_loader, test_loader = BenchLoader(
         root_path=data_path,
@@ -185,7 +182,6 @@ def main(cfg: DictConfig):
             model_name,
             conf_thresh,
             iou_thresh,
-            single_class=single_class,
             to_visualize=True,
         )
 
