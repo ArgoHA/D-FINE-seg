@@ -380,29 +380,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
-
-
-"""
-- Fix visualizations when ratio is kept
-- try batch accumulation
-- Instance segmentation?
-- deal with a lot of background images. Don't use them during warmup?
-- Use max 10% of background images (from labeled data) and if there are more - sample them?
-- print amount of background samples
-- log output to hydra output
-- don't care labels? single label detection (merge all calsses into 1)
-- batch inference?
-- rewrite model to get rid of Damo structure
-- add support for cashing in dataset
-- add support for multi GPU training
-- remove debug flag and save some test degub images by default, save to output debug images dir
-- batch accumulation
-- What if you give more positives in the beginning to have stable training
-and closer to the end have natural distribution?
-- Add support for different model sizes
-- smart dataset preprocessing. Detect small objects. Detect near duplicates (remove from val/test)
-- adaptive augmentations based on the objects analysis (size)
-- finetune with layers freeze
-
-
-"""

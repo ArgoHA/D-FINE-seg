@@ -1,5 +1,5 @@
 project_name: custom_dfine
-exp_name: bs_5
+exp_name: bs_5_accum_10
 
 exp: ${exp_name}_${now_dir}
 # exp: bs_10
@@ -29,7 +29,7 @@ train:
   # max_background_used_percent: 10 # from all samples. Not implemented yet
 
   batch_size: 5
-  b_accum_steps: 1 # use batch accumulation x * batch size
+  b_accum_steps: 2 # use batch accumulation x * batch size
   epochs: 40
   warmup_epochs: 0 # during warmup background images are not used
   num_workers: 10
