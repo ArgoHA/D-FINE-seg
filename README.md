@@ -42,11 +42,15 @@ Use inference classes in `src/infer`. Currently available:
 
 
 ## Features
-- Augs based on the albumentations lib
+- Training pipeline from SoTA D-FINE model
+- Export to ONNX, OpenVino, TensorRT. Half precision included
+- Inference class for Torch and TensorRT
+
+- Augs based on the [albumentations](https://albumentations.ai) lib
 - Mosaic augmentation
-- Metrics: mAPs, Precision, Recall, F1-score, Confusion matrix, plots
-- After training is done - runs a test to calculate the optimnal conf threshold
-- Exponetioal moving average model
+- Metrics: mAPs, Precision, Recall, F1-score, Confusion matrix, IoU, plots
+- After training is done - runs a test to calculate the optimal conf threshold
+- Exponential moving average model
 - Batch accumulation
 - Automatic mixed precision (40% less vRAM used and 15% faster training)
 - Gradient clipping
@@ -55,11 +59,10 @@ Use inference classes in `src/infer`. Currently available:
 - Visualisation of preprocessed images, model predictions and ground truth
 - Warmup epochs to ignore background images for easier start of convirsion
 - OneCycler used as scheduler, AdamW as optimizer
-- Export to ONNX, OpenVino, TensorRT. Half precision included
-- Inference class for Torch and TensorRT
 - Unified configuration file for all scrips
 - Annotations in YOLO format, splits in csv format
 - ETA displayed during training, precise strating epoch 2
+- Logging file with training process
 
 ## TODO
 - Batch inference

@@ -48,7 +48,9 @@ def wandb_logger(loss, metrics: Dict[str, float], epoch, mode: str) -> None:
     wandb.log(log_data)
 
 
-def log_metrics_locally(all_metrics: Dict[str, Dict[str, float]], path_to_save: Path) -> None:
+def log_metrics_locally(
+    all_metrics: Dict[str, Dict[str, float]], path_to_save: Path, epoch: int
+) -> None:
     metrics_df = pd.DataFrame.from_dict(all_metrics, orient="index")
     metrics_df = metrics_df.round(4)
     metrics_df = metrics_df[
@@ -56,7 +58,7 @@ def log_metrics_locally(all_metrics: Dict[str, Dict[str, float]], path_to_save: 
     ]
 
     tabulated_data = tabulate(metrics_df, headers="keys", tablefmt="pretty", showindex=False)
-    logger.info("Metrics:\n" + tabulated_data)
+    logger.info(f"Metrics on epoch {epoch}:\n{tabulated_data}")
 
     if path_to_save:
         metrics_df.to_csv(path_to_save / "metrics.csv")
@@ -64,7 +66,7 @@ def log_metrics_locally(all_metrics: Dict[str, Dict[str, float]], path_to_save: 
 
 def save_metrics(train_metrics, metrics, loss, epoch, path_to_save) -> None:
     log_metrics_locally(
-        all_metrics={"train": train_metrics, "val": metrics}, path_to_save=path_to_save
+        all_metrics={"train": train_metrics, "val": metrics}, path_to_save=path_to_save, epoch=epoch
     )
     wandb_logger(loss, train_metrics, epoch, mode="train")
     wandb_logger(None, metrics, epoch, mode="val")
