@@ -49,6 +49,7 @@ Use inference classes in `src/infer`. Currently available:
 - Exponetioal moving average model
 - Batch accumulation
 - Automatic mixed precision
+- Gradient clipping
 - Keep ratio of the image and use paddings or use simple resize
 - When ratio is kept, inference can be sped up with removal of grey paddings
 - Visualisation of preprocessed images, model predictions and ground truth

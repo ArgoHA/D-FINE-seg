@@ -61,7 +61,8 @@ class Trainer:
         self.path_to_save = Path(cfg.train.path_to_save)
         self.to_visualize_eval = cfg.train.to_visualize_eval
         self.amp_enabled = cfg.train.amp_enabled
-        self.b_accum_steps = cfg.train.b_accum_steps
+        self.clip_max_norm = cfg.train.clip_max_norm
+        self.b_accum_steps = min(cfg.train.b_accum_steps, 1)
 
         wandb.init(
             project=cfg.project_name,
@@ -274,6 +275,12 @@ class Trainer:
 
                         self.scaler.scale(loss).backward()
 
+                        if self.clip_max_norm:
+                            self.scaler.unscale_(self.optimizer)
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(), self.clip_max_norm
+                            )
+
                         if (batch_idx + 1) % self.b_accum_steps == 0:
                             self.scaler.step(self.optimizer)
                             self.scaler.update()
@@ -282,6 +289,11 @@ class Trainer:
                     else:
                         loss = self._pred_and_loss(inputs, targets)
                         loss.backward()
+
+                        if self.clip_max_norm:
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(), self.clip_max_norm
+                            )
 
                         if (batch_idx + 1) % self.b_accum_steps == 0:
                             self.optimizer.step()

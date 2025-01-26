@@ -1,5 +1,5 @@
 project_name: custom_dfine # for wandb
-exp_name: bs_5_accum_10
+exp_name: amp_bs_10_accum_40
 
 exp: ${exp_name}_${now_dir}
 # exp: bs_10
@@ -17,7 +17,6 @@ train:
 
   ### Configs ###
   device: cuda
-  amp_enabled: False
   label_to_name: {0: "auto_rickshaw", 1: "bicycle", 2: "bus", 3: "car", 4: "cart_vehicle", 5: "construction_vehicle", 6: motorbike, 7: person, 8: priority_vehicle, 9: three_wheeler, 10: train, 11: truck, 12: wheelchair}
 
   img_size: [640, 640] # (h, w)
@@ -25,8 +24,11 @@ train:
   to_visualize_eval: True
   debug_img_processing: True
 
-  batch_size: 5 # physical, should fit on the device
-  b_accum_steps: 2 # use batch accumulation x * batch size. >= 1
+  amp_enabled: True
+  clip_max_norm: 0.1 # gradient clipping
+
+  batch_size: 10 # physical, should fit on the device
+  b_accum_steps: 4 # use batch accumulation x * batch size. >= 1
   epochs: 40
   warmup_epochs: 0 # during warmup background images are not used
   num_workers: 10
