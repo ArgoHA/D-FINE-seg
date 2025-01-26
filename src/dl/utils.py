@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import torch
 import wandb
+from loguru import logger
+from tabulate import tabulate
 
 from src.ptypes import label_to_name_mapping
 
@@ -52,9 +54,12 @@ def log_metrics_locally(all_metrics: Dict[str, Dict[str, float]], path_to_save: 
     metrics_df = metrics_df[
         ["mAP_50", "f1", "precision", "recall", "iou", "mAP_50_95", "TPs", "FPs", "FNs"]
     ]
+
+    tabulated_data = tabulate(metrics_df, headers="keys", tablefmt="pretty", showindex=False)
+    logger.info("Metrics:\n" + tabulated_data)
+
     if path_to_save:
         metrics_df.to_csv(path_to_save / "metrics.csv")
-    print(metrics_df, "\n")
 
 
 def save_metrics(train_metrics, metrics, loss, epoch, path_to_save) -> None:

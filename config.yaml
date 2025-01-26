@@ -1,5 +1,5 @@
 project_name: custom_dfine # for wandb
-exp_name: amp_bs_10_accum_40
+exp_name: batch_accumulation_30
 
 exp: ${exp_name}_${now_dir}
 # exp: bs_10
@@ -28,7 +28,7 @@ train:
   clip_max_norm: 0.1 # gradient clipping
 
   batch_size: 10 # physical, should fit on the device
-  b_accum_steps: 4 # use batch accumulation x * batch size. >= 1
+  b_accum_steps: 3 # use batch accumulation x * batch size. >= 1
   epochs: 40
   warmup_epochs: 0 # during warmup background images are not used
   num_workers: 10

@@ -22,7 +22,7 @@ Use inference classes in `src/infer`. Currently available:
 - TensorRT
 
 ## Outputs
-- **Models**: Saved during the training process and export at `output/models/exp_name_date`. Includes table with main metrics, confusion matrics, f1-score_vs_threshold and precisino_recall_vs_threshold.
+- **Models**: Saved during the training process and export at `output/models/exp_name_date`. Includes training logs, table with main metrics, confusion matrics, f1-score_vs_threshold and precisino_recall_vs_threshold.
 - **Debug images**: Preprocessed images (including augmentations) are saved at `output/debug_images/split` as they are fed into the model (except for normalization).
 - **Evaluation predicts**: Visualised model's predictions on val set. Includes GT as green and preds as blue.
 - **Bench images**: Visualised model's predictions with inference class. Uses all exported models
@@ -48,7 +48,7 @@ Use inference classes in `src/infer`. Currently available:
 - After training is done - runs a test to calculate the optimnal conf threshold
 - Exponetioal moving average model
 - Batch accumulation
-- Automatic mixed precision
+- Automatic mixed precision (40% less vRAM used and 15% faster training)
 - Gradient clipping
 - Keep ratio of the image and use paddings or use simple resize
 - When ratio is kept, inference can be sped up with removal of grey paddings
