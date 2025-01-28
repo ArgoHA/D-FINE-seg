@@ -3,7 +3,7 @@ exp_name: OneCycler
 
 exp: ${exp_name}_${now_dir}
 
-model_name: m
+model_name: m # model size (n, s, m, l, x)
 
 train:
   ### Paths ###
@@ -19,11 +19,11 @@ train:
   label_to_name: {0: "auto_rickshaw", 1: "bicycle", 2: "bus", 3: "car", 4: "cart_vehicle", 5: "construction_vehicle", 6: motorbike, 7: person, 8: priority_vehicle, 9: three_wheeler, 10: train, 11: truck, 12: wheelchair}
 
   img_size: [640, 640] # (h, w)
-  keep_ratio: False
-  to_visualize_eval: True
-  debug_img_processing: True
+  keep_ratio: False # image aspect ratio, if True - image will be padded
+  to_visualize_eval: True # save images with gt and preds
+  debug_img_processing: True # save images after preprocessing
 
-  amp_enabled: True
+  amp_enabled: True # use automatic mixed precision
   clip_max_norm: 0.1 # gradient clipping
 
   batch_size: 12 # physical, should fit on the device
@@ -37,7 +37,7 @@ train:
   iou_thresh: 0.5
 
   ### EMA ###
-  use_ema: True
+  use_ema: True # use exponential moving average model
   ema_momentum: 0.9998
 
   ### Optimizer and Scheduler ###
