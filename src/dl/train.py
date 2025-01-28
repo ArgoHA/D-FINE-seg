@@ -112,6 +112,7 @@ class Trainer:
             lr=cfg.train.base_lr,
             betas=cfg.train.betas,
             weight_decay=cfg.train.weight_decay,
+            base_lr=cfg.train.base_lr,
         )
         self.scheduler = OneCycleLR(
             self.optimizer,
@@ -394,12 +395,10 @@ def main(cfg: DictConfig) -> None:
         log_metrics_locally(
             all_metrics={"val": val_metrics, "test": test_metrics},
             path_to_save=Path(cfg.train.path_to_save),
+            epoch=0,
         )
         logger.info(f"Full training time: {(time.time() - t_start) / 60 / 60:.2f} hours")
 
 
 if __name__ == "__main__":
     main()
-
-
-# logger write to file

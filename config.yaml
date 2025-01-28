@@ -1,8 +1,7 @@
 project_name: custom_dfine # for wandb
-exp_name: batch_accumulation_30
+exp_name: OneCycler
 
 exp: ${exp_name}_${now_dir}
-# exp: bs_10
 
 model_name: m
 
@@ -27,8 +26,8 @@ train:
   amp_enabled: True
   clip_max_norm: 0.1 # gradient clipping
 
-  batch_size: 10 # physical, should fit on the device
-  b_accum_steps: 3 # use batch accumulation x * batch size. >= 1
+  batch_size: 12 # physical, should fit on the device
+  b_accum_steps: 4 # use batch accumulation x * batch size. >= 1
   epochs: 40
   warmup_epochs: 0 # during warmup background images are not used
   num_workers: 10

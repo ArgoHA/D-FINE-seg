@@ -57,8 +57,11 @@ def log_metrics_locally(
         ["mAP_50", "f1", "precision", "recall", "iou", "mAP_50_95", "TPs", "FPs", "FNs"]
     ]
 
-    tabulated_data = tabulate(metrics_df, headers="keys", tablefmt="pretty", showindex=False)
-    logger.info(f"Metrics on epoch {epoch}:\n{tabulated_data}")
+    tabulated_data = tabulate(metrics_df, headers="keys", tablefmt="pretty", showindex=True)
+    if epoch:
+        logger.info(f"Metrics on epoch {epoch}:\n{tabulated_data}\n")
+    else:
+        logger.info(f"Best epoch metrics:\n{tabulated_data}\n")
 
     if path_to_save:
         metrics_df.to_csv(path_to_save / "metrics.csv")

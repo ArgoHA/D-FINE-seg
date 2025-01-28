@@ -1,4 +1,4 @@
-# Custom D-FINE training, exporting, inference pipeline
+# Custom Object Detection training, exporting, inference pipeline
 This is a custom project to work with D-FINE - state of the art object detection model based on RT-DETR.
 
 ## Configuration
@@ -63,6 +63,7 @@ Use inference classes in `src/infer`. Currently available:
 - Annotations in YOLO format, splits in csv format
 - ETA displayed during training, precise strating epoch 2
 - Logging file with training process
+- WandB integration
 
 ## TODO
 - Batch inference

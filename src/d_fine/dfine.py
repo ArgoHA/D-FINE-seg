@@ -67,7 +67,7 @@ def build_loss(model_name, num_classes):
     return loss_fn
 
 
-def build_optimizer(model, lr, betas, weight_decay):
+def build_optimizer(model, lr, betas, weight_decay, base_lr):
     backbone_exclude_norm = []
     backbone_norm = []
     encdec_norm_bias = []
@@ -92,8 +92,8 @@ def build_optimizer(model, lr, betas, weight_decay):
         else:
             rest.append(param)
 
-    group1 = {"params": backbone_exclude_norm, "lr": 2.5e-5}
-    group2 = {"params": backbone_norm, "lr": 2.5e-5, "weight_decay": 0.0}
+    group1 = {"params": backbone_exclude_norm, "lr": base_lr}
+    group2 = {"params": backbone_norm, "lr": base_lr, "weight_decay": 0.0}
     group3 = {"params": encdec_norm_bias, "weight_decay": 0.0}
     group4 = {"params": rest}
 
