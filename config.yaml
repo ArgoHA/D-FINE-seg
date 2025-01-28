@@ -8,7 +8,7 @@ model_name: m # model size (n, s, m, l, x)
 train:
   ### Paths ###
   root: /home/argo/Desktop/Projects/deep_learning/kaggle/b_cars # project root with dataset and outputs
-  pretrained_model_path: pretrained/dfine_m_coco.pth
+  pretrained_model_path: pretrained/dfine_m_coco.pth # dfine_m_obj2coco.pth
 
   data_path: ${train.root}/data/dataset # path to dataset
   path_to_test_data: ${train.root}/data/test
