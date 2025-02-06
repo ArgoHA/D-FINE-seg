@@ -58,10 +58,10 @@ models = {
             "weight_dict": {"cost_class": 2, "cost_bbox": 5, "cost_giou": 2},
             "alpha": 0.25,
             "gamma": 2.0,
+            "use_focal_loss": True,
         },
     },
 }
-
 
 # {
 #     "task": "detection",
@@ -106,14 +106,14 @@ models = {
 #     "yaml_cfg": {
 #         "task": "detection",
 #         "evaluator": {"type": "CocoEvaluator", "iou_types": ["bbox"]},
-#         "num_classes": 2,
+#         "num_classes": 1,
 #         "remap_mscoco_category": False,
 #         "train_dataloader": {
 #             "type": "DataLoader",
 #             "dataset": {
 #                 "type": "CocoDetection",
-#                 "img_folder": "/home/argo/Desktop/Projects/Veryfi/hw/dataset/train/images",
-#                 "ann_file": "/home/argo/Desktop/Projects/Veryfi/hw/dataset/train_annotations.json",
+#                 "img_folder": "/home/argo/Desktop/Projects/Veryfi/dt/data/dataset/train/images",
+#                 "ann_file": "/home/argo/Desktop/Projects/Veryfi/dt/data/dataset/train_annotations.json",
 #                 "return_masks": False,
 #                 "transforms": {
 #                     "type": "Compose",
@@ -151,8 +151,8 @@ models = {
 #             "type": "DataLoader",
 #             "dataset": {
 #                 "type": "CocoDetection",
-#                 "img_folder": "/home/argo/Desktop/Projects/Veryfi/hw/dataset/val/images",
-#                 "ann_file": "/home/argo/Desktop/Projects/Veryfi/hw/dataset/val_annotations.json",
+#                 "img_folder": "/home/argo/Desktop/Projects/Veryfi/dt/data/dataset/val/images",
+#                 "ann_file": "/home/argo/Desktop/Projects/Veryfi/dt/data/dataset/val_annotations.json",
 #                 "return_masks": False,
 #                 "transforms": {
 #                     "type": "Compose",
