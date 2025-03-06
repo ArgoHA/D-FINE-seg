@@ -14,17 +14,18 @@ python -m src.dl.infer          # Runs model ontest folder, saves visualisations
 
 ## Usage example
 0. `git clone https://github.com/ArgoHA/custom_d_fine.git`
-1. Prepare your data: `images` folder and `labels` folder (txt file per image in YOLO format).
-2. Customize `config.yaml`, minimal example:
+1. For bigger models (l, x) download from gdrive andput into `pretrained` folder
+2. Prepare your data: `images` folder and `labels` folder (txt file per image in YOLO format).
+3. Customize `config.yaml`, minimal example:
       - `exp_name`. This is experiment name which is used in model's output folder. After you train a model, you can run export/bench/infer and it will use the model under this name + current date.
       - `root`. Path to the directory where you store your dataset and where model outputs will be saved
       - `data_path`. Path to the folder with `images` and `labels`
       - `label_to_name`. Your custom dataset classes
       - `model_name`. Choose from n/s/m/l/x model sizes.
       - and usual things like: epochs, batch_size, num_workers. Check out config.yaml for all configs.
-3. Run `preprocess` and `split` scripts from custom_d_fine repo.
-4. Run `train` script, changing confurations, iterating, untill you get desired results.
-5. Run `export`script to create ONNX, TensorRT, OpenVINO models.
+4. Run `preprocess` and `split` scripts from custom_d_fine repo.
+5. Run `train` script, changing confurations, iterating, untill you get desired results.
+6. Run `export`script to create ONNX, TensorRT, OpenVINO models.
 
 [Training example with Colab](https://colab.research.google.com/drive/1ZV12qnUQMpC0g3j-0G-tYhmmdM98a41X?usp=sharing)
 
