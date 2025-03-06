@@ -26,6 +26,8 @@ python -m src.dl.infer          # Runs model ontest folder, saves visualisations
 4. Run `train` script, changing confurations, iterating, untill you get desired results.
 5. Run `export`script to create ONNX, TensorRT, OpenVINO models.
 
+[Training example with Colab](https://colab.research.google.com/drive/1ZV12qnUQMpC0g3j-0G-tYhmmdM98a41X?usp=sharing)
+
 ## Inference
 Use inference classes in `src/infer`. Currently available:
 - Torch
