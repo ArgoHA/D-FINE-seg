@@ -66,12 +66,14 @@ class Trainer:
         self.b_accum_steps = max(cfg.train.b_accum_steps, 1)
         self.keep_ratio = cfg.train.keep_ratio
         self.early_stopping = cfg.train.early_stopping
+        self.use_wandb = cfg.train.use_wandb
 
-        wandb.init(
-            project=cfg.project_name,
-            name=cfg.exp,
-            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
-        )
+        if self.use_wandb:
+            wandb.init(
+                project=cfg.project_name,
+                name=cfg.exp,
+                config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+            )
 
         log_file = Path(cfg.train.path_to_save) / "train_log.txt"
         log_file.unlink(missing_ok=True)
@@ -140,7 +142,8 @@ class Trainer:
         if self.amp_enabled:
             self.scaler = GradScaler()
 
-        wandb.watch(self.model)
+        if self.use_wandb:
+            wandb.watch(self.model)
 
     def preds_postprocess(
         self,
@@ -391,7 +394,8 @@ class Trainer:
             if (batch_idx + 1) % self.b_accum_steps != 0:
                 optimizer_step(step_scheduler=False)
 
-            wandb.log({"lr": lr, "epoch": epoch})
+            if self.use_wandb:
+                wandb.log({"lr": lr, "epoch": epoch})
 
             metrics = self.evaluate(
                 val_loader=self.val_loader,
@@ -402,7 +406,12 @@ class Trainer:
 
             best_metric = self.save_model(metrics, best_metric)
             save_metrics(
-                {}, metrics, np.mean(losses) * self.b_accum_steps, epoch, path_to_save=None
+                {},
+                metrics,
+                np.mean(losses) * self.b_accum_steps,
+                epoch,
+                path_to_save=None,
+                use_wandb=self.use_wandb,
             )
 
             if (
@@ -453,7 +462,8 @@ def main(cfg: DictConfig) -> None:
             path_to_save=Path(cfg.train.path_to_save),
             mode="val",
         )
-        wandb_logger(None, val_metrics, epoch=cfg.train.epochs + 1, mode="val")
+        if cfg.train.use_wandb:
+            wandb_logger(None, val_metrics, epoch=cfg.train.epochs + 1, mode="val")
 
         test_metrics = {}
         if trainer.test_loader:
@@ -464,7 +474,8 @@ def main(cfg: DictConfig) -> None:
                 path_to_save=Path(cfg.train.path_to_save),
                 mode="test",
             )
-            wandb_logger(None, test_metrics, epoch=-1, mode="test")
+            if cfg.train.use_wandb:
+                wandb_logger(None, test_metrics, epoch=-1, mode="test")
 
         log_metrics_locally(
             all_metrics={"val": val_metrics, "test": test_metrics},
