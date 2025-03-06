@@ -69,12 +69,13 @@ def log_metrics_locally(
         metrics_df.to_csv(path_to_save / "metrics.csv")
 
 
-def save_metrics(train_metrics, metrics, loss, epoch, path_to_save) -> None:
+def save_metrics(train_metrics, metrics, loss, epoch, path_to_save, use_wandb) -> None:
     log_metrics_locally(
         all_metrics={"train": train_metrics, "val": metrics}, path_to_save=path_to_save, epoch=epoch
     )
-    wandb_logger(loss, train_metrics, epoch, mode="train")
-    wandb_logger(None, metrics, epoch, mode="val")
+    if use_wandb:
+        wandb_logger(loss, train_metrics, epoch, mode="train")
+        wandb_logger(None, metrics, epoch, mode="val")
 
 
 def calculate_remaining_time(
