@@ -1,4 +1,3 @@
-import argparse
 import json
 import os
 from pathlib import Path
@@ -17,12 +16,8 @@ def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=Non
 
     category_set = set()
 
-    # Get list of label files
-    # label_files = [f for f in os.listdir(labels_dir) if f.endswith(".txt")]
-
     label_files = []
     for label_file in Path(labels_dir).iterdir():
-        print(str(label_file.stem))
         if str(label_file.name).endswith(".txt") and str(label_file.name) in split[0].tolist():
             label_files.append(label_file.name)
 
