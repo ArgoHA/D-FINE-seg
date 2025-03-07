@@ -18,7 +18,7 @@ class Torch_model:
         input_width: int = 640,
         input_height: int = 640,
         conf_thresh: float = 0.5,
-        rect: bool = True,  # cuts paddings, inference is faster, accuracy might be lower
+        rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
         half: bool = False,
         keep_ratio: bool = True,
         device: str = None,
