@@ -87,6 +87,7 @@ Use inference classes in `src/infer`. Currently available:
 - WandB integration
 - Batch inference
 - Early stopping
+- Gradio UI demo
 
 ## TODO
 - Implement multiscale aug
