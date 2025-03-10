@@ -18,9 +18,9 @@ class OV_model:
         input_width: int = 640,
         input_height: int = 640,
         conf_thresh: float = 0.5,
-        rect: bool = True,  # cuts paddings, inference is faster, accuracy might be lower
+        rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
         half: bool = False,
-        keep_ratio: bool = True,
+        keep_ratio: bool = False,
         max_batch_size: int = 1,
         device: str = None,
     ):

@@ -18,7 +18,7 @@ class TRT_model:
         conf_thresh: float = 0.5,
         rect: bool = False,  # No need for rectangular inference with fixed size
         half: bool = False,
-        keep_ratio: bool = True,
+        keep_ratio: bool = False,
         device: str = None,
     ) -> None:
         self.input_size = (input_width, input_height)

@@ -20,7 +20,7 @@ class Torch_model:
         conf_thresh: float = 0.5,
         rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
         half: bool = False,
-        keep_ratio: bool = True,
+        keep_ratio: bool = False,
         device: str = None,
     ):
         self.input_size = (input_width, input_height)
