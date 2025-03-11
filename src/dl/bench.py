@@ -165,7 +165,6 @@ def main(cfg: DictConfig):
     )
 
     ov_model = OV_model(
-        model_name=cfg.model_name,
         model_path=Path(cfg.train.path_to_save) / "model.xml",
         n_outputs=len(cfg.train.label_to_name),
         input_width=cfg.train.img_size[1],

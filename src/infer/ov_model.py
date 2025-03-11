@@ -12,7 +12,6 @@ from openvino import Core
 class OV_model:
     def __init__(
         self,
-        model_name: str,
         model_path: str,
         n_outputs: int,
         input_width: int = 640,
@@ -26,7 +25,6 @@ class OV_model:
     ):
         self.input_size = (input_width, input_height)
         self.n_outputs = n_outputs
-        self.model_name = model_name
         self.model_path = model_path
         self.device = device
         self.rect = rect
