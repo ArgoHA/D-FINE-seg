@@ -87,8 +87,8 @@ class TRT_model:
             if keep_ratio:
                 final_boxes[i] = scale_boxes_ratio_kept(
                     final_boxes[i],
-                    orig_sizes[i],
                     processed_sizes[i],
+                    orig_sizes[i],
                 )
             else:
                 final_boxes[i] = scale_boxes(
@@ -306,7 +306,7 @@ def clip_boxes(boxes, shape):
         boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0])  # y1, y2
 
 
-def scale_boxes_ratio_kept(img1_shape, boxes, img0_shape, ratio_pad=None, padding=True):
+def scale_boxes_ratio_kept(boxes, img1_shape, img0_shape, ratio_pad=None, padding=True):
     # Rescale boxes (xyxy) from img1_shape to img0_shape
     if ratio_pad is None:  # calculate from img0_shape
         gain = min(
