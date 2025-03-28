@@ -105,6 +105,7 @@ train:
 
 split:
   ignore_negatives: False # only use images with labels
+  shuffle: True
   train_split: 0.85
   val_split: 0.15 # test_split = 1 - train_split - val_split
 

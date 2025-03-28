@@ -77,12 +77,7 @@ class Trainer:
 
         log_file = Path(cfg.train.path_to_save) / "train_log.txt"
         log_file.unlink(missing_ok=True)
-        logger.add(
-            log_file,
-            format="{message}",
-            level="INFO",
-            rotation="10 MB",
-        )
+        logger.add(log_file, format="{message}", level="INFO", rotation="10 MB")
 
         set_seeds(cfg.train.seed, cfg.train.cudnn_fixed)
 
