@@ -1,5 +1,4 @@
 import random
-import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -288,6 +287,7 @@ class Loader:
         self.debug_img_processing = debug_img_processing
         self._get_splits()
         self.class_names = class_names
+        self.multiscale_prob = cfg.train.augs.multiscale_prob
 
     def _get_splits(self) -> None:
         self.splits = {"train": None, "val": None, "test": None}
@@ -335,12 +335,17 @@ class Loader:
         return len(set(images) - set(labels))
 
     def _build_dataloader_impl(self, dataset: Dataset, shuffle: bool = False) -> DataLoader:
+        collate_fn = self.val_collate_fn
+        if dataset.mode == "train":
+            print("HERE")
+            collate_fn = self.train_collate_fn
+
         dataloader = DataLoader(
             dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=shuffle,
-            collate_fn=self.collate_fn,
+            collate_fn=collate_fn,
             worker_init_fn=seed_worker,
             prefetch_factor=4,
             pin_memory=True,
@@ -389,8 +394,7 @@ class Loader:
         logger.info(f"Background images: {self._get_amount_of_background()}")
         return train_loader, val_loader, test_loader
 
-    @staticmethod
-    def collate_fn(batch) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+    def _collate_fn(self, batch) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
         """
         Input: List[Tuple[Tensor[channel, height, width], Tensor[labels], Tensor[boxes]], ...]
         where each tuple is a an item in a batch...]
@@ -410,4 +414,26 @@ class Loader:
             orig_sizes.append(item[4])
 
         images = torch.stack(images, dim=0)
+        return images, targets, img_paths
+
+    def val_collate_fn(self, batch) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+        return self._collate_fn(batch)
+
+    def train_collate_fn(
+        self, batch
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+        """
+        During traing add multiscale augmentation to the batch
+        """
+        images, targets, img_paths = self._collate_fn(batch)
+
+        if random.random() < self.multiscale_prob:
+            offset = random.choice([-2, -1, 1, 2]) * 32
+            new_h = images.shape[2] + offset
+            new_w = images.shape[3] + offset
+
+            # boxes are normalized, so only image should be resized
+            images = torch.nn.functional.interpolate(
+                images, size=(new_h, new_w), mode="bilinear", align_corners=False
+            )
         return images, targets, img_paths

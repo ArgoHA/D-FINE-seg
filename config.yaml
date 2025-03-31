@@ -71,6 +71,7 @@ train:
     shear: 2.0
 
   augs:
+    multiscale_prob: 0.0
     rotate_90: 0.1
     left_right_flip: 0.3
     up_down_flip: 0.0
@@ -101,7 +102,7 @@ train:
     x:
       backbone_lr: 0.0000025
       base_lr: 0.00025
-      
+
 
 split:
   ignore_negatives: False # only use images with labels

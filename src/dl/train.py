@@ -268,8 +268,8 @@ class Trainer:
     def evaluate(
         self,
         val_loader: DataLoader,
-        conf_thresh,
-        iou_thresh,
+        conf_thresh: float,
+        iou_thresh: float,
         path_to_save: Path,
         mode: str = None,
     ) -> Dict[str, float]:
