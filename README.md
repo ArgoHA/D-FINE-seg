@@ -68,7 +68,7 @@ Use inference classes in `src/infer`. Currently available:
 - Inference class for Torch, TensorRT, OpenVINO
 
 - Augs based on the [albumentations](https://albumentations.ai) lib
-- Mosaic augmentation
+- Mosaic augmentation, multiscale aug
 - Metrics: mAPs, Precision, Recall, F1-score, Confusion matrix, IoU, plots
 - After training is done - runs a test to calculate the optimal conf threshold
 - Exponential moving average model
@@ -90,7 +90,6 @@ Use inference classes in `src/infer`. Currently available:
 - Gradio UI demo
 
 ## TODO
-- Implement multiscale aug
 - Finetune with layers freeze
 - Add support for cashing in dataset
 - Add support for multi GPU training
