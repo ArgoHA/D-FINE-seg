@@ -161,8 +161,10 @@ def load_tuning_state(model, path: str):
     # Load the appropriate state dict
     if "ema" in state:
         pretrain_state_dict = state["ema"]["module"]
-    else:
+    elif "model" in state:
         pretrain_state_dict = state["model"]
+    else:
+        pretrain_state_dict = state
 
     # Adjust head parameters between datasets
     try:
