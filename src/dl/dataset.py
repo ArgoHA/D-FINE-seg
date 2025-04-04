@@ -323,21 +323,31 @@ class Loader:
         return classes
 
     def _get_amount_of_background(self):
-        labels = [
-            f.stem for f in (self.root_path / "labels").iterdir() if not f.stem.startswith(".")
-        ]
-        images = [
-            f.stem for f in (self.root_path / "images").iterdir() if not f.stem.startswith(".")
-        ]
+        labels = set()
+        for label_path in (self.root_path / "labels").iterdir():
+            if not label_path.stat().st_size:
+                label_path.unlink()  # remove empty txt files
+            elif not (label_path.stem.startswith(".") and label_path.name == "labels.txt"):
+                labels.add(label_path.stem)
+
+        raw_split_images = set()
         for split in self.splits.values():
             if np.any(split):
-                images = [item for item in images if item in split[0].values]
-        return len(set(images) - set(labels))
+                raw_split_images.update(split.iloc[:, 0].values)
+
+        split_images = []
+        for split_image in raw_split_images:
+            split_images.append(Path(split_image).stem)
+
+        images = {
+            f.stem for f in (self.root_path / "images").iterdir() if not f.stem.startswith(".")
+        }
+        images = images.intersection(split_images)
+        return len(images - labels)
 
     def _build_dataloader_impl(self, dataset: Dataset, shuffle: bool = False) -> DataLoader:
         collate_fn = self.val_collate_fn
         if dataset.mode == "train":
-            print("HERE")
             collate_fn = self.train_collate_fn
 
         dataloader = DataLoader(
