@@ -28,5 +28,6 @@ faster-coco-eval==1.6.5
 pycocotools==2.0.8
 torchvision==0.20.1
 tqdm==4.66.5
+difPy==4.2.1
 wandb
 tabulate
