@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from numpy.typing import NDArray
+from torchvision.ops import nms
 
 from src.d_fine.dfine import build_model
 
@@ -21,6 +22,7 @@ class Torch_model:
         rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
         half: bool = False,
         keep_ratio: bool = False,
+        use_nms: bool = False,
         device: str = None,
     ):
         self.input_size = (input_width, input_height)
@@ -30,6 +32,7 @@ class Torch_model:
         self.rect = rect
         self.half = half
         self.keep_ratio = keep_ratio
+        self.use_nms = use_nms
         self.channels = 3
         self.debug_mode = False
 
@@ -204,6 +207,17 @@ class Torch_model:
     ):
         output = self._preds_postprocess(preds, processed_sizes, original_sizes)
         output = filter_preds(output, self.conf_threshs)
+        if self.use_nms:
+            for idx, res in enumerate(output):
+                boxes, scores, classes = non_max_suppression(
+                    res["boxes"],
+                    res["scores"],
+                    res["labels"],
+                    iou_threshold=0.5,
+                )
+                output[idx]["boxes"] = boxes
+                output[idx]["scores"] = scores
+                output[idx]["labels"] = classes
 
         for res in output:
             res["labels"] = res["labels"].cpu().numpy()
@@ -349,3 +363,56 @@ def filter_preds(preds, conf_threshs: List[float]):
         pred["boxes"] = pred["boxes"][mask]
         pred["labels"] = pred["labels"][mask]
     return preds
+
+
+def non_max_suppression(boxes, scores, classes, iou_threshold=0.5):
+    """
+    Applies Non-Maximum Suppression (NMS) to filter bounding boxes.
+
+    Parameters:
+    - boxes (torch.Tensor): Tensor of shape (N, 4) containing bounding boxes in [x1, y1, x2, y2] format.
+    - scores (torch.Tensor): Tensor of shape (N,) containing confidence scores for each box.
+    - classes (torch.Tensor): Tensor of shape (N,) containing class indices for each box.
+    - score_threshold (float): Minimum confidence score to consider a box for NMS.
+    - iou_threshold (float): Intersection Over Union (IOU) threshold for NMS.
+
+    Returns:
+    - filtered_boxes (torch.Tensor): Tensor containing filtered bounding boxes after NMS.
+    - filtered_scores (torch.Tensor): Tensor containing confidence scores of the filtered boxes.
+    - filtered_classes (torch.Tensor): Tensor containing class indices of the filtered boxes.
+    """
+    # Prepare lists to collect the filtered boxes, scores, and classes
+    filtered_boxes = []
+    filtered_scores = []
+    filtered_classes = []
+
+    # Get unique classes present in the detections
+    unique_classes = classes.unique()
+
+    # Step 2: Perform NMS for each class separately
+    for unique_class in unique_classes:
+        # Get indices of boxes belonging to the current class
+        cls_mask = classes == unique_class
+        cls_boxes = boxes[cls_mask]
+        cls_scores = scores[cls_mask]
+
+        # Apply NMS for the current class
+        nms_indices = nms(cls_boxes, cls_scores, iou_threshold)
+
+        # Collect the filtered boxes, scores, and classes
+        filtered_boxes.append(cls_boxes[nms_indices])
+        filtered_scores.append(cls_scores[nms_indices])
+        filtered_classes.append(classes[cls_mask][nms_indices])
+
+    # Step 3: Concatenate the results
+    if filtered_boxes:
+        filtered_boxes = torch.cat(filtered_boxes)
+        filtered_scores = torch.cat(filtered_scores)
+        filtered_classes = torch.cat(filtered_classes)
+    else:
+        # If no boxes remain after NMS, return empty tensors
+        filtered_boxes = torch.empty((0, 4))
+        filtered_scores = torch.empty((0,))
+        filtered_classes = torch.empty((0,), dtype=classes.dtype)
+
+    return filtered_boxes, filtered_scores, filtered_classes
