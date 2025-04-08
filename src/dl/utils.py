@@ -4,7 +4,6 @@ import random
 import subprocess
 import time
 from pathlib import Path
-from shutil import rmtree
 from typing import Dict
 
 import albumentations as A
@@ -329,7 +328,7 @@ def visualize(img_paths, gt, preds, dataset_path, path_to_save):
     """
     path_to_save.mkdir(parents=True, exist_ok=True)
 
-    for i, (gt_dict, pred_dict, img_path) in enumerate(zip(gt, preds, img_paths)):
+    for gt_dict, pred_dict, img_path in zip(gt, preds, img_paths):
         img = cv2.imread(str(dataset_path / img_path))
 
         # Draw ground-truth boxes (green)
