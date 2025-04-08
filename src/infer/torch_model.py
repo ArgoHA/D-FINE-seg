@@ -149,7 +149,7 @@ class Torch_model:
 
     def _preprocess(self, img: NDArray, stride: int = 32) -> torch.tensor:
         if not self.keep_ratio:  # simple resize
-            img = cv2.resize(img, (self.input_size[1], self.input_size[0]), cv2.INTER_LINEAR)
+            img = cv2.resize(img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA)
         elif self.rect:  # keep ratio and cut paddings
             target_height, target_width = self._compute_nearest_size(
                 img.shape[:2], max(self.input_size[0], self.input_size[1])
@@ -274,7 +274,7 @@ def letterbox(
     dh /= 2
 
     if shape[::-1] != new_unpad:  # resize
-        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_AREA)
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
     im = cv2.copyMakeBorder(
