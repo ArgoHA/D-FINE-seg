@@ -1,5 +1,6 @@
 import random
 from pathlib import Path
+from shutil import rmtree
 from typing import Dict, List, Tuple
 
 import albumentations as A
@@ -49,10 +50,13 @@ class CustomDataset(Dataset):
         self.shear = cfg.train.mosaic_augs.shear
         self.keep_ratio = cfg.train.keep_ratio
         self.use_one_class = cfg.train.use_one_class
-
         self.cases_to_debug = 20
 
         self._init_augs(cfg)
+
+        self.debug_img_path = self.project_path / "output" / "debug_images"
+        if self.debug_img_path.exists():
+            rmtree(self.debug_img_path)
 
     def _init_augs(self, cfg) -> None:
         if self.keep_ratio:
@@ -130,7 +134,7 @@ class CustomDataset(Dataset):
             vis_one_box(image_np, box, class_id, mode="gt")
 
         # Save the image
-        save_dir = self.project_path / "output" / "debug_images" / self.mode
+        save_dir = self.debug_img_path / self.mode
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / f"{idx}_idx_{img_path.stem}_debug.jpg"
         cv2.imwrite(str(save_path), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
