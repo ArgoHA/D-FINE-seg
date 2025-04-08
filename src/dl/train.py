@@ -2,6 +2,7 @@ import math
 import time
 from copy import deepcopy
 from pathlib import Path
+from shutil import rmtree
 from typing import Dict, List, Tuple
 
 import hydra
@@ -67,6 +68,10 @@ class Trainer:
         self.keep_ratio = cfg.train.keep_ratio
         self.early_stopping = cfg.train.early_stopping
         self.use_wandb = cfg.train.use_wandb
+
+        self.debug_img_path = Path(self.cfg.train.debug_img_path)
+        self.eval_preds_path = Path(self.cfg.train.eval_preds_path)
+        self.init_dirs()
 
         if self.use_wandb:
             wandb.init(
@@ -139,6 +144,12 @@ class Trainer:
 
         if self.use_wandb:
             wandb.watch(self.model)
+
+    def init_dirs(self):
+        for path in [self.debug_img_path, self.eval_preds_path]:
+            if path.exists():
+                rmtree(path)
+            path.mkdir(exist_ok=True, parents=True)
 
     def preds_postprocess(
         self,
@@ -241,7 +252,7 @@ class Trainer:
                     gt,
                     filter_preds(preds, self.conf_thresh),
                     dataset_path=Path(self.cfg.train.data_path) / "images",
-                    path_to_save=Path(self.cfg.train.root) / "output" / "eval_preds",
+                    path_to_save=self.eval_preds_path,
                 )
         return all_gt, all_preds
 

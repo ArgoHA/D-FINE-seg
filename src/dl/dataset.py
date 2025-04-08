@@ -54,14 +54,12 @@ class CustomDataset(Dataset):
 
         self._init_augs(cfg)
 
-        self.debug_img_path = self.project_path / "output" / "debug_images"
-        if self.debug_img_path.exists():
-            rmtree(self.debug_img_path)
+        self.debug_img_path = Path(cfg.train.debug_img_path)
 
     def _init_augs(self, cfg) -> None:
         if self.keep_ratio:
             resize = [
-                A.LongestMaxSize(max_size=max(self.target_h, self.target_w)),
+                A.LongestMaxSize(max_size=max(self.target_h, self.target_w), interpolation=cv2.INTER_AREA),
                 A.PadIfNeeded(
                     min_height=self.target_h,
                     min_width=self.target_w,
@@ -71,7 +69,7 @@ class CustomDataset(Dataset):
                 # A.CenterCrop(self.target_h, self.target_w),
             ]
         else:
-            resize = [A.Resize(self.target_h, self.target_w)]
+            resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_AREA)]
 
         norm = [
             A.Normalize(mean=self.norm[0], std=self.norm[1]),
@@ -182,7 +180,7 @@ class CustomDataset(Dataset):
                 scale_h, scale_w = (1.0 * self.target_h / h, 1.0 * self.target_w / w)
 
             img = cv2.resize(
-                img, (int(w * scale_w), int(h * scale_h)), interpolation=cv2.INTER_LINEAR
+                img, (int(w * scale_w), int(h * scale_h)), interpolation=cv2.INTER_AREA
             )
             (h, w, c) = img.shape[:3]
 
@@ -259,7 +257,7 @@ class CustomDataset(Dataset):
             boxes = torch.tensor(transformed["bboxes"], dtype=torch.float32)
             labels = torch.tensor(transformed["class_labels"], dtype=torch.int64)
 
-        if self.debug_img_processing and idx < self.cases_to_debug:
+        if self.debug_img_processing and idx <= self.cases_to_debug:
             self._debug_image(idx, image, boxes, labels, image_path)
 
         # return back to normalized format for model

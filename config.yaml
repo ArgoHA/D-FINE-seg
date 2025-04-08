@@ -15,6 +15,11 @@ train:
   path_to_test_data: ${train.root}/VisDrone2019-DET-test-dev/images
   path_to_save: ${train.root}/output/models/${exp} # where to save output
 
+  debug_img_path: ${train.root}/output/debug_images
+  eval_preds_path: ${train.root}/output/eval_preds
+  bench_img_path: ${train.root}/output/bench_imgs
+  infer_path: ${train.root}/output/infer
+
   ### Configs ###
   use_wandb: True
   device: cuda

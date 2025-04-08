@@ -64,7 +64,7 @@ def main(cfg: DictConfig):
     )
 
     folder_path = Path(cfg.train.path_to_test_data)
-    output_path = Path(cfg.train.root) / "output" / "infer"
+    output_path = Path(cfg.train.infer_path)
 
     run(torch_model, folder_path, output_path)
 
