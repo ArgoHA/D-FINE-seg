@@ -59,7 +59,9 @@ class CustomDataset(Dataset):
     def _init_augs(self, cfg) -> None:
         if self.keep_ratio:
             resize = [
-                A.LongestMaxSize(max_size=max(self.target_h, self.target_w), interpolation=cv2.INTER_AREA),
+                A.LongestMaxSize(
+                    max_size=max(self.target_h, self.target_w), interpolation=cv2.INTER_AREA
+                ),
                 A.PadIfNeeded(
                     min_height=self.target_h,
                     min_width=self.target_w,
