@@ -151,6 +151,10 @@ class Trainer:
                 rmtree(path)
             path.mkdir(exist_ok=True, parents=True)
 
+        self.path_to_save.mkdir(exist_ok=True, parents=True)
+        with open(self.path_to_save / "config.yaml", "w") as f:
+            OmegaConf.save(config=self.cfg, f=f)
+
     def preds_postprocess(
         self,
         inputs,

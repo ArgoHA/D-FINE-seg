@@ -65,7 +65,7 @@ def visualize(
 def test_model(
     test_loader: DataLoader,
     data_path: Path,
-    root_path: Path,
+    output_path: Path,
     model,
     name: str,
     conf_thresh: float,
@@ -81,7 +81,7 @@ def test_model(
     latency = []
     batch = 0
 
-    output_path = root_path / Path(f"output/bench_imgs/{name}")
+    output_path = output_path / name
     output_path.mkdir(exist_ok=True, parents=True)
 
     for _, targets, img_paths in tqdm(test_loader, total=len(test_loader)):
@@ -196,7 +196,7 @@ def main(cfg: DictConfig):
         all_metrics[model_name] = test_model(
             val_loader,
             data_path,
-            Path(cfg.train.root),
+            Path(cfg.train.bench_img_path),
             model,
             model_name,
             conf_thresh,
