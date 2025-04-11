@@ -149,7 +149,9 @@ class Torch_model:
 
     def _preprocess(self, img: NDArray, stride: int = 32) -> torch.tensor:
         if not self.keep_ratio:  # simple resize
-            img = cv2.resize(img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA)
+            img = cv2.resize(
+                img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA
+            )
         elif self.rect:  # keep ratio and cut paddings
             target_height, target_width = self._compute_nearest_size(
                 img.shape[:2], max(self.input_size[0], self.input_size[1])
