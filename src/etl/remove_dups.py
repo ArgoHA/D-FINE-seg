@@ -18,15 +18,18 @@ def run(dir_path: str, remove_dups: bool):
     with open("dups.json", "r") as f:
         data = json.load(f)
 
-    print(data.keys())
+    print(f"Found {len(data)} dups")
 
-    if remove_dups:
+    if remove_dups and len(data):
         clean_data = data.copy()
         print("Deleting dups...")
         for case_idx, dup_case in tqdm(data.items()):
-            for match_idx, dup in dup_case["matches"].items():
-                if float(dup["mse"]) < 0.01:
-                    Path(dup["location"]).unlink()
+            for dup in dup_case:
+                location = dup[0]
+                mse = dup[1]
+
+                if mse < 0.01:
+                    Path(location).unlink()
 
                     if case_idx in clean_data:
                         clean_data.pop(case_idx)
@@ -37,7 +40,7 @@ def run(dir_path: str, remove_dups: bool):
 
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg):
-    remove_dups = False
+    remove_dups = True
     data_path = Path(cfg.train.data_path) / "images"
 
     run(str(data_path), remove_dups)

@@ -146,6 +146,8 @@ class CustomDataset(Dataset):
         # Get image
         image_path = Path(self.split.iloc[idx].values[0])
         image = cv2.imread(str(self.root_path / "images" / f"{image_path}"))  # BGR, HWC
+        assert image is not None, f"Image not found: {image_path}"
+
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # RGB, HWC
         height, width, _ = image.shape
         orig_size = torch.tensor([height, width])
