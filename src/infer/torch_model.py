@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from numpy.typing import NDArray
+from torch.amp import autocast
 from torchvision.ops import nms
 
 from src.d_fine.dfine import build_model
@@ -48,8 +49,10 @@ class Torch_model:
 
         if self.half:
             self.np_dtype = np.float16
+            self.amp_enabled = False
         else:
             self.np_dtype = np.float32
+            self.amp_enabled = self.device == "cuda" and torch.cuda.is_available()
 
         self._load_model()
         self._test_pred()
@@ -199,6 +202,9 @@ class Torch_model:
 
     @torch.no_grad()
     def _predict(self, inputs) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
+        if self.amp_enabled:
+            with autocast("cuda"):
+                return self.model(inputs)
         return self.model(inputs)
 
     def _postprocess(
