@@ -35,28 +35,11 @@ def convert_image_to_jpg(filepath: Path) -> None:
             print("Can't open, deleting:", filepath.name)
             # filepath.unlink()
             return
-
-        # if img_name.jpg and img_name.png (or other) exists, rename them
-        f_idx = 1
-        original_filepath = filepath
-        while filepath.with_suffix(".jpg").exists() and f_idx <= 100:
-            if f_idx > 1:
-                filepath = (
-                    filepath.parent / f"{str(filepath.stem).rsplit('_', 1)[0]}_{f_idx}"
-                ).with_suffix(".jpg")
-            else:
-                filepath = (filepath.parent / f"{filepath.stem}_{f_idx}").with_suffix(".jpg")
-            f_idx += 1
-
-        if f_idx == 100:
-            print("Can't save:", filepath.name)
-            return
-
         image.save(filepath.with_suffix(".jpg"))
-        original_filepath.unlink()
+        filepath.unlink()
 
-    elif filepath.suffix.lower() == ".pdf":
-        convert_pdf_to_jpg(filepath)
+    # elif filepath.suffix.lower() == ".pdf":
+    #     convert_pdf_to_jpg(filepath)
 
     elif filepath.suffix.lower() != ".jpg":
         print("NOT converted:", filepath.stem)
