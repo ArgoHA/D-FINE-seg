@@ -31,7 +31,6 @@ from src.dl.utils import (
     wandb_logger,
 )
 from src.dl.validator import Validator
-from src.ptypes import num_labels
 
 
 class ModelEMA:
@@ -68,6 +67,8 @@ class Trainer:
         self.keep_ratio = cfg.train.keep_ratio
         self.early_stopping = cfg.train.early_stopping
         self.use_wandb = cfg.train.use_wandb
+        self.label_to_name = cfg.train.label_to_name
+        self.num_labels = len(cfg.train.label_to_name)
 
         self.debug_img_path = Path(self.cfg.train.debug_img_path)
         self.eval_preds_path = Path(self.cfg.train.eval_preds_path)
@@ -100,7 +101,7 @@ class Trainer:
 
         self.model = build_model(
             cfg.model_name,
-            num_labels,
+            self.num_labels,
             cfg.train.device,
             img_size=cfg.train.img_size,
             pretrained_model_path=cfg.train.pretrained_model_path,
@@ -111,7 +112,7 @@ class Trainer:
             logger.info("EMA model will be evaluated and saved")
             self.ema_model = ModelEMA(self.model, cfg.train.ema_momentum)
 
-        self.loss_fn = build_loss(cfg.model_name, num_labels)
+        self.loss_fn = build_loss(cfg.model_name, self.num_labels)
 
         self.optimizer = build_optimizer(
             self.model,
@@ -174,8 +175,8 @@ class Trainer:
         if use_focal_loss:
             scores = F.sigmoid(logits)
             scores, index = torch.topk(scores.flatten(1), num_top_queries, dim=-1)
-            labels = index - index // num_labels * num_labels
-            index = index // num_labels
+            labels = index - index // self.num_labels * self.num_labels
+            index = index // self.num_labels
             boxes = boxes.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, boxes.shape[-1]))
         else:
             scores = F.softmax(logits)[:, :, :-1]
@@ -257,6 +258,7 @@ class Trainer:
                     filter_preds(preds, self.conf_thresh),
                     dataset_path=Path(self.cfg.train.data_path) / "images",
                     path_to_save=self.eval_preds_path,
+                    label_to_name=self.label_to_name,
                 )
         return all_gt, all_preds
 
@@ -455,7 +457,10 @@ def main(cfg: DictConfig) -> None:
     finally:
         logger.info("Evaluating best model...")
         model = build_model(
-            cfg.model_name, num_labels, cfg.train.device, img_size=cfg.train.img_size
+            cfg.model_name,
+            len(cfg.train.label_to_name),
+            cfg.train.device,
+            img_size=cfg.train.img_size,
         )
         model.load_state_dict(
             torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True)

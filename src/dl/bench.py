@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
 import cv2
 import hydra
@@ -16,6 +16,7 @@ from tqdm import tqdm
 from src.dl.dataset import CustomDataset, Loader
 from src.dl.utils import process_boxes, vis_one_box
 from src.dl.validator import Validator
+from src.infer.onnx_model import ONNX_model
 from src.infer.ov_model import OV_model
 from src.infer.torch_model import Torch_model
 from src.infer.trt_model import TRT_model
@@ -51,13 +52,28 @@ class BenchLoader(Loader):
 
 
 def visualize(
-    img, gt_boxes, pred_boxes, gt_labels, pred_labels, pred_scores, output_path, img_path
+    img,
+    gt_boxes,
+    pred_boxes,
+    gt_labels,
+    pred_labels,
+    pred_scores,
+    output_path,
+    img_path,
+    label_to_name,
 ):
     for gt_box, gt_label in zip(gt_boxes, gt_labels):
-        vis_one_box(img, gt_box, gt_label, mode="gt")
+        vis_one_box(img, gt_box, gt_label, mode="gt", label_to_name=label_to_name)
 
     for pred_box, pred_label, score in zip(pred_boxes, pred_labels, pred_scores):
-        vis_one_box(img, pred_box, pred_label, mode="pred", score=score)
+        vis_one_box(
+            img,
+            pred_box,
+            pred_label,
+            mode="pred",
+            label_to_name=label_to_name,
+            score=score,
+        )
 
     cv2.imwrite((str(f"{output_path / Path(img_path).stem}.jpg")), img)
 
@@ -74,6 +90,7 @@ def test_model(
     processed_size: Tuple[int, int],
     keep_ratio: bool,
     device: str,
+    label_to_name: Dict[int, str],
 ):
     logger.info(f"Testing {name} model")
     gt = []
@@ -119,6 +136,7 @@ def test_model(
                     pred_scores=model_preds[batch]["scores"],
                     output_path=output_path,
                     img_path=img_path,
+                    label_to_name=label_to_name,
                 )
 
     validator = Validator(
@@ -176,6 +194,17 @@ def main(cfg: DictConfig):
         max_batch_size=1,
     )
 
+    onnx_model = ONNX_model(
+        model_path=Path(cfg.train.path_to_save) / "model.onnx",
+        n_outputs=len(cfg.train.label_to_name),
+        input_width=cfg.train.img_size[1],
+        input_height=cfg.train.img_size[0],
+        conf_thresh=conf_thresh,
+        rect=cfg.export.dynamic_input,
+        half=cfg.export.half,
+        keep_ratio=cfg.train.keep_ratio,
+    )
+
     data_path = Path(cfg.train.data_path)
     val_loader, test_loader = BenchLoader(
         root_path=data_path,
@@ -191,6 +220,7 @@ def main(cfg: DictConfig):
         "OpenVINO": ov_model,
         "Torch": torch_model,
         "TensorRT": trt_model,
+        "ONNX": onnx_model,
     }
     for model_name, model in models.items():
         all_metrics[model_name] = test_model(
@@ -205,6 +235,7 @@ def main(cfg: DictConfig):
             processed_size=tuple(cfg.train.img_size),
             keep_ratio=cfg.train.keep_ratio,
             device=cfg.train.device,
+            label_to_name=cfg.train.label_to_name,
         )
 
     metrcs = pd.DataFrame.from_dict(all_metrics, orient="index")
