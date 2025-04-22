@@ -34,6 +34,7 @@ Use inference classes in `src/infer`. Currently available:
 - Torch
 - TensorRT
 - OpenVINO
+- ONNX
 
 ## Outputs
 - **Models**: Saved during the training process and export at `output/models/exp_name_date`. Includes training logs, table with main metrics, confusion matrics, f1-score_vs_threshold and precisino_recall_vs_threshold.
