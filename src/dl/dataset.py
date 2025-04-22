@@ -1,6 +1,5 @@
 import random
 from pathlib import Path
-from shutil import rmtree
 from typing import Dict, List, Tuple
 
 import albumentations as A
@@ -21,7 +20,6 @@ from src.dl.utils import (
     seed_worker,
     vis_one_box,
 )
-from src.ptypes import class_names, img_norms
 
 
 class CustomDataset(Dataset):
@@ -38,10 +36,11 @@ class CustomDataset(Dataset):
         self.root_path = root_path
         self.split = split
         self.target_h, self.target_w = img_size
-        self.norm = img_norms
+        self.norm = ([0, 0, 0], [1, 1, 1])
         self.debug_img_processing = debug_img_processing
         self.mode = mode
         self.ignore_background = False
+        self.label_to_name = cfg.train.label_to_name
 
         self.mosaic_prob = cfg.train.mosaic_augs.mosaic_prob
         self.mosaic_scale = cfg.train.mosaic_augs.mosaic_scale
@@ -131,7 +130,7 @@ class CustomDataset(Dataset):
         boxes_np = boxes.cpu().numpy().astype(int)
         classes_np = classes.cpu().numpy()
         for box, class_id in zip(boxes_np, classes_np):
-            vis_one_box(image_np, box, class_id, mode="gt")
+            vis_one_box(image_np, box, class_id, mode="gt", label_to_name=self.label_to_name)
 
         # Save the image
         save_dir = self.debug_img_path / self.mode
@@ -292,7 +291,7 @@ class Loader:
         self.use_one_class = cfg.train.use_one_class
         self.debug_img_processing = debug_img_processing
         self._get_splits()
-        self.class_names = class_names
+        self.class_names = list(cfg.train.label_to_name.values())
         self.multiscale_prob = cfg.train.augs.multiscale_prob
 
     def _get_splits(self) -> None:

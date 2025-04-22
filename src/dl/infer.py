@@ -9,10 +9,12 @@ from src.dl.utils import abs_xyxy_to_norm_xywh, vis_one_box
 from src.infer.torch_model import Torch_model
 
 
-def visualize(img, boxes, labels, scores, output_path, img_path):
+def visualize(img, boxes, labels, scores, output_path, img_path, label_to_name):
     output_path.mkdir(parents=True, exist_ok=True)
     for box, label, score in zip(boxes, labels, scores):
-        vis_one_box(img, box, label, mode="pred", score=score)
+        vis_one_box(
+            img, box, label, mode="pred", label_to_name=label_to_name, score=score
+        )
 
     cv2.imwrite((str(f"{output_path / Path(img_path).stem}.jpg")), img)
 
@@ -25,7 +27,7 @@ def save_yolo_annotations(res, output_path, img_path, img_shape):
             f.write(f"{int(class_id)} {norm_box[0]} {norm_box[1]} {norm_box[2]} {norm_box[3]}\n")
 
 
-def run(torch_model, folder_path, output_path):
+def run(torch_model, folder_path, output_path, label_to_name):
     batch = 0
     imag_paths = [img.name for img in folder_path.iterdir() if not str(img).startswith(".")]
     labels = set()
@@ -39,7 +41,15 @@ def run(torch_model, folder_path, output_path):
             "scores": res[batch]["scores"],
         }
 
-        visualize(img, res["boxes"], res["labels"], res["scores"], output_path / "images", img_path)
+        visualize(
+            img,
+            res["boxes"],
+            res["labels"],
+            res["scores"],
+            output_path / "images",
+            img_path,
+            label_to_name,
+        )
 
         for class_id in res["labels"]:
             labels.add(class_id)
@@ -66,7 +76,9 @@ def main(cfg: DictConfig):
     folder_path = Path(cfg.train.path_to_test_data)
     output_path = Path(cfg.train.infer_path)
 
-    run(torch_model, folder_path, output_path)
+    run(
+        torch_model, folder_path, output_path, label_to_name=cfg.train.label_to_name
+    )
 
 
 if __name__ == "__main__":

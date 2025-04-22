@@ -15,8 +15,6 @@ import wandb
 from loguru import logger
 from tabulate import tabulate
 
-from src.ptypes import label_to_name_mapping
-
 
 def set_seeds(seed: int, cudnn_fixed: bool = False) -> None:
     torch.manual_seed(seed)
@@ -291,7 +289,7 @@ def filter_preds(preds, conf_thresh):
     return preds
 
 
-def vis_one_box(img, box, label, mode, score=None):
+def vis_one_box(img, box, label, mode, label_to_name, score=None):
     if mode == "gt":
         prefix = "GT: "
         color = (46, 153, 60)
@@ -311,7 +309,7 @@ def vis_one_box(img, box, label, mode, score=None):
     )
     cv2.putText(
         img,
-        f"{prefix}{label_to_name_mapping[int(label)]}{postfix}",
+        f"{prefix}{label_to_name[int(label)]}{postfix}",
         (x1, max(0, y1 - 5)),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5,
@@ -320,7 +318,7 @@ def vis_one_box(img, box, label, mode, score=None):
     )
 
 
-def visualize(img_paths, gt, preds, dataset_path, path_to_save):
+def visualize(img_paths, gt, preds, dataset_path, path_to_save, label_to_name):
     """
     Saves images with drawn bounding boxes.
       - Green bboxes for GT
@@ -334,11 +332,18 @@ def visualize(img_paths, gt, preds, dataset_path, path_to_save):
         # Draw ground-truth boxes (green)
         for box, label in zip(gt_dict["boxes"], gt_dict["labels"]):
             # box: [x1, y1, x2, y2]
-            vis_one_box(img, box, label, mode="gt")
+            vis_one_box(img, box, label, mode="gt", label_to_name=label_to_name)
 
         # Draw predicted boxes (blue)
         for box, label, score in zip(pred_dict["boxes"], pred_dict["labels"], pred_dict["scores"]):
-            vis_one_box(img, box, label, mode="pred", score=score)
+            vis_one_box(
+                img,
+                box,
+                label,
+                mode="pred",
+                label_to_name=label_to_name,
+                score=score,
+            )
 
         # Construct a filename and save
         outpath = path_to_save / img_path.name
