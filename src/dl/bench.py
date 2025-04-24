@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.dl.dataset import CustomDataset, Loader
-from src.dl.utils import process_boxes, vis_one_box
+from src.dl.utils import get_latest_experiment_name, process_boxes, vis_one_box
 from src.dl.validator import Validator
 from src.infer.onnx_model import ONNX_model
 from src.infer.ov_model import OV_model
@@ -158,6 +158,8 @@ def test_model(
 def main(cfg: DictConfig):
     conf_thresh = 0.5
     iou_thresh = 0.5
+
+    cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
     torch_model = Torch_model(
         model_name=cfg.model_name,

@@ -3,6 +3,7 @@ import os
 import random
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
@@ -441,76 +442,23 @@ def process_boxes(boxes, processed_size, orig_sizes, keep_ratio, device):
     return torch.tensor(final_boxes).to(device)
 
 
-class CustomPadIfNeeded(A.DualTransform):
-    """
-    Custom padding transform that, with probability `rect_resize_prob`, pads the image
-    to the nearest dimensions divisible by `div` and otherwise pads to fixed square dimensions.
-    Also adjusts bounding boxes accordingly.
-    """
+def get_latest_experiment_name(exp: str, output_dir: str):
+    output_dir = Path(output_dir)
+    if output_dir.exists():
+        return exp
 
-    def __init__(
-        self,
-        square_height: int,
-        square_width: int,
-        rect_resize_prob: float = 0.0,
-        div: int = 32,
-        border_mode=cv2.BORDER_CONSTANT,
-        value=(114, 114, 114),
-        always_apply=False,
-        p=1.0,
-    ):
-        super().__init__(always_apply, p)
-        self.square_height = square_height
-        self.square_width = square_width
-        self.rect_resize_prob = rect_resize_prob
-        self.div = div
-        self.border_mode = border_mode
-        self.value = value
+    target_exp_name = Path(exp).name.rsplit("_", 1)[0]
+    latest_exp = None
 
-    def get_params_dependent_on_targets(self, params):
-        # We need the image size to compute padding
-        image = params["image"]
-        h, w = image.shape[:2]
-        # Decide which padding mode to use
-        if random.random() < self.rect_resize_prob:
-            new_h = math.ceil(h / self.div) * self.div
-            new_w = math.ceil(w / self.div) * self.div
-        else:
-            new_h, new_w = self.square_height, self.square_width
+    for exp_path in output_dir.parent.iterdir():
+        exp_name, exp_date = exp_path.name.rsplit("_", 1)
+        if target_exp_name == exp_name:
+            exp_date = datetime.strptime(exp_date, "%Y-%m-%d")
+            if not latest_exp or exp_date > latest_exp:
+                latest_exp = exp_date
 
-        pad_h = max(new_h - h, 0)
-        pad_w = max(new_w - w, 0)
+            print(target_exp_name, exp_date, latest_exp)
 
-        # For center padding
-        top = pad_h // 2
-        left = pad_w // 2
-
-        return {"top": top, "left": left, "new_h": new_h, "new_w": new_w}
-
-    def apply(self, image, top=0, left=0, new_h=None, new_w=None, **params):
-        h, w = image.shape[:2]
-        bottom = new_h - h - top
-        right = new_w - w - left
-        image = cv2.copyMakeBorder(
-            image, top, bottom, left, right, self.border_mode, value=self.value
-        )
-        return image
-
-    def apply_to_bbox(self, bbox, top=0, left=0, **params):
-        # bbox: [x_min, y_min, x_max, y_max]
-        x_min, y_min, x_max, y_max = bbox
-        x_min += left
-        x_max += left
-        y_min += top
-        y_max += top
-        return [x_min, y_min, x_max, y_max]
-
-    def get_transform_init_args_names(self):
-        return (
-            "square_height",
-            "square_width",
-            "rect_resize_prob",
-            "div",
-            "border_mode",
-            "value",
-        )
+    final_exp_name = f"{target_exp_name}_{latest_exp.strftime('%Y-%m-%d')}"
+    logger.info(f"Latest experiment: {final_exp_name}")
+    return final_exp_name

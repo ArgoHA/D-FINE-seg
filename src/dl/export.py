@@ -11,6 +11,7 @@ from omegaconf import DictConfig
 from torch import nn
 
 from src.d_fine.dfine import build_model
+from src.dl.utils import get_latest_experiment_name
 
 INPUT_NAME = "input"
 OUTPUT_NAME = "output"
@@ -144,6 +145,8 @@ def export_to_tensorrt(
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg: DictConfig):
     device = cfg.train.device
+    cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
+
     model_path = Path(cfg.train.path_to_save) / "model.pt"
 
     model = prepare_model(cfg, device)

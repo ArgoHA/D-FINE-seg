@@ -5,16 +5,14 @@ import hydra
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from src.dl.utils import abs_xyxy_to_norm_xywh, vis_one_box
+from src.dl.utils import abs_xyxy_to_norm_xywh, get_latest_experiment_name, vis_one_box
 from src.infer.torch_model import Torch_model
 
 
 def visualize(img, boxes, labels, scores, output_path, img_path, label_to_name):
     output_path.mkdir(parents=True, exist_ok=True)
     for box, label, score in zip(boxes, labels, scores):
-        vis_one_box(
-            img, box, label, mode="pred", label_to_name=label_to_name, score=score
-        )
+        vis_one_box(img, box, label, mode="pred", label_to_name=label_to_name, score=score)
 
     cv2.imwrite((str(f"{output_path / Path(img_path).stem}.jpg")), img)
 
@@ -62,6 +60,8 @@ def run(torch_model, folder_path, output_path, label_to_name):
 
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg: DictConfig):
+    cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
+
     torch_model = Torch_model(
         model_name=cfg.model_name,
         model_path=Path(cfg.train.path_to_save) / "model.pt",
@@ -76,9 +76,7 @@ def main(cfg: DictConfig):
     folder_path = Path(cfg.train.path_to_test_data)
     output_path = Path(cfg.train.infer_path)
 
-    run(
-        torch_model, folder_path, output_path, label_to_name=cfg.train.label_to_name
-    )
+    run(torch_model, folder_path, output_path, label_to_name=cfg.train.label_to_name)
 
 
 if __name__ == "__main__":
