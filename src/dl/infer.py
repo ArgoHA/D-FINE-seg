@@ -13,13 +13,13 @@ def visualize(img, boxes, labels, scores, output_path, img_path, label_to_name):
     output_path.mkdir(parents=True, exist_ok=True)
     for box, label, score in zip(boxes, labels, scores):
         vis_one_box(img, box, label, mode="pred", label_to_name=label_to_name, score=score)
-
-    cv2.imwrite((str(f"{output_path / Path(img_path).stem}.jpg")), img)
+    if len(boxes):
+        cv2.imwrite((str(f"{output_path / Path(img_path).stem}.jpg")), img)
 
 
 def save_yolo_annotations(res, output_path, img_path, img_shape):
     output_path.mkdir(parents=True, exist_ok=True)
-    with open(output_path / Path(img_path).with_suffix(".txt"), "a") as f:
+    with open(output_path / f"{Path(img_path).stem}.txt", "a") as f:
         for class_id, box in zip(res["labels"], res["boxes"]):
             norm_box = abs_xyxy_to_norm_xywh(box[None], img_shape[0], img_shape[1])[0]
             f.write(f"{int(class_id)} {norm_box[0]} {norm_box[1]} {norm_box[2]} {norm_box[3]}\n")
@@ -55,7 +55,7 @@ def run(torch_model, folder_path, output_path, label_to_name):
 
     with open(output_path / "labels.txt", "w") as f:
         for class_id in labels:
-            f.write(f"{int(class_id)}\n")
+            f.write(f"{label_to_name[int(class_id)]}\n")
 
 
 @hydra.main(version_base=None, config_path="../../", config_name="config")
