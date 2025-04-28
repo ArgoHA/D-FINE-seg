@@ -70,14 +70,14 @@ train:
   mosaic_augs:
     mosaic_prob: 0.8
     no_mosaic_epochs: 5
-    mosaic_scale: [0.7, 1.5]
-    degrees: 5.0
+    mosaic_scale: [0.5, 1.5]
+    degrees: 0.0
     translate: 0.2
     shear: 2.0
 
   augs:
     multiscale_prob: 0.0
-    rotate_90: 0.1
+    rotate_90: 0.05
     left_right_flip: 0.3
     up_down_flip: 0.0
     to_gray: 0.01
@@ -96,17 +96,17 @@ train:
       backbone_lr: 0.0004
       base_lr: 0.0008
     s:
-      backbone_lr: 0.0002 # blown grads - try 0.00006
-      base_lr: 0.0004 # 0.00025
+      backbone_lr: 0.00006  # can setup up to 0.0002
+      base_lr: 0.00025  # 0.0004
     m:
-      backbone_lr: 0.000025 # 0.00002
-      base_lr: 0.00025 # 0.00015
+      backbone_lr: 0.00002  # 0.000025
+      base_lr: 0.00015  # 0.00025
     l:
       backbone_lr: 0.0000125
       base_lr: 0.00025
     x:
-      backbone_lr: 0.0000025
-      base_lr: 0.00025
+      backbone_lr: 0.0000015  # 0.0000025
+      base_lr: 0.0001  # 0.00025
 
 
 split:
