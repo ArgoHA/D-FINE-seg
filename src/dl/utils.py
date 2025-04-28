@@ -187,7 +187,7 @@ def box_candidates(
 
 
 def get_transform_matrix(img_shape, new_shape, degrees, scale, shear, translate):
-    new_height, new_width = new_shape
+    new_width, new_height = new_shape
     # Center
     C = np.eye(3)
     C[0, 2] = -img_shape[1] / 2  # x translation (pixels)
