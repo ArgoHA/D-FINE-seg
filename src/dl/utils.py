@@ -315,7 +315,7 @@ def vis_one_box(img, box, label, mode, label_to_name, score=None):
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5,
         color,
-        thickness=1,
+        thickness=2,
     )
 
 
