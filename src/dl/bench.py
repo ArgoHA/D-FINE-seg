@@ -112,8 +112,8 @@ def test_model(
             )[batch].cpu()
             gt_labels = targets["labels"]
 
-            t0 = time.perf_counter()
             img = cv2.imread(str(data_path / "images" / img_path))
+            t0 = time.perf_counter()
             model_preds = model(img)
             latency.append((time.perf_counter() - t0) * 1000)
 
@@ -196,16 +196,16 @@ def main(cfg: DictConfig):
         max_batch_size=1,
     )
 
-    onnx_model = ONNX_model(
-        model_path=Path(cfg.train.path_to_save) / "model.onnx",
-        n_outputs=len(cfg.train.label_to_name),
-        input_width=cfg.train.img_size[1],
-        input_height=cfg.train.img_size[0],
-        conf_thresh=conf_thresh,
-        rect=cfg.export.dynamic_input,
-        half=cfg.export.half,
-        keep_ratio=cfg.train.keep_ratio,
-    )
+    # onnx_model = ONNX_model(
+    #     model_path=Path(cfg.train.path_to_save) / "model.onnx",
+    #     n_outputs=len(cfg.train.label_to_name),
+    #     input_width=cfg.train.img_size[1],
+    #     input_height=cfg.train.img_size[0],
+    #     conf_thresh=conf_thresh,
+    #     rect=cfg.export.dynamic_input,
+    #     half=cfg.export.half,
+    #     keep_ratio=cfg.train.keep_ratio,
+    # )
 
     data_path = Path(cfg.train.data_path)
     val_loader, test_loader = BenchLoader(
@@ -222,7 +222,7 @@ def main(cfg: DictConfig):
         "OpenVINO": ov_model,
         "Torch": torch_model,
         "TensorRT": trt_model,
-        "ONNX": onnx_model,
+        # "ONNX": onnx_model,
     }
     for model_name, model in models.items():
         all_metrics[model_name] = test_model(
