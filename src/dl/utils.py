@@ -457,8 +457,6 @@ def get_latest_experiment_name(exp: str, output_dir: str):
             if not latest_exp or exp_date > latest_exp:
                 latest_exp = exp_date
 
-            print(target_exp_name, exp_date, latest_exp)
-
     final_exp_name = f"{target_exp_name}_{latest_exp.strftime('%Y-%m-%d')}"
     logger.info(f"Latest experiment: {final_exp_name}")
     return final_exp_name
