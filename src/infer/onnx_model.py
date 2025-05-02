@@ -210,7 +210,6 @@ class ONNX_model:
             res["scores"] = res["scores"].cpu().numpy()
         return output
 
-    @torch.no_grad()
     def __call__(self, inputs: NDArray[np.uint8]) -> List[Dict[str, np.ndarray]]:
         """
         Input image as ndarray (BGR, HWC) or BHWC
