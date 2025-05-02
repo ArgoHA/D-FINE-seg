@@ -240,7 +240,7 @@ class Torch_model:
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: np.ndarray of shape (N,), dtype np.int64
-            boxes: np.ndarray of shape (N, 4), dtype np.float32
+            boxes: np.ndarray of shape (N, 4), dtype np.float32, abs values
             scores: np.ndarray of shape (N,), dtype np.float32
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
