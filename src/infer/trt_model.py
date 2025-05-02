@@ -149,7 +149,9 @@ class TRT_model:
 
     def _preprocess(self, img: NDArray, stride: int = 32) -> torch.tensor:
         if not self.keep_ratio:  # simple resize
-            img = cv2.resize(img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA)
+            img = cv2.resize(
+                img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA
+            )
         elif self.rect:  # keep ratio and cut paddings
             target_height, target_width = self._compute_nearest_size(
                 img.shape[:2], max(self.input_size[0], self.input_size[1])
@@ -243,7 +245,7 @@ class TRT_model:
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: np.ndarray of shape (N,), dtype np.int64
-            boxes: np.ndarray of shape (N, 4), dtype np.float32
+            boxes: np.ndarray of shape (N, 4), dtype np.float32, abs values
             scores: np.ndarray of shape (N,), dtype np.float32
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
