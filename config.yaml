@@ -65,13 +65,14 @@ train:
   cycler_pct_start: 0.1
   weight_decay: 0.000125
   betas: [0.9, 0.999]
+  label_smoothing: 0.0
 
   ### Augs ###
   mosaic_augs:
     mosaic_prob: 0.8
     no_mosaic_epochs: 5
     mosaic_scale: [0.5, 1.5]
-    degrees: 0.0
+    degrees: 0.0 # not recommended if bbox precision is critical
     translate: 0.2
     shear: 2.0
 

@@ -112,7 +112,9 @@ class Trainer:
             logger.info("EMA model will be evaluated and saved")
             self.ema_model = ModelEMA(self.model, cfg.train.ema_momentum)
 
-        self.loss_fn = build_loss(cfg.model_name, self.num_labels)
+        self.loss_fn = build_loss(
+            cfg.model_name, self.num_labels, label_smoothing=cfg.train.label_smoothing
+        )
 
         self.optimizer = build_optimizer(
             self.model,

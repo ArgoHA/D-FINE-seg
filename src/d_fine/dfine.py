@@ -65,10 +65,15 @@ def build_model(model_name, num_classes, device, img_size=None, pretrained_model
     return model.to(device)
 
 
-def build_loss(model_name, num_classes):
+def build_loss(model_name, num_classes, label_smoothing):
     model_cfg = models[model_name]
     matcher = HungarianMatcher(**model_cfg["matcher"])
-    loss_fn = DFINECriterion(matcher, num_classes=num_classes, **model_cfg["DFINECriterion"])
+    loss_fn = DFINECriterion(
+        matcher,
+        num_classes=num_classes,
+        label_smoothing=label_smoothing,
+        **model_cfg["DFINECriterion"],
+    )
     return loss_fn
 
 
