@@ -67,7 +67,7 @@ Use inference classes in `src/infer`. Currently available:
 - Training pipeline from SoTA D-FINE model
 - Export to ONNX, OpenVino, TensorRT.
 - Inference class for Torch, TensorRT, OpenVINO
-
+- Label smoothing in Focal loss
 - Augs based on the [albumentations](https://albumentations.ai) lib
 - Mosaic augmentation, multiscale aug
 - Metrics: mAPs, Precision, Recall, F1-score, Confusion matrix, IoU, plots
