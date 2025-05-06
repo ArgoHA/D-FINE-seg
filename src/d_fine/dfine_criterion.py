@@ -39,6 +39,7 @@ class DFINECriterion(nn.Module):
         reg_max=32,
         boxes_weight_format=None,
         share_matched_indices=False,
+        label_smoothing: float = 0.0,
     ):
         """Create the criterion.
         Parameters:
@@ -62,6 +63,7 @@ class DFINECriterion(nn.Module):
         self.own_targets, self.own_targets_dn = None, None
         self.reg_max = reg_max
         self.num_pos, self.num_neg = None, None
+        self.label_smoothing = label_smoothing
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert "pred_logits" in outputs
@@ -72,12 +74,19 @@ class DFINECriterion(nn.Module):
             src_logits.shape[:2], self.num_classes, dtype=torch.int64, device=src_logits.device
         )
         target_classes[idx] = target_classes_o
-        target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[..., :-1]
+
+        # build float one-hot then apply label smoothing
+        target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[..., :-1].float()
+        if self.label_smoothing is not None and self.label_smoothing > 0:
+            C = target.shape[-1]
+            eps = self.label_smoothing
+            # distribute smoothing mass over all classes
+            target = target * (1 - eps) + eps / C
+
         loss = torchvision.ops.sigmoid_focal_loss(
             src_logits, target, self.alpha, self.gamma, reduction="none"
         )
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
-
         return {"loss_focal": loss}
 
     def loss_labels_vfl(self, outputs, targets, indices, num_boxes, values=None):
