@@ -190,39 +190,42 @@ class TRT_model:
         return torch.tensor(processed_inputs).to(self.device), processed_sizes, original_sizes
 
     def _predict(self, img: torch.Tensor) -> List[torch.Tensor]:
-        # Ensure the input tensor is contiguous
-        img_tensor = img.contiguous()
+        # 1) make contiguous and grab the full (B, C, H, W) shape
+        img = img.contiguous()
+        batch_shape = tuple(img.shape)
 
-        # Prepare bindings
-        bindings = [None] * self.engine.num_bindings
-        output_tensors = []
+        # 2) prepare our buffer-pointer list
+        n_io = self.engine.num_io_tensors
+        bindings: List[int] = [None] * n_io
+        outputs: List[torch.Tensor] = []
 
-        for binding in self.engine:
-            idx = self.engine.get_binding_index(binding)
-            binding_shape = self.engine.get_binding_shape(idx)
-            binding_shape = tuple(binding_shape)  # Convert to tuple of integers
-            binding_dtype = self.engine.get_binding_dtype(idx)
-            torch_dtype = self._torch_dtype_from_trt(binding_dtype)
-            if self.engine.binding_is_input(binding):
-                # Input binding
-                self.context.set_binding_shape(idx, tuple(img_tensor.shape))  # for dynamic shape
-                assert (
-                    tuple(self.context.get_binding_shape(idx)) == tuple(img_tensor.shape)
-                ), f"Input shape mismatch: expected {img_tensor.shape}, got {self.context.get_binding_shape(idx)}"
-                bindings[idx] = int(img_tensor.data_ptr())
+        # 3) for each I/O slot, either bind the input or allocate an output
+        for i in range(n_io):
+            name = self.engine.get_tensor_name(i)
+            mode = self.engine.get_tensor_mode(name)
+            dims = tuple(self.engine.get_tensor_shape(name))
+            dt   = self.engine.get_tensor_dtype(name)
+            t_dt = self._torch_dtype_from_trt(dt)
+
+            if mode == trt.TensorIOMode.INPUT:
+                # set our actual batch‐shape on the context
+                ok = self.context.set_input_shape(name, batch_shape)
+                assert ok, f"Failed to set input shape for {name} → {batch_shape}"
+                # point that binding at our tensor’s data ptr
+                bindings[i] = img.data_ptr()
             else:
-                # Output binding
-                output_tensor = torch.empty(
-                    (img_tensor.shape[0], *binding_shape[1:]), dtype=torch_dtype, device=self.device
-                )
-                output_tensors.append(output_tensor)
-                bindings[idx] = int(output_tensor.data_ptr())
+                # allocate a matching output tensor (B, *dims[1:])
+                out_shape = (batch_shape[0],) + dims[1:]
+                out = torch.empty(out_shape, dtype=t_dt, device=self.device)
+                outputs.append(out)
+                bindings[i] = out.data_ptr()
 
-        # Run inference
+        # 4) run inference
         self.context.execute_v2(bindings)
 
-        # Outputs are already on the device as PyTorch tensors
-        return output_tensors
+        # 5) return all output tensors
+        return outputs
+
 
     def _postprocess(
         self,
