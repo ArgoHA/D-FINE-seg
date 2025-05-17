@@ -29,6 +29,12 @@ python -m src.dl.infer          # Runs model ontest folder, saves visualisations
 
 [Training example with Colab](https://colab.research.google.com/drive/1ZV12qnUQMpC0g3j-0G-tYhmmdM98a41X?usp=sharing)
 
+If you run train script passing the args in the command and not changing them in the config file - you should also pass changed args to other scripts like `export` or `infer`. Example:
+```bash
+python -m src.dl.train exp_name=my_experiment
+python -m src.dl.export exp_name=my_experiment
+```
+
 ## Inference
 Use inference classes in `src/infer`. Currently available:
 - Torch
