@@ -79,6 +79,12 @@ class CustomDataset(Dataset):
 
         if self.mode == "train":
             augs = [
+                A.CoarseDropout(
+                    num_holes_range=(1, 2),
+                    hole_height_range=(0.05, 0.15),
+                    hole_width_range=(0.05, 0.15),
+                    p=cfg.train.augs.coarse_dropout,
+                ),
                 A.RandomBrightnessContrast(p=cfg.train.augs.brightness),
                 A.RandomGamma(p=cfg.train.augs.gamma),
                 A.Blur(p=cfg.train.augs.blur),
