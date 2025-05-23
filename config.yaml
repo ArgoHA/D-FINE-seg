@@ -86,6 +86,7 @@ train:
     gamma: 0.02
     brightness: 0.02
     noise: 0.01
+    coarse_dropout: 0.0
 
   ### Reproducibility ###
   seed: 42
@@ -103,8 +104,8 @@ train:
       backbone_lr: 0.00002  # 0.000025
       base_lr: 0.00015  # 0.00025
     l:
-      backbone_lr: 0.0000125
-      base_lr: 0.00025
+      backbone_lr: 0.00000625 # 0.0000125
+      base_lr: 0.000125 # 0.00025
     x:
       backbone_lr: 0.0000015  # 0.0000025
       base_lr: 0.0001  # 0.00025
