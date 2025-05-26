@@ -43,7 +43,11 @@ class Torch_model:
             self.conf_threshs = conf_thresh
 
         if not device:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = torch.device("cpu")
+            if torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
         else:
             self.device = device
 
