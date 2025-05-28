@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from loguru import logger
 from numpy.typing import NDArray
 from torch.amp import autocast
 from torchvision.ops import nms
@@ -51,12 +52,11 @@ class Torch_model:
         else:
             self.device = device
 
+        self.np_dtype = np.float32
         if self.half:
-            self.np_dtype = np.float16
-            self.amp_enabled = False
+            self.amp_enabled = True
         else:
-            self.np_dtype = np.float32
-            self.amp_enabled = self.device == "cuda" and torch.cuda.is_available()
+            self.amp_enabled = False
 
         self._load_model()
         self._test_pred()
@@ -68,10 +68,10 @@ class Torch_model:
         self.model.load_state_dict(
             torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))
         )
-        if self.half:
-            self.model.half()
         self.model.eval()
         self.model.to(self.device)
+
+        logger.info(f"Torch model, Device: {self.device}, AMP: {self.amp_enabled}")
 
     def _test_pred(self) -> None:
         random_image = np.random.randint(

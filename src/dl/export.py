@@ -150,22 +150,34 @@ def main(cfg: DictConfig):
     x_test = torch.randn(cfg.export.max_batch_size, 3, *cfg.train.img_size).to(device)
     _ = model(x_test)
 
+    # onnx version
+    export_to_onnx(
+        model,
+        model_path,
+        x_test,
+        cfg.export.max_batch_size,
+        half=cfg.export.half,
+        dynamic_input=cfg.export.dynamic_input,
+    )
+
+    # onnx for openvino
     onnx_path = export_to_onnx(
         model,
         model_path,
         x_test,
         cfg.export.max_batch_size,
-        cfg.export.half,
-        cfg.export.dynamic_input,
+        half=False,
+        dynamic_input=cfg.export.dynamic_input,
     )
     export_to_openvino(onnx_path, x_test, cfg.export.dynamic_input, max_batch_size=1)
 
+    # onnx for tensorrt
     static_onnx_path = export_to_onnx(
         model,
         model_path,
         x_test,
         cfg.export.max_batch_size,
-        cfg.export.half,
+        False,
         False,
     )
     export_to_tensorrt(

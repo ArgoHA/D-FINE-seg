@@ -39,10 +39,7 @@ class TRT_model:
         else:
             self.device = device
 
-        if self.half:
-            self.np_dtype = np.float16
-        else:
-            self.np_dtype = np.float32
+        self.np_dtype = np.float32
 
         self._load_model()
         self._test_pred()
@@ -204,7 +201,7 @@ class TRT_model:
             name = self.engine.get_tensor_name(i)
             mode = self.engine.get_tensor_mode(name)
             dims = tuple(self.engine.get_tensor_shape(name))
-            dt   = self.engine.get_tensor_dtype(name)
+            dt = self.engine.get_tensor_dtype(name)
             t_dt = self._torch_dtype_from_trt(dt)
 
             if mode == trt.TensorIOMode.INPUT:
@@ -225,7 +222,6 @@ class TRT_model:
 
         # 5) return all output tensors
         return outputs
-
 
     def _postprocess(
         self,

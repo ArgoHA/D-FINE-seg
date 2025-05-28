@@ -35,6 +35,15 @@ python -m src.dl.train exp_name=my_experiment
 python -m src.dl.export exp_name=my_experiment
 ```
 
+## Exporting tips
+Half precision:
+- usually makes sense if your hardware was more FLOPs in fp16
+- works best with TensorRT
+- for Torch version, AMP is used when Half flag is true, but if FLOPs are the same for fp32 and fp16 - I see AMP being a little slower during inference.
+- is not used for OpenVINO, as it automatically picks precision
+
+Dynamic input means that during inference, we cut black paddings from letterbox. I don't recommend using it with D-FINE as accuracy degrades too much.
+
 ## Inference
 Use inference classes in `src/infer`. Currently available:
 - Torch
