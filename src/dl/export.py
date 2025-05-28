@@ -8,6 +8,7 @@ import tensorrt as trt
 import torch
 from loguru import logger
 from omegaconf import DictConfig
+from onnxconverter_common import float16
 from torch import nn
 
 from src.d_fine.dfine import build_model
@@ -42,10 +43,6 @@ def export_to_onnx(
     half: bool,
     dynamic_input: bool,
 ) -> None:
-    if half:
-        model = model.half()
-        x_test = x_test.half()
-
     dynamic_axes = {}
     if max_batch_size > 1:
         dynamic_axes = {INPUT_NAME: {0: "batch_size"}, OUTPUT_NAME: {0: "batch_size"}}
@@ -68,8 +65,8 @@ def export_to_onnx(
     )
 
     onnx_model = onnx.load(output_path)
-    # if half:
-    #     onnx_model = float16.convert_float_to_float16(onnx_model, keep_io_types=True)
+    if half:
+        onnx_model = float16.convert_float_to_float16(onnx_model, keep_io_types=True)
 
     try:
         onnx_model, check = onnxsim.simplify(onnx_model)
