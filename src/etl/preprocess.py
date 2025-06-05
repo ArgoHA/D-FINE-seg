@@ -86,14 +86,14 @@ def remove_empty_labels(dir_path: Path) -> None:
 
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg: DictConfig) -> None:
-    paths = {"root_path": Path(cfg.train.data_path)}
+    paths = {"root_path": Path(cfg.train.data_path) / "images"}
     if test_path := cfg.train.path_to_test_data:
         paths["test_path"] = Path(test_path)
-
     for _, data_path in paths.items():
-        if (data_path / "images").exists():
-            convert_images_to_jpg((data_path / "images"), cfg.train.num_workers)
-            remove_empty_labels((data_path / "images"))
+        if (data_path).exists():
+            convert_images_to_jpg(data_path, cfg.train.num_workers)
+            if (data_path.parent / "labels").exists():
+                remove_empty_labels(data_path)
 
 
 if __name__ == "__main__":
