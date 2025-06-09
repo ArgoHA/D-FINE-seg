@@ -42,7 +42,7 @@ Half precision:
 - for Torch version, AMP is used when Half flag is true, but if FLOPs are the same for fp32 and fp16 - I see AMP being a little slower during inference.
 - is not used for OpenVINO, as it automatically picks precision
 
-Dynamic input means that during inference, we cut black paddings from letterbox. I don't recommend using it with D-FINE as accuracy degrades too much.
+Dynamic input means that during inference, we cut black paddings from letterbox. I don't recommend using it with D-FINE as accuracy degrades too much (probably because absolute Positional Encoding of pathces)
 
 ## Inference
 Use inference classes in `src/infer`. Currently available:
@@ -50,6 +50,8 @@ Use inference classes in `src/infer`. Currently available:
 - TensorRT
 - OpenVINO
 - ONNX
+
+You can run inference on a folder (path_to_test_data) of images or on a folder of videos. Crops will be created automatically. You can control it and paddings from config.yaml in the `infer` section.
 
 ## Outputs
 - **Models**: Saved during the training process and export at `output/models/exp_name_date`. Includes training logs, table with main metrics, confusion matrics, f1-score_vs_threshold and precisino_recall_vs_threshold.
