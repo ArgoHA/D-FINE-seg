@@ -83,7 +83,7 @@ You can run inference on a folder (path_to_test_data) of images or on a folder o
 ## Features
 - Training pipeline from SoTA D-FINE model
 - Export to ONNX, OpenVino, TensorRT.
-- Inference class for Torch, TensorRT, OpenVINO
+- Inference class for Torch, TensorRT, OpenVINO on images or videos
 - Label smoothing in Focal loss
 - Augs based on the [albumentations](https://albumentations.ai) lib
 - Mosaic augmentation, multiscale aug
