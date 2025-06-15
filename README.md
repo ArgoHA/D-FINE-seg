@@ -12,6 +12,8 @@ python -m src.dl.bench          # Runs all exported models on the test set
 python -m src.dl.infer          # Runs model ontest folder, saves visualisations and txt preds
 ```
 
+Note: if you don't pass any parameters, you can run any of these scripts with `make script_name`, for exmaple: `make train` will run `python -m src.dl.train`. You can also just run `make` to run all scripts one by one (excluding last, infer script)
+
 ## Usage example
 0. `git clone https://github.com/ArgoHA/custom_d_fine.git`
 1. For bigger models (l, x) download from [gdrive](https://drive.google.com/drive/folders/1cjfMS_YV5LcoJsYi-fy0HWBZQU6eeP-7?usp=share_link) andput into `pretrained` folder
