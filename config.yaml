@@ -11,7 +11,7 @@ train:
   pretrained_dataset: coco # coco, obj2coco
   pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pth # dfine_m_obj2coco.pth
 
-  data_path: ${train.root}/custom_dataset # path to dataset
+  data_path: ${train.root}/data/dataset # path to dataset
   path_to_test_data: ${train.root}/VisDrone2019-DET-test-dev/images  # path to test set, used in infer script
   path_to_save: ${train.root}/output/models/${exp} # where to save output
 
@@ -44,7 +44,7 @@ train:
   amp_enabled: True # use automatic mixed precision
   clip_max_norm: 0.1 # gradient clipping
 
-  batch_size: 4 # physical, should fit on the device
+  batch_size: 8 # physical, should fit on the device
   b_accum_steps: 1 # grad accumulation (n * bs)
   epochs: 55
   early_stopping: 0 # 0 - no early stopping
@@ -77,6 +77,8 @@ train:
     shear: 2.0
 
   augs:
+    rotation_degree: 10 # maximum +- rotation
+    rotation_p: 0.0 # probability of the rotation (with above degree)
     multiscale_prob: 0.0
     rotate_90: 0.05
     left_right_flip: 0.3
