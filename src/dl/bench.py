@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+from shutil import rmtree
 from typing import Dict, Tuple
 
 import cv2
@@ -216,6 +217,10 @@ def main(cfg: DictConfig):
         cfg=cfg,
         debug_img_processing=False,
     ).build_dataloaders()
+
+    output_path = Path(cfg.train.bench_img_path)
+    if output_path.exists():
+        rmtree(output_path)
 
     all_metrics = {}
     models = {
