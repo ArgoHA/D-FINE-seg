@@ -97,6 +97,13 @@ class CustomDataset(Dataset):
                 ),
                 A.HorizontalFlip(p=cfg.train.augs.left_right_flip),
                 A.VerticalFlip(p=cfg.train.augs.up_down_flip),
+                A.Rotate(
+                    limit=cfg.train.augs.rotation_degree,
+                    p=cfg.train.augs.rotation_p,
+                    interpolation=cv2.INTER_AREA,
+                    border_mode=cv2.BORDER_CONSTANT,
+                    fill=(114, 114, 114),
+                ),
             ]
 
             self.transform = A.Compose(
@@ -151,7 +158,7 @@ class CustomDataset(Dataset):
         # Get image
         image_path = Path(self.split.iloc[idx].values[0])
         image = cv2.imread(str(self.root_path / "images" / f"{image_path}"))  # BGR, HWC
-        assert image is not None, f"Image not found: {image_path}"
+        assert image is not None, f"Image wasn't loaded: {image_path}"
 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # RGB, HWC
         height, width, _ = image.shape
