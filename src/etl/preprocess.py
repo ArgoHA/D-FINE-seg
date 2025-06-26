@@ -2,25 +2,11 @@ import multiprocessing as mp
 from pathlib import Path
 
 import hydra
-import pypdfium2 as pdfium
 from loguru import logger
 from omegaconf import DictConfig
 from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
 from tqdm import tqdm
-
-
-def convert_pdf_to_jpg(pdf_path: Path, dpi: int = 200) -> None:
-    """
-    Convert pdf to .jpg format with specified DPI (default: 200).
-    """
-    pages = pdfium.PdfDocument(pdf_path)
-    for i, page in enumerate(pages):
-        pil_image = page.render(scale=dpi / 72.0).to_pil().convert("RGB")
-        output_path = pdf_path.with_name(f"{pdf_path.stem}_{i}.jpg")
-        pil_image.save(output_path)
-
-    pdf_path.unlink()
 
 
 def convert_image_to_jpg(filepath: Path) -> None:
@@ -37,9 +23,6 @@ def convert_image_to_jpg(filepath: Path) -> None:
             return
         image.save(filepath.with_suffix(".jpg"))
         filepath.unlink()
-
-    # elif filepath.suffix.lower() == ".pdf":
-    #     convert_pdf_to_jpg(filepath)
 
     elif filepath.suffix.lower() != ".jpg":
         print("NOT converted:", filepath.stem)
