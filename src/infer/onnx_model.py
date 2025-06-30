@@ -74,7 +74,7 @@ class ONNX_model:
         for b in range(B):
             abs_xyxy = norm_xywh_to_abs_xyxy(boxes[b], proc_sizes[b][0], proc_sizes[b][1])
             if keep_ratio:
-                abs_xyxy = scale_boxes_ratio_kept(abs_xyxy, orig_sizes[b], proc_sizes[b])
+                abs_xyxy = scale_boxes_ratio_kept(abs_xyxy, proc_sizes[b], orig_sizes[b])
             else:
                 abs_xyxy = scale_boxes(abs_xyxy, orig_sizes[b], proc_sizes[b])
             out[b] = abs_xyxy
