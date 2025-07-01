@@ -97,11 +97,28 @@ def calculate_remaining_time(
 def get_vram_usage():
     try:
         output = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,nounits,noheader"],
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.used,memory.total",
+                "--format=csv,nounits,noheader",
+            ],
             encoding="utf-8",
         )
-        used, total = map(float, output.strip().split(", "))
-        return round((used / total) * 100)
+
+        # Split lines to handle multiple GPUs correctly
+        lines = output.strip().split("\n")
+        total_usage = []
+
+        for line in lines:
+            try:
+                used, total = map(float, line.split(", "))
+                total_usage.append((used / total) * 100)
+            except ValueError:
+                print(f"Skipping malformed line: {line}")
+
+        # If there are multiple GPUs, return the max usage percentage
+        return round(max(total_usage)) if total_usage else 0
+
     except Exception as e:
         print(f"Error running nvidia-smi: {e}")
         return 0
