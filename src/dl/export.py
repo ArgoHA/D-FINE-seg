@@ -15,7 +15,7 @@ from src.d_fine.dfine import build_model
 from src.dl.utils import get_latest_experiment_name
 
 INPUT_NAME = "input"
-OUTPUT_NAME = "output"
+OUTPUT_NAMES = ["logits", "boxes"]
 
 
 def prepare_model(cfg, device):
@@ -45,7 +45,11 @@ def export_to_onnx(
 ) -> None:
     dynamic_axes = {}
     if max_batch_size > 1:
-        dynamic_axes = {INPUT_NAME: {0: "batch_size"}, OUTPUT_NAME: {0: "batch_size"}}
+        dynamic_axes = {
+            INPUT_NAME: {0: "batch_size"},
+            OUTPUT_NAMES[0]: {0: "batch_size"},
+            OUTPUT_NAMES[1]: {0: "batch_size"},
+        }
     if dynamic_input:
         if INPUT_NAME not in dynamic_axes:
             dynamic_axes[INPUT_NAME] = {}
@@ -60,7 +64,7 @@ def export_to_onnx(
         output_path,
         opset_version=17,
         input_names=[INPUT_NAME],
-        output_names=[OUTPUT_NAME],
+        output_names=OUTPUT_NAMES,
         dynamic_axes=dynamic_axes,
     )
 
