@@ -102,7 +102,7 @@ def run_images(torch_model, folder_path, output_path, label_to_name, to_crop, pa
 
 def run_videos(torch_model, folder_path, output_path, label_to_name, to_crop, paddings):
     batch = 0
-    vid_paths = [vid.name for vid in folder_path.iterdir() if not str(vid).startswith(".")]
+    vid_paths = [vid.name for vid in folder_path.iterdir() if not str(vid.name).startswith(".")]
     labels = set()
     for vid_path in tqdm(vid_paths):
         vid = cv2.VideoCapture(str(folder_path / vid_path))
