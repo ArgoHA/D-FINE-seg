@@ -88,9 +88,10 @@ def run_images(torch_model, folder_path, output_path, label_to_name, to_crop, pa
 
         for class_id in res["labels"]:
             labels.add(class_id)
-            save_yolo_annotations(
-                res=res, output_path=output_path / "labels", img_path=img_path, img_shape=img.shape
-            )
+
+        save_yolo_annotations(
+            res=res, output_path=output_path / "labels", img_path=img_path, img_shape=img.shape
+        )
 
         if to_crop:
             crops(or_img, res, paddings, img_path, output_path, Path(img_path).stem)
@@ -131,12 +132,13 @@ def run_videos(torch_model, folder_path, output_path, label_to_name, to_crop, pa
 
             for class_id in res["labels"]:
                 labels.add(class_id)
-                save_yolo_annotations(
-                    res=res,
-                    output_path=output_path / "labels",
-                    img_path=frame_name,
-                    img_shape=img.shape,
-                )
+
+            save_yolo_annotations(
+                res=res,
+                output_path=output_path / "labels",
+                img_path=frame_name,
+                img_shape=img.shape,
+            )
 
             if to_crop:
                 crops(img, res, paddings, vid_path, output_path, frame_name)
