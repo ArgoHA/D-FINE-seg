@@ -254,18 +254,24 @@ def scale_boxes(boxes, orig_shape, resized_shape):
     return boxes
 
 
-def norm_xywh_to_abs_xyxy(boxes: NDArray, h: int, w: int) -> NDArray:
-    xc, yc, bw, bh = (
-        boxes[:, 0] * w,
-        boxes[:, 1] * h,
-        boxes[:, 2] * w,
-        boxes[:, 3] * h,
-    )
-    x1 = np.clip(np.floor(xc - bw / 2), 1, w - 1)
-    y1 = np.clip(np.floor(yc - bh / 2), 1, h - 1)
-    x2 = np.clip(np.ceil(xc + bw / 2), 1, w - 1)
-    y2 = np.clip(np.ceil(yc + bh / 2), 1, h - 1)
-    return np.stack([x1, y1, x2, y2], axis=1)
+def norm_xywh_to_abs_xyxy(boxes: np.ndarray, h: int, w: int, clip=True):
+    """
+    Normalised (x_c, y_c, w, h) -> absolute (x1, y1, x2, y2)
+    Keeps full floating-point precision; no rounding.
+    """
+    x_c, y_c, bw, bh = boxes.T
+    x_min = x_c * w - bw * w / 2
+    y_min = y_c * h - bh * h / 2
+    x_max = x_c * w + bw * w / 2
+    y_max = y_c * h + bh * h / 2
+
+    if clip:
+        x_min = np.clip(x_min, 0, w - 1)
+        y_min = np.clip(y_min, 0, h - 1)
+        x_max = np.clip(x_max, 0, w - 1)
+        y_max = np.clip(y_max, 0, h - 1)
+
+    return np.stack([x_min, y_min, x_max, y_max], axis=1)
 
 
 def filter_preds(preds, conf_threshs: List[float]):
