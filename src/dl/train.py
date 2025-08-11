@@ -270,6 +270,7 @@ class Trainer:
         preds,
         conf_thresh: float,
         iou_thresh: float,
+        extended: bool,
         path_to_save=None,
         mode=None,
     ):
@@ -279,7 +280,7 @@ class Trainer:
             conf_thresh=conf_thresh,
             iou_thresh=iou_thresh,
         )
-        metrics = validator.compute_metrics()
+        metrics = validator.compute_metrics(extended=extended)
         if path_to_save:  # val and test
             validator.save_plots(path_to_save / "plots" / mode)
         return metrics
@@ -290,11 +291,18 @@ class Trainer:
         conf_thresh: float,
         iou_thresh: float,
         path_to_save: Path,
+        extended: bool,
         mode: str = None,
     ) -> Dict[str, float]:
         gt, preds = self.get_preds_and_gt(val_loader=val_loader)
         metrics = self.get_metrics(
-            gt, preds, conf_thresh, iou_thresh, path_to_save=path_to_save, mode=mode
+            gt,
+            preds,
+            conf_thresh,
+            iou_thresh,
+            extended=extended,
+            path_to_save=path_to_save,
+            mode=mode,
         )
         return metrics
 
@@ -415,6 +423,7 @@ class Trainer:
                 val_loader=self.val_loader,
                 conf_thresh=self.conf_thresh,
                 iou_thresh=self.iou_thresh,
+                extended=False,
                 path_to_save=None,
             )
 
@@ -477,6 +486,7 @@ def main(cfg: DictConfig) -> None:
             conf_thresh=trainer.conf_thresh,
             iou_thresh=trainer.iou_thresh,
             path_to_save=Path(cfg.train.path_to_save),
+            extended=True,
             mode="val",
         )
         if cfg.train.use_wandb:
@@ -489,6 +499,7 @@ def main(cfg: DictConfig) -> None:
                 conf_thresh=trainer.conf_thresh,
                 iou_thresh=trainer.iou_thresh,
                 path_to_save=Path(cfg.train.path_to_save),
+                extended=True,
                 mode="test",
             )
             if cfg.train.use_wandb:
@@ -498,6 +509,8 @@ def main(cfg: DictConfig) -> None:
             all_metrics={"val": val_metrics, "test": test_metrics},
             path_to_save=Path(cfg.train.path_to_save),
             epoch=0,
+            extended=True,
+            label_to_name=cfg.train.label_to_name,
         )
         logger.info(f"Full training time: {(time.time() - t_start) / 60 / 60:.2f} hours")
 
