@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import random
@@ -48,11 +49,38 @@ def wandb_logger(loss, metrics: Dict[str, float], epoch, mode: str) -> None:
     wandb.log(log_data)
 
 
+def rename_metric_keys(d, label_to_name):
+    """precision_1 -> precision_class_name"""
+    out = {}
+    if not isinstance(d, dict):
+        return out
+    for k, v in d.items():
+        if "_" in k:
+            base, tail = k.rsplit("_", 1)
+            if tail.isdigit():
+                name = label_to_name.get(int(tail), tail)
+                k = f"{base}_{name}"
+        out[k] = v
+    return out
+
+
 def log_metrics_locally(
-    all_metrics: Dict[str, Dict[str, float]], path_to_save: Path, epoch: int
+    all_metrics: Dict[str, Dict[str, float]],
+    path_to_save: Path,
+    epoch: int,
+    extended=False,
+    label_to_name=None,
 ) -> None:
     metrics_df = pd.DataFrame.from_dict(all_metrics, orient="index")
     metrics_df = metrics_df.round(4)
+    if extended:
+        extended_metrics = metrics_df["extended_metrics"].map(
+            lambda d: rename_metric_keys(d, label_to_name)
+        )
+        extended_metrics = pd.DataFrame.from_records(
+            extended_metrics.tolist(), index=metrics_df.index
+        ).round(4)
+
     metrics_df = metrics_df[
         ["mAP_50", "f1", "precision", "recall", "iou", "mAP_50_95", "TPs", "FPs", "FNs"]
     ]
@@ -65,6 +93,9 @@ def log_metrics_locally(
 
     if path_to_save:
         metrics_df.to_csv(path_to_save / "metrics.csv")
+
+        if extended:
+            extended_metrics.to_csv(path_to_save / "extended_metrics.csv")
 
 
 def save_metrics(train_metrics, metrics, loss, epoch, path_to_save, use_wandb) -> None:
