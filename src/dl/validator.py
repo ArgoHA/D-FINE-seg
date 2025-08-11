@@ -76,6 +76,13 @@ class Validator:
             )
 
             extended_metrics[f"iou_{key}"] = np.mean(value["IoUs"])
+            extended_metrics[f"f1_{key}"] = (
+                2
+                * (extended_metrics[f"precision_{key}"] * extended_metrics[f"recall_{key}"])
+                / (extended_metrics[f"precision_{key}"] + extended_metrics[f"recall_{key}"])
+                if (extended_metrics[f"precision_{key}"] + extended_metrics[f"recall_{key}"]) > 0
+                else 0
+            )
 
         precision = tps / (tps + fps) if (tps + fps) > 0 else 0
         recall = tps / (tps + fns) if (tps + fns) > 0 else 0
