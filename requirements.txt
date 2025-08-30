@@ -5,7 +5,7 @@ matplotlib==3.10.3
 numpy==2.1.1
 omegaconf==2.3.0
 onnx==1.17.0
-protobuf==3.20.2
+protobuf==4.25.8
 onnxconverter-common==1.15.0
 onnxruntime==1.21.1
 onnxruntime_gpu==1.21.1
