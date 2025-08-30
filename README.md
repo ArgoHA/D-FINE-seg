@@ -21,6 +21,11 @@ Note: if you don't pass any parameters, you can run any of these scripts with `m
 0. `git clone https://github.com/ArgoHA/custom_d_fine.git`
 1. For bigger models (l, x) download from [gdrive](https://drive.google.com/drive/folders/1cjfMS_YV5LcoJsYi-fy0HWBZQU6eeP-7?usp=share_link) andput into `pretrained` folder
 2. Prepare your data: `images` folder and `labels` folder (txt file per image in YOLO format).
+```
+📂 data/dataset
+├── 📁 images
+├── 📁 labels
+```
 3. Customize `config.yaml`, minimal example:
       - `exp_name`. This is experiment name which is used in model's output folder. After you train a model, you can run export/bench/infer and it will use the model under this name + current date.
       - `root`. Path to the directory where you store your dataset and where model outputs will be saved
