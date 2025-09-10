@@ -75,7 +75,7 @@ class Torch_model:
 
     def _test_pred(self) -> None:
         random_image = np.random.randint(
-            0, 255, size=(self.input_size[1], self.input_size[0], self.channels), dtype=np.uint8
+            0, 255, size=(self.input_size[0], self.input_size[1], self.channels), dtype=np.uint8
         )
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(random_image)
         preds = self._predict(processed_inputs)
@@ -157,7 +157,7 @@ class Torch_model:
     def _preprocess(self, img: NDArray, stride: int = 32) -> torch.tensor:
         if not self.keep_ratio:  # simple resize
             img = cv2.resize(
-                img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA
+                img, (self.input_size[0], self.input_size[1]), interpolation=cv2.INTER_AREA
             )
         elif self.rect:  # keep ratio and cut paddings
             target_height, target_width = self._compute_nearest_size(

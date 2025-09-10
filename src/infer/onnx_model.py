@@ -53,7 +53,7 @@ class ONNX_model:
     def _test_pred(self) -> None:
         """Run one dummy inference so that latent bugs fail fast."""
         dummy = np.random.randint(
-            0, 255, size=(self.input_size[1], self.input_size[0], self.channels), dtype=np.uint8
+            0, 255, size=(self.input_size[0], self.input_size[1], self.channels), dtype=np.uint8
         )
         proc, proc_sz, orig_sz = self._prepare_inputs(dummy)
         out = self._predict(proc)
