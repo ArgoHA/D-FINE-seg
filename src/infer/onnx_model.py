@@ -135,7 +135,7 @@ class ONNX_model:
 
     def _preprocess(self, img: NDArray[np.uint8], stride: int = 32) -> NDArray[np.float32]:
         if not self.keep_ratio:  # plain resize
-            img = cv2.resize(img, self.input_size[::-1], cv2.INTER_AREA)
+            img = cv2.resize(img, self.input_size[::-1], interpolation=cv2.INTER_AREA)
         elif self.rect:  # keep ratio & crop
             h_t, w_t = self._compute_nearest_size(img.shape[:2], max(*self.input_size))
             img = letterbox(img, (h_t, w_t), stride=stride, auto=False)[0]
