@@ -67,7 +67,7 @@ class CustomDataset(Dataset):
                     border_mode=cv2.BORDER_CONSTANT,
                     fill=(114, 114, 114),
                 ),
-                # A.CenterCrop(self.target_h, self.target_w),
+                A.CenterCrop(self.target_h, self.target_w),
             ]
         else:
             resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_AREA)]
