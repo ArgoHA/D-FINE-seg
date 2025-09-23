@@ -13,6 +13,7 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
 
 from src.dl.utils import (
+    LetterboxRect,
     abs_xyxy_to_norm_xywh,
     get_mosaic_coordinate,
     norm_xywh_to_abs_xyxy,
@@ -57,17 +58,18 @@ class CustomDataset(Dataset):
 
     def _init_augs(self, cfg) -> None:
         if self.keep_ratio:
+            scaleup = False
+            if self.mode == "train":
+                scaleup = True
+
             resize = [
-                A.LongestMaxSize(
-                    max_size=max(self.target_h, self.target_w), interpolation=cv2.INTER_AREA
-                ),
-                A.PadIfNeeded(
-                    min_height=self.target_h,
-                    min_width=self.target_w,
-                    border_mode=cv2.BORDER_CONSTANT,
-                    fill=(114, 114, 114),
-                ),
-                A.CenterCrop(self.target_h, self.target_w),
+                LetterboxRect(
+                    height=self.target_h,
+                    width=self.target_w,
+                    color=(114, 114, 114),
+                    scaleup=scaleup,
+                    always_apply=True,
+                )
             ]
         else:
             resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_AREA)]

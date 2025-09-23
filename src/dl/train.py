@@ -175,7 +175,7 @@ class Trainer:
         )  # B x TopQ x 4
 
         if use_focal_loss:
-            scores = F.sigmoid(logits)
+            scores = torch.sigmoid(logits)
             scores, index = torch.topk(scores.flatten(1), num_top_queries, dim=-1)
             labels = index - index // self.num_labels * self.num_labels
             index = index // self.num_labels

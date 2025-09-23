@@ -19,7 +19,7 @@ class ONNX_model:
         keep_ratio: bool = False,
         device: str | None = None,
     ):
-        self.input_size = (input_width, input_height)
+        self.input_size = (input_height, input_width)
         self.n_outputs = n_outputs
         self.model_path = model_path
         self.rect = rect
@@ -52,9 +52,7 @@ class ONNX_model:
 
     def _test_pred(self) -> None:
         """Run one dummy inference so that latent bugs fail fast."""
-        dummy = np.random.randint(
-            0, 255, size=(self.input_size[0], self.input_size[1], self.channels), dtype=np.uint8
-        )
+        dummy = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
         proc, proc_sz, orig_sz = self._prepare_inputs(dummy)
         out = self._predict(proc)
         self._postprocess(out, proc_sz, orig_sz)
@@ -135,12 +133,16 @@ class ONNX_model:
 
     def _preprocess(self, img: NDArray[np.uint8], stride: int = 32) -> NDArray[np.float32]:
         if not self.keep_ratio:  # plain resize
-            img = cv2.resize(img, self.input_size[::-1], interpolation=cv2.INTER_AREA)
+            img = cv2.resize(
+                img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA
+            )
         elif self.rect:  # keep ratio & crop
             h_t, w_t = self._compute_nearest_size(img.shape[:2], max(*self.input_size))
             img = letterbox(img, (h_t, w_t), stride=stride, auto=False)[0]
         else:  # keep ratio & pad
-            img = letterbox(img, self.input_size[::-1], stride=stride, auto=False)[0]
+            img = letterbox(
+                img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
+            )[0]
 
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR→RGB & HWC→CHW
         img = img.astype(self.np_dtype, copy=False) / 255.0
