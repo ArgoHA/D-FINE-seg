@@ -1,4 +1,3 @@
-import json
 import math
 import os
 import random
@@ -8,12 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
-import albumentations as A
 import cv2
 import numpy as np
 import pandas as pd
 import torch
 import wandb
+from albumentations.core.transforms_interface import DualTransform
 from loguru import logger
 from tabulate import tabulate
 
@@ -504,3 +503,172 @@ def get_latest_experiment_name(exp: str, output_dir: str):
     final_exp_name = f"{target_exp_name}_{latest_exp.strftime('%Y-%m-%d')}"
     logger.info(f"Latest experiment: {final_exp_name}")
     return final_exp_name
+
+
+class LetterboxRect(DualTransform):
+    def __init__(
+        self,
+        height: int,
+        width: int,
+        color=(114, 114, 114),
+        auto: bool = False,
+        scale_fill: bool = False,
+        scaleup: bool = True,
+        stride: int = 32,
+        always_apply: bool = True,
+        p: float = 1.0,
+    ):
+        super().__init__(always_apply, p)
+        self.height = int(height)
+        self.width = int(width)
+        self.color = tuple(color)
+        self.auto = bool(auto)
+        self.scale_fill = bool(scale_fill)
+        self.scaleup = bool(scaleup)
+        self.stride = int(stride)
+
+    def get_transform_init_args_names(self):
+        return ("height", "width", "color", "auto", "scale_fill", "scaleup", "stride")
+
+    @property
+    def targets_as_params(self):
+        return ["image"]
+
+    # Generate all deterministic params needed by apply/apply_to_bboxes
+    # (computed once per call, then reused for image and bboxes)
+    def get_params_dependent_on_data(self, params, data):
+        img = data["image"]
+        h, w = img.shape[:2]
+
+        if self.scale_fill:
+            # stretch to exact size
+            new_unpad_w, new_unpad_h = self.width, self.height
+            ratio_x = self.width / w
+            ratio_y = self.height / h
+            dw, dh = 0.0, 0.0
+        else:
+            # keep aspect ratio
+            r = min(self.height / h, self.width / w)
+            if not self.scaleup:
+                r = min(r, 1.0)
+
+            new_unpad_w = int(round(w * r))
+            new_unpad_h = int(round(h * r))
+
+            dw = self.width - new_unpad_w
+            dh = self.height - new_unpad_h
+
+            if self.auto:
+                # pad to stride multiple, like inference `auto=True`
+                dw = np.mod(dw, self.stride)
+                dh = np.mod(dh, self.stride)
+
+            ratio_x = r
+            ratio_y = r
+
+        # split padding equally to both sides
+        dw *= 0.5
+        dh *= 0.5
+
+        # match inference border rounding
+        left = int(round(dw - 0.1))
+        right = int(round(dw + 0.1))
+        top = int(round(dh - 0.1))
+        bottom = int(round(dh + 0.1))
+
+        return {
+            # original size
+            "orig_h": h,
+            "orig_w": w,
+            # resized (pre-pad) size
+            "new_w": new_unpad_w,
+            "new_h": new_unpad_h,
+            # scale ratios
+            "ratio_x": float(ratio_x),
+            "ratio_y": float(ratio_y),
+            # padding to apply
+            "pad_left": left,
+            "pad_top": top,
+            "pad_right": right,
+            "pad_bottom": bottom,
+            # final canvas target (sanity)
+            "target_h": self.height,
+            "target_w": self.width,
+        }
+
+    # Image transform
+    def apply(
+        self, img, new_w=0, new_h=0, pad_left=0, pad_top=0, pad_right=0, pad_bottom=0, **kwargs
+    ):
+        # resize if needed
+        if img.shape[1] != new_w or img.shape[0] != new_h:
+            img = cv2.resize(img, (int(new_w), int(new_h)), interpolation=cv2.INTER_AREA)
+
+        # pad if needed
+        if pad_top or pad_bottom or pad_left or pad_right:
+            img = cv2.copyMakeBorder(
+                img,
+                int(pad_top),
+                int(pad_bottom),
+                int(pad_left),
+                int(pad_right),
+                cv2.BORDER_CONSTANT,
+                value=self.color,
+            )
+        return img
+
+    # Bboxes transform (Pascal VOC: abs xyxy)
+    def apply_to_bboxes(
+        self,
+        bboxes,
+        ratio_x=1.0,
+        ratio_y=1.0,
+        pad_left=0,
+        pad_top=0,
+        orig_w=0,
+        orig_h=0,
+        target_w=0,
+        target_h=0,
+        **kwargs,
+    ):
+        # Albumentations passes bboxes in its INTERNAL NORMALIZED format [0..1]
+        # We must return normalized bboxes for the transformed image.
+        if bboxes is None or len(bboxes) == 0:
+            return bboxes
+
+        b = np.asarray(bboxes, dtype=np.float32)
+
+        has_extra = b.shape[1] > 4
+        extra = None
+        if has_extra:
+            extra = b[:, 4:].copy()
+            b = b[:, :4]
+
+        # to absolute coordinates (original image)
+        b[:, [0, 2]] *= float(orig_w)
+        b[:, [1, 3]] *= float(orig_h)
+
+        # resize
+        b[:, [0, 2]] *= float(ratio_x)
+        b[:, [1, 3]] *= float(ratio_y)
+
+        # pad
+        b[:, [0, 2]] += float(pad_left)
+        b[:, [1, 3]] += float(pad_top)
+
+        # back to normalized (final canvas)
+        b[:, [0, 2]] /= max(float(target_w), 1e-6)
+        b[:, [1, 3]] /= max(float(target_h), 1e-6)
+
+        # clip to [0,1] to avoid filtering
+        b[:, [0, 2]] = np.clip(b[:, [0, 2]], 0.0, 1.0)
+        b[:, [1, 3]] = np.clip(b[:, [1, 3]], 0.0, 1.0)
+
+        # ensure x2>=x1, y2>=y1 numerically
+        b[:, 2] = np.maximum(b[:, 2], b[:, 0])
+        b[:, 3] = np.maximum(b[:, 3], b[:, 1])
+
+        if has_extra:
+            b = np.concatenate([b, extra], axis=1)
+
+        return b

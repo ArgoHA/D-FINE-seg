@@ -21,7 +21,7 @@ class TRT_model:
         keep_ratio: bool = False,
         device: str = None,
     ) -> None:
-        self.input_size = (input_width, input_height)
+        self.input_size = (input_height, input_width)
         self.n_outputs = n_outputs
         self.model_path = model_path
         self.rect = rect
@@ -64,9 +64,7 @@ class TRT_model:
             raise TypeError(f"Unsupported TensorRT data type: {trt_dtype}")
 
     def _test_pred(self) -> None:
-        random_image = np.random.randint(
-            0, 255, size=(self.input_size[0], self.input_size[1], self.channels), dtype=np.uint8
-        )
+        random_image = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(random_image)
         preds = self._predict(processed_inputs)
         self._postprocess(preds, processed_sizes, original_sizes)
@@ -112,7 +110,7 @@ class TRT_model:
         )  # B x TopQ x 4
 
         if use_focal_loss:
-            scores = F.sigmoid(logits)
+            scores = torch.sigmoid(logits)
             scores, index = torch.topk(scores.flatten(1), num_top_queries, dim=-1)
             labels = index - index // self.n_outputs * self.n_outputs
             index = index // self.n_outputs
@@ -147,16 +145,16 @@ class TRT_model:
     def _preprocess(self, img: NDArray, stride: int = 32) -> torch.tensor:
         if not self.keep_ratio:  # simple resize
             img = cv2.resize(
-                img, (self.input_size[0], self.input_size[1]), interpolation=cv2.INTER_AREA
+                img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_AREA
             )
         elif self.rect:  # keep ratio and cut paddings
             target_height, target_width = self._compute_nearest_size(
-                img.shape[:2], max(self.input_size[0], self.input_size[1])
+                img.shape[:2], max(*self.input_size)
             )
             img = letterbox(img, (target_height, target_width), stride=stride, auto=False)[0]
         else:  # keep ratio adding paddings
             img = letterbox(
-                img, (self.input_size[1], self.input_size[0]), stride=stride, auto=False
+                img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, then HWC to CHW
