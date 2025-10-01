@@ -38,6 +38,9 @@ def visualize(img, boxes, labels, scores, output_path, img_path, label_to_name):
 
 def save_yolo_annotations(res, output_path, img_path, img_shape):
     output_path.mkdir(parents=True, exist_ok=True)
+
+    if len(res["boxes"]) == 0:
+        return
     with open(output_path / f"{Path(img_path).stem}.txt", "a") as f:
         for class_id, box in zip(res["labels"], res["boxes"]):
             norm_box = abs_xyxy_to_norm_xywh(box[None], img_shape[0], img_shape[1])[0]
