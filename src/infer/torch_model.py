@@ -1,3 +1,4 @@
+import time
 from typing import Dict, List, Tuple
 
 import cv2
@@ -199,7 +200,13 @@ class Torch_model:
                 processed_sizes.append(
                     (processed_inputs[idx].shape[1], processed_inputs[idx].shape[2])
                 )
-        return torch.tensor(processed_inputs).to(self.device), processed_sizes, original_sizes
+
+        tensor = torch.from_numpy(processed_inputs)  # no copying
+        if self.device.type == "cuda":
+            tensor = tensor.pin_memory().to(self.device, non_blocking=True)
+        else:
+            tensor = tensor.to(self.device)
+        return tensor, processed_sizes, original_sizes
 
     @torch.no_grad()
     def _predict(self, inputs) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
