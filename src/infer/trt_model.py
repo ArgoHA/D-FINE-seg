@@ -184,7 +184,7 @@ class TRT_model:
                 )
 
         tensor = torch.from_numpy(processed_inputs)  # no copying
-        if self.device.type == "cuda":
+        if self.device == "cuda":
             tensor = tensor.pin_memory().to(self.device, non_blocking=True)
         else:
             tensor = tensor.to(self.device)
