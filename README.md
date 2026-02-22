@@ -1,248 +1,367 @@
-# D-FINE-seg Object Detection and Segmentation Framework (Train, Export, Inference)
+<p align="center">
+  <h1 align="center">D-FINE-seg</h1>
+  <p align="center">
+    <strong>Real-Time Object Detection and Instance Segmentation</strong>
+  </p>
+  <p align="center">
+    <a href="#quick-start">Quick Start</a> •
+    <a href="#usage">Usage</a> •
+    <a href="#export">Export</a> •
+    <a href="#inference">Inference</a> •
+    <a href="#benchmarks">Benchmarks</a> •
+    <a href="https://youtu.be/_uEyRRw4miY">Video Tutorial</a> •
+    <a href="https://colab.research.google.com/drive/1ZV12qnUQMpC0g3j-0G-tYhmmdM98a41X?usp=sharing">Colab</a>
+  </p>
+</p>
 
-This is a framework that implements [D-FINE](https://arxiv.org/abs/2410.13842) architecture for object detection and adds a segmentation head, so you can train an object detection task or instance segmentation task. Detection architecture and loss used from the original [repo](https://github.com/Peterande/D-FINE), everything else was developed from scratch, this is not a fork.
-
-Check out [the video tutorial](https://youtu.be/_uEyRRw4miY) to get familiar with this framework.
-
-## Introducing Instance Segmentation
-
-This goes beyond the original paper and is developed specifically for this framework. Segmentation task is still an early feature and there are no pretrained weights for segentation head yet. Mosaic augmentation is not recommended for segmentation at this moment.
-
-MaskDecoder takes PAN (enriched with both local and global context) embeddings from HybridEncoder. Outputs H/4 masks. Number of masks = number of detected objects. Postprocessing filters out pixels outside of the corresponding detection bounding box.
-
-Note: mAP values calculated are lower then the real ones. It's done to reduce RAM usage and remove low confidence masks (which affect mAP scores).
-
-## Main scripts
-
-To run the scripts, use the following commands:
-
-```bash
-make split          # Creates train, validation, and test CSVs with image paths
-make train          # Runs the training pipeline, including DDP version
-make export         # Exports weights in various formats after training
-
-make bench          # Runs all exported models on the test set
-make infer          # Runs model ontest folder, saves visualisations and txt preds
-make check_errors   # Runs model on train and val sets, saves only missmatched boxes with GT
-make test_batching  # Gets stats to find the optimal batch size for your model and GPU
-make ov_int8        # Runs int8 accuracy aware quantization for OpenVINO. Can take several hours
-```
-
-Note: if you want to pass parameters, you can run any of these scripts with `python -m src.dl script_name` (use `etl` instead of `dl` for `preprocess` and `split`), You can also just run `make` to run `preprocess, split, train, export, bench` scripts as 1 sequence.
-
-## Usage example
-
-0. `git clone https://github.com/ArgoHA/D-FINE-seg.git`
-1. For bigger models (l, x) download from [gdrive](https://drive.google.com/drive/folders/1cjfMS_YV5LcoJsYi-fy0HWBZQU6eeP-7?usp=share_link) andput into `pretrained` folder
-2. Prepare your data: `images` folder and `labels` folder - txt file per image in YOLO format.
-3. Customize `config.yaml`, minimal example:
-      - `task`. Set to `segment` to enable Segmentation head.
-      - `exp_name`. This is experiment name which is used in model's output folder. After you train a model, you can run export/bench/infer and it will use the model under this name + current date.
-      - `root`. Path to the directory where you store your dataset and where model outputs will be saved
-      - `data_path`. Path to the folder with `images` and `labels`
-      - `label_to_name`. Your custom dataset classes
-      - `model_name`. Choose from n/s/m/l/x model sizes.
-      - and usual things like: epochs, batch_size, num_workers. Check out config.yaml for all configs.
-4. Run `preprocess` and `split` scripts from d_fine_seg repo.
-5. Run `train` script, changing confurations, iterating, untill you get desired results.
-6. Run `export`script to create ONNX, TensorRT, OpenVINO models.
-
-[Training example with Colab](https://colab.research.google.com/drive/1ZV12qnUQMpC0g3j-0G-tYhmmdM98a41X?usp=sharing)
-
-If you run train script passing the args in the command and not changing them in the config file - you should also pass changed args to other scripts like `export` or `infer`. Example:
-
-```bash
-python -m src.dl.train exp_name=my_experiment
-python -m src.dl.export exp_name=my_experiment
-```
-
-For **DDP training** just set train.ddp.enabled to True, pick number of GPUs and run `make train` as usual.
-
-## Labels format
-
-We use YOLO labels format. One txt file per image (with the same stem). One row = one object.
-
-```
-📂 data/dataset
-├── 📁 images
-├── 📁 labels
-```
-
-**Detection**: [class_id, xc, yc, w, h], coords normalized
-
-**Segmentation**: [class_id, xy, xy, ...], coords normalized. Length = number of points + 1
-
-## Exporting tips
-
-TensorRT export must be done on the GPU that you are going to use for inferencing.
-
-Half precision:
-
-- usually makes inference faster with minimum accuracy suffering
-- works best with TensorRT and OpenVINO (when running on GPU cores). OpenVINO can be exported ones and then can be inferenced in both fp32 or fp16. Note on Apple Silicon right now OpenVINO version of D-FINE works only in full precision.
-- Not used for ONNX and Torch at the moment.
-
-Dynamic input means that during inference, we cut black paddings from letterbox. I don't recommend using it with D-FINE as accuracy degrades too much (probably because absolute Positional Encoding of patches)
-
-## Inference
-
-Use inference classes in `src/infer`. Currently available:
-
-- Torch
-- TensorRT
-- OpenVINO
-- ONNX
-
-You can run inference on a folder (path_to_test_data) of images or on a folder of videos. Crops will be created automatically. You can control it and paddings from config.yaml in the `infer` section.
-
-Detection postprocessing is fuzed into the model graph for TensorRT during the export.
-
-## Performace benchmarks
-
-All benchmarks below are on the same **custom dataset** with **D-FINEm** at **640×640**.
-Latency numbers include image preprocessing -> model inference -> postprocessing.
-
-### Desktop: Intel i5-12400F + RTX 5070 Ti
-
-```
-+----------------------+--------------+--------------+
-| Format               |   F1 score   | Latency (ms) |
-+----------------------+--------------+--------------+
-| Torch, FP32, GPU     |    0.9161    |    16.6      |
-| TensorRT, FP32, GPU  |    0.9166    |    7.5       |
-| TensorRT, FP16, GPU  |    0.9167    |    5.5       |
-| OpenVINO, FP32, CPU  |    0.9165    |    115.4     |
-| OpenVINO, FP16, CPU  |    0.9165    |    115.4     |
-| OpenVINO, INT8, CPU  |    0.9139    |    44.1      |
-| ONNX, FP32, CPU      |    0.9165    |    150.6     |
-+----------------------+--------------+--------------+
-```
-
-**Notes (desktop):**
-
-- TensorRT FP16 gives ~**3x speedup** vs Torch FP32 GPU with **no meaningful F1 drop**.
-- On the CPU, OpenVINO seems to ignore FP16 - it's identical to FP32.
-- OpenVINO INT8 on CPU gives ~**2.6x speedup** vs FP32 with a **small F1 drop** on this particular dataset.
+<p align="center">
+  <!-- <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg" alt="arXiv"></a> -->
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="mailto:argo.cve@gmail.com"><img src="https://img.shields.io/badge/Contact%20me-email-green.svg" alt="Contact me"></a>
+</p>
 
 ---
 
-### Edge device: Intel N150 (CPU with iGPU cores)
+**D-FINE-seg** extends the [D-FINE](https://arxiv.org/abs/2410.13842) real-time transformer based object detector with instance segmentation. It adds a lightweight mask head, segmentation-aware training (box-cropped BCE and dice mask losses, auxiliary and denoising mask supervision), and mask-aware Hungarian matching. On the TACO and VisDrone datasets, D-FINE-seg improves F1-score over Ultralytics YOLO26 under a unified TensorRT FP16 end-to-end benchmarking protocol, while maintaining competitive latency.
+
+The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO) to optimized multi-backend inference for both **object detection** and **instance segmentation** tasks.
+
+This is **not** a fork. The detection core is based on the [original D-FINE paper](https://github.com/Peterande/D-FINE); everything else — segmentation head, training pipeline, export, inference, augmentations — was reimplemented from scratch.
+
+> **Paper**: *D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment* (coming soon)
+
+## Highlights
+
+- **Instance segmentation** via a lightweight mask head on top of D-FINE's HybridEncoder PAN outputs — fuses stride 8/16/32 features to 1/4 resolution, then dot-product between per-query mask embeddings (3-layer MLP) and shared mask features produces per-instance masks
+- **New losses**: box-cropped BCE + Dice mask losses computed only inside GT boxes and normalized by ROI area
+- **Mask-aware denoising**: contrastive denoising training extended with mask supervision for faster convergence (adds no inference cost)
+- **Mask-aware matching**: Hungarian matcher augmented with Dice overlap cost and sigmoid focal mask cost alongside classification, L1, and GIoU costs
+- **5 model sizes** — Nano, Small, Medium, Large, Extra-Large — with HGNetv2 backbones
+- **Production-ready**: export to ONNX / TensorRT / OpenVINO, optimized inference with Torch / TRT / OV / ONNX backends
+
+<p align="center">
+  <img src="assets/det_benchmark.png" width="48%">
+  <img src="assets/seg_benchmark.png" width="48%">
+</p>
+
+
+## Quick Start
+
+### Installation
+
+```bash
+git clone https://github.com/ArgoHA/D-FINE-seg.git
+cd D-FINE-seg
+pip install -r requirements.txt
+```
+
+For larger models (L, X), download pretrained backbone weights from [Google Drive](https://drive.google.com/drive/folders/1cjfMS_YV5LcoJsYi-fy0HWBZQU6eeP-7?usp=share_link) and place them in the `pretrained/` folder.
+
+### Prepare Your Data
+
+Organize your dataset in the following structure with YOLO style annotations:
 
 ```
-+----------------------+--------------+--------------+
-| Format               |   F1 score   | Latency (ms) |
-+----------------------+--------------+--------------+
-| OpenVINO, FP32, iGPU |    0.9165    |     350.8    |
-| OpenVINO, FP16, iGPU |    0.9157    |     209.6    |
-| OpenVINO, INT8, iGPU |    0.9116    |     123.1    |
-| OpenVINO, FP32, CPU  |    0.9165    |     505.2    |
-| OpenVINO, FP16, CPU  |    0.9165    |     505.2    |
-| OpenVINO, INT8, CPU  |    0.9139    |     252.7    |
-+----------------------+--------------+--------------+
+data/dataset/
+├── images/    # all images: .jpg, .png, etc.
+└── labels/    # all labels: one .txt per image (same filename stem)
 ```
 
-**Notes (edge / N150):**
+**Detection labels**: `class_id xc yc w h` (normalized)
 
-- On the iGPU, FP16 and INT8 both give **significant latency reductions** with **minor F1 degradation**.
-- On the CPU, FP16 again seems to be ignored, while INT8 still gives a solid speedup.
+**Segmentation labels**: `class_id x1 y1 x2 y2 ... xN yN` (normalized polygon coordinates)
 
-### How to interpret these numbers
+### Configure
 
-- FP16 is often a great sweet spot on GPUs: same accuracy, noticeably faster inference.
-- On CPUs, FP16 may or may not be accelerated, depending on the hardware.
-- INT8 can give big speedups on both CPU and GPU, but the accuracy drop is highly data- and model-dependent.
+Edit `config.yaml` — key settings:
 
-I recommend always benchmarking on your own hardware and dataset.
+```yaml
+task: detect  # "detect" or "segment"
+exp_name: my_exp  # experiment name (used in output paths)
+model_name: s  # n / s / m / l / x
 
-## Batched inference
-
-Another thing to check on your hardware and model is batch size when you run batched inference (to get higher throughput, losing overall service latency). For that you can simpli run `make test_batching`, it will run torch model with different batch sizes and calculate **throughput** (proccesed images per second) and **average latency (per image). For example, with Intel i5-12400F + RTX 5070 Ti and D-FINEm, ~4 is the optimal batch size to inference with Torch.
-
+train:
+  root: /path/to/project  # project root, will be used for outputs
+  data_path: /path/to/dataset  # folder with images/ and labels/
+  label_to_name:
+    0: class_a
+    1: class_b
+  epochs: 75
+  batch_size: 8
+  img_size: [640, 640]  # (h, w)
 ```
-+------+------------+-------------------+
-|  bs  | throughput | latency_per_image |
-+------+------------+-------------------+
-| 1.0  |    76.4    |       13.1        |
-| 2.0  |   113.4    |        8.8        |
-| 4.0  |   138.1    |        7.2        |
-| 8.0  |   122.7    |        8.1        |
-| 16.0 |   119.7    |        8.4        |
-| 32.0 |   117.8    |        8.5        |
-+------+------------+-------------------+
+
+### Usage
+
+```bash
+make split           # create train/val CSV splits (test split if configured)
+make train           # train the model
+make export          # export to ONNX, TensorRT, OpenVINO
+make bench           # benchmark all exported models on the val set
+
+make infer           # run on test folder, save visualizations + YOLO txt predictions
+make check_errors    # compare predictions against GT, save only mismatches (FP/FN)
+make test_batching   # find optimal batch size for your GPU
+
+make ov_int8         # INT8 accuracy-aware quantization for OpenVINO (can take hours)
 ```
+
+Notes:
+
+- `make train` requires `train.csv` and `val.csv` in `train.data_path` (generated by `make split`).
+- `make infer` runs Torch inference on `train.path_to_test_data` and writes to `train.infer_path`.
+
+Or run in sequence:
+
+```bash
+make                 # train -> export -> bench (does not run split)
+```
+
+Or run overwriting configs from CLI
+
+```bash
+python -m src.dl.train exp_name=my_exp
+```
+
+Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` — it auto-launches with `torchrun`.
+
+### Training Features
+
+| Feature | Description |
+|:--------|:------------|
+| **DDP** | Multi-GPU distributed training with SyncBatchNorm |
+| **AMP** | Automatic mixed precision (~40% less VRAM, ~15% faster) |
+| **EMA** | Exponential moving average of weights |
+| **Gradient accumulation** | Effective batch size = `batch_size x b_accum_steps` |
+| **Gradient clipping** | Configurable max norm |
+| **Mosaic augmentation** | 4-image mosaic with affine transforms (recommended for detection) |
+| **Albumentations** | Rotation, flip, blur, noise, gamma, grayscale, coarse dropout, multiscale |
+| **OneCycleLR scheduler** | Separate learning rates for backbone and head |
+| **Early stopping** | Configurable patience |
+| **WandB integration** | Automatic experiment tracking |
+| **Optimal threshold search** | Auto-finds best confidence threshold after training |
+| **Background warm-up** | Ignore background-only images for N initial epochs |
+
+## Export
+
+| Format | Half Precision | Notes |
+|:-------|:--------------:|:------|
+| **ONNX** | — | With optional fused postprocessor |
+| **TensorRT** | FP16 | Must be exported on the target GPU |
+| **OpenVINO** | FP16, INT8 | Single export for FP32 or FP16 (pick during inference) and separate INT8 quantization script |
+
+> **Tip**: FP16 is the best latency/accuracy trade-off. For GPU use TensorRT, for CPU - OpenVINO.
+
+## Inference
+
+### Backends
+
+Four inference backends in `src/infer/`:
+
+| Backend | Format | Devices |
+|:--------|:-------|:--------|
+| **Torch** | `.pt` | CUDA, MPS, CPU |
+| **TensorRT** | `.engine` | CUDA |
+| **OpenVINO** | `.xml` | CPU, iGPU |
+| **ONNX Runtime** | `.onnx` | CUDA, CPU |
+
+### Gradio Demo
+
+```bash
+python -m demo.demo
+```
+
+A web UI for uploading images and running inference interactively.
+
+## Benchmarks
+
+### VisDrone (object detection)
+
+[VisDrone dataset](https://github.com/VisDrone/VisDrone-Dataset) - a large-scale drone-captured benchmark with 10 categories across diverse urban and rural scenes (~6500 train / ~550 val / ~1600 test-dev images).
+YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25, D-FINE - 0.5. F1-score measured with IoU threshold 0.5. Preserved original dataset split (VisDrone2019-DET-train, VisDrone2019-DET-val, VisDrone2019-DET-test-dev). Metrics are reported on **test-dev** set. Latency measured end-to-end (preprocessing + forward pass + postprocessing) on **RTX 5070 Ti** with **TensorRT FP16** at 640x640, batch size 1.
+
+| Model | F1-score | IoU | Precision | Recall | Latency (ms) |
+|:------|:--------:|:---:|:---------:|:------:|:------------:|
+| **D-FINE N** | **0.513** | 0.275 | 0.665 | 0.417 | 2.7 |
+| YOLO26 N | 0.455 | 0.226 | 0.631 | 0.356 | 2.8 |
+| **D-FINE S** | **0.563** | 0.315 | 0.681 | 0.479 | 3.2 |
+| YOLO26 S | 0.510 | 0.264 | 0.652 | 0.419 | 3.1 |
+| **D-FINE M** | **0.587** | 0.335 | 0.684 | 0.514 | 3.8 |
+| YOLO26 M | 0.562 | 0.301 | 0.667 | 0.485 | 3.6 |
+| **D-FINE L** | **0.584** | 0.333 | 0.669 | 0.518 | 4.4 |
+| YOLO26 L | 0.568 | 0.308 | 0.676 | 0.490 | 4.1 |
+| **D-FINE X** | **0.592** | 0.338 | 0.672 | 0.530 | 5.7 |
+| YOLO26 X | 0.584 | 0.319 | 0.682 | 0.510 | 5.3 |
+
+> D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~6% higher mean relative F1-score with ~4% latency overhead. Notably, IoU is ~13% higher (mean relative improvement across all models).
+
+<details>
+
+![VisDrone](assets/visdrone_bench.png)
+
+</details>
+
+### TACO (object detection and instance segmentation)
+
+[TACO dataset](http://tacodataset.org/) (1500 images, 59 effective classes of waste in diverse environments, 86/14 train/val split by batch ID). The benchmarking environment is the same as for VisDrone.
+
+#### Instance Segmentation
+
+| Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
+|:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
+| **D-FINE-seg N** | 5.1 | **0.213** | 0.095 | 0.272 | 0.175 | 4.3 |
+| YOLO26-seg N | 2.7 | 0.062 | 0.027 | 0.272 | 0.035 | 3.8 |
+| **D-FINE-seg S** | 11.9 | **0.263** | 0.125 | 0.339 | 0.215 | 5.0 |
+| YOLO26-seg S | 10.4 | 0.177 | 0.080 | 0.278 | 0.130 | 4.3 |
+| **D-FINE-seg M** | 21.2 | **0.284** | 0.134 | 0.316 | 0.258 | 5.8 |
+| YOLO26-seg M | 23.6 | 0.267 | 0.128 | 0.365 | 0.210 | 5.3 |
+| **D-FINE-seg L** | 32.8 | **0.317** | 0.152 | 0.369 | 0.278 | 6.4 |
+| YOLO26-seg L | 28.0 | 0.287 | 0.137 | 0.394 | 0.226 | 5.8 |
+| **D-FINE-seg X** | 64.3 | **0.350** | 0.172 | 0.391 | 0.318 | 7.8 |
+| YOLO26-seg X | 62.8 | 0.300 | 0.146 | 0.408 | 0.238 | 7.6 |
+
+#### Object Detection
+
+| Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
+|:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
+| **D-FINE N** | 3.8 | **0.223** | 0.108 | 0.295 | 0.180 | 3.2 |
+| YOLO26 N | 2.4 | 0.072 | 0.033 | 0.274 | 0.042 | 3.4 |
+| **D-FINE S** | 10.3 | **0.274** | 0.140 | 0.327 | 0.240 | 3.6 |
+| YOLO26 S | 9.5 | 0.170 | 0.081 | 0.279 | 0.122 | 3.5 |
+| **D-FINE M** | 19.6 | **0.282** | 0.147 | 0.342 | 0.239 | 4.3 |
+| YOLO26 M | 20.4 | 0.232 | 0.115 | 0.303 | 0.188 | 4.2 |
+| **D-FINE L** | 31.2 | **0.342** | 0.180 | 0.409 | 0.294 | 4.9 |
+| YOLO26 L | 24.8 | 0.250 | 0.128 | 0.356 | 0.193 | 4.7 |
+| **D-FINE X** | 62.6 | **0.364** | 0.195 | 0.394 | 0.339 | 6.2 |
+| YOLO26 X | 55.7 | 0.303 | 0.158 | 0.412 | 0.239 | 6.1 |
+
+> D-FINE-seg outperforms YOLO26 in fine-tuning setting on TACO dataset in F1-score across every model size (N/S/M/L/X). In segmentation task - ~65% higher mean relative F1-score and 10% latency overhead. In detection task - ~70% higher F1-score and 1% latency overhead.
+
+#### COCO-style APs
+
+<details>
+<summary><b>Mask AP (Segmentation)</b></summary>
+
+| Model | Mask mAP@50-95 | Mask mAP@50 |
+|:------|:--------------:|:-----------:|
+| **D-FINE-seg N** | **0.094** | 0.141 |
+| YOLO26-seg N | 0.041 | 0.058 |
+| **D-FINE-seg S** | **0.177** | 0.250 |
+| YOLO26-seg S | 0.111 | 0.165 |
+| D-FINE-seg M | 0.157 | 0.229 |
+| **YOLO26-seg M** | **0.195** | 0.270 |
+| **D-FINE-seg L** | **0.212** | 0.310 |
+| YOLO26-seg L | 0.174 | 0.242 |
+| **D-FINE-seg X** | **0.242** | 0.340 |
+| YOLO26-seg X | 0.210 | 0.291 |
+
+</details>
+
+<details>
+<summary><b>Box AP (Detection)</b></summary>
+
+| Model | Box mAP@50-95 | Box mAP@50 |
+|:------|:-------------:|:----------:|
+| **D-FINE N** | **0.123** | 0.169 |
+| YOLO26 N | 0.060 | 0.075 |
+| **D-FINE S** | **0.202** | 0.244 |
+| YOLO26 S | 0.098 | 0.124 |
+| **D-FINE M** | **0.204** | 0.246 |
+| YOLO26 M | 0.172 | 0.214 |
+| **D-FINE L** | **0.256** | 0.314 |
+| YOLO26 L | 0.230 | 0.272 |
+| **D-FINE X** | **0.269** | 0.336 |
+| YOLO26 X | 0.256 | 0.300 |
+
+> AP computed with confidence threshold 0.01, max 100 detections per image. D-FINE-seg wins on 4 of 5 mask AP sizes (YOLO26 leads at M) and all 5 box AP sizes.
+
+</details>
+
+#### Format Comparisons
+
+Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessing + inference + postprocessing.
+
+<details>
+<summary><b>Desktop: Intel i5-12400F + RTX 5070 Ti</b></summary>
+
+| Model | Format | F1-score | Latency (ms) |
+|:------|:-------|:--------:|:------------:|
+| D-FINE-seg S | Torch FP32 | 0.263 | 20.4 |
+| D-FINE-seg S | TensorRT FP32 | 0.264 | 6.5 |
+| D-FINE-seg S | TensorRT FP16 | 0.263 | 5.0 |
+| D-FINE S | Torch FP32 | 0.276 | 18.0 |
+| D-FINE S | TensorRT FP32 | 0.272 | 4.5 |
+| D-FINE S | TensorRT FP16 | 0.274 | 3.6 |
+
+> TensorRT FP16 -> ~4x faster than Torch FP32, no F1 drop
+
+</details>
+
+<details>
+<summary><b>Edge: Intel N150 (OpenVINO)</b></summary>
+
+| Model | Format | F1-score | Latency (ms) |
+|:------|:-------|:--------:|:------------:|
+| D-FINE-seg S | FP32 | 0.264 | 431.2 |
+| D-FINE-seg S | FP16 | 0.264 | 272.2 |
+| D-FINE-seg S | INT8 | 0.243 | 205.0 |
+| D-FINE S | FP32 | 0.272 | 188.4 |
+| D-FINE S | FP16 | 0.271 | 120.8 |
+| D-FINE S | INT8 | 0.250 | 76.3 |
+
+> FP16 -> ~60% faster than FP32, no F1 drop. INT8 -> ~2x faster than FP32 but noticeable F1 drop
+
+</details>
 
 ## Outputs
 
-- **Models**: Saved during the training process and export at `output/models/exp_name_date`. Includes training logs, table with main metrics, confusion matrics, f1-score_vs_threshold and precisino_recall_vs_threshold. In extended_metrics you can file per class metrics (saved during final eval after all epochs)
-- **Debug images**: Preprocessed images (including augmentations) are saved at `output/debug_images/split` as they are fed into the model (except for normalization).
-- **Evaluation predicts**: Visualised model's predictions on val set. Includes GT as green and preds as blue.
-- **Bench images**: Visualised model's predictions with inference class. Uses all exported models
-- **Infer**: Visualised model's predictions and predicted annotations in yolo txt format
-- **Check errors**: Creats a folder check_errors with FP and FN bboxes only. Used to check model's errors on training and val sets and to find mislabelled samples.
-- **Test batching**: Csv file with all tested batch sizes and latency
+| Output | Location | Description |
+|:-------|:---------|:------------|
+| Models + logs | `output/models/{exp_name}_{date}/` | Weights, training metrics, confusion matrix, F1 vs threshold plots, per-class metrics, bench metrics |
+| Debug images | `output/debug_images/` | Preprocessed training images (with augmentations) |
+| Eval predictions | `output/eval_preds/` | Val set predictions with GT (green) and preds (blue) |
+| Bench images | `output/bench_imgs/` | Predictions from all exported models |
+| Infer | `output/infer/` | Visualizations + YOLO txt annotations |
+| Check errors | `output/check_errors/` | FP and FN only — for finding mislabeled samples |
 
-## Results examples
-**Train**
+## Result examples
 
-![image](assets/train.png)
+**Training**
+
+![Training](assets/train.png)
 
 **Benchmarking**
 
-![image](assets/bench.png)
+![Benchmarking](assets/bench.png)
 
-**WandB**
+**WandB dashboard**
 
-![image](assets/wandb.png)
+![WandB](assets/wandb.png)
 
-**Infer**
+**Inference**
 
-![image](assets/infer_high.jpg)
+<p align="center">
+  <img src="assets/infer_detect.jpg" width="66%">
+  <img src="assets/infer_segment.jpg" width="28%">
+</p>
 
-![image](assets/infer_water.jpg)
+## Citation
 
+If you use D-FINE-seg in your research, please cite:
 
-## Features
+*D-FINE-seg - comming soon*
+<!-- ```bibtex
+@misc{dfineseg2025,
+  title={D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment},
+  author={Argo Saakyan and Dmitry Solntsev},
+  year={2026},
+  note={Paper in preparation}
+}
+``` -->
 
-- Training pipeline from SoTA D-FINE model
-- Instance Segmentation task.
-- Export to ONNX, OpenVino, TensorRT.
-- Inference class for Torch, TensorRT, OpenVINO on images or videos
-- Label smoothing in Focal loss
-- Augs based on the [albumentations](https://albumentations.ai) lib
-- Mosaic augmentation, multiscale aug
-- Metrics: mAPs, Precision, Recall, F1-score, Confusion matrix, IoU, plots
-- Distributed Data Parallel (DDP) training
-- After training is done - runs a test to calculate the optimal conf threshold
-- Exponential moving average model
-- Batch accumulation
-- Automatic mixed precision (40% less vRAM used and 15% faster training)
-- Gradient clipping
-- Keep ratio of the image and use paddings or use simple resize
-- When ratio is kept, inference can be sped up with removal of grey paddings
-- Visualisation of preprocessed images, model predictions and ground truth
-- Warmup epochs to ignore background images for easier start of convirsion
-- OneCycler used as scheduler, AdamW as optimizer
-- Unified configuration file for all scrips
-- Annotations in YOLO format, splits in csv format
-- ETA displayed during training, precise strating epoch 2
-- Logging file with training process
-- WandB integration
-- Batch inference
-- Early stopping
-- Gradio UI demo
+And the original D-FINE paper:
 
-## TODO
-
-- Finetune with layers freeze
-- Smart dataset preprocessing. Detect small objects. Detect near duplicates (remove from val/test)
-- Copy paste aug
-- Auto batch size
-
-## Acknowledgement
-
-This project is built upon original [D-FINE repo](https://github.com/Peterande/D-FINE). Thank you to the D-FINE team for an awesome model!
-
-``` bibtex
+```bibtex
 @misc{peng2024dfine,
       title={D-FINE: Redefine Regression Task in DETRs as Fine-grained Distribution Refinement},
       author={Yansong Peng and Hebei Li and Peixi Wu and Yueyi Zhang and Xiaoyan Sun and Feng Wu},
@@ -252,3 +371,13 @@ This project is built upon original [D-FINE repo](https://github.com/Peterande/D
       primaryClass={cs.CV}
 }
 ```
+
+## License
+
+This project is licensed under the [Apache 2.0 License](LICENSE).
+
+## Acknowledgement
+
+The detection core is based on the [D-FINE](https://github.com/Peterande/D-FINE) paper and architecture. The mask head design follows the [Mask DINO](https://arxiv.org/abs/2206.02777) paradigm. Thank you to both teams for their excellent work.
+
+Benchmarks in this project use the [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) and [TACO](http://tacodataset.org/) datasets. We thank the authors for making these datasets publicly available.
