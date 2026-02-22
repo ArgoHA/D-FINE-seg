@@ -229,6 +229,12 @@ def main(cfg: DictConfig):
         debug_img_processing=False,
     ).build_dataloaders()
 
+    loader_to_use = test_loader if test_loader is not None else val_loader
+    logger.info(
+        f"Using {'test' if test_loader is not None else 'validation'}"
+        f" set with {len(loader_to_use.dataset)} samples for benchmarking"
+    )
+
     output_path = Path(cfg.train.bench_img_path)
     if output_path.exists():
         rmtree(output_path)
@@ -245,7 +251,7 @@ def main(cfg: DictConfig):
 
     for model_name, model in models.items():
         all_metrics[model_name] = test_model(
-            val_loader,
+            loader_to_use,
             data_path,
             Path(cfg.train.bench_img_path),
             model,
