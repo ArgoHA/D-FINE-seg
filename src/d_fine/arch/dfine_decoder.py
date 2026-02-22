@@ -1,4 +1,7 @@
 """
+D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-backend Deployment
+Copyright (c) 2026 The D-FINE-seg Authors. All Rights Reserved.
+---------------------------------------------------------------------------------
 D-FINE: Redefine Regression Task of DETRs as Fine-grained Distribution Refinement
 Copyright (c) 2024 The D-FINE Authors. All Rights Reserved.
 ---------------------------------------------------------------------------------
