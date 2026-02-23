@@ -202,7 +202,6 @@ def main(cfg: DictConfig):
         input_height=cfg.train.img_size[0],
         conf_thresh=cfg.train.conf_thresh,
         rect=cfg.export.dynamic_input,
-        half=cfg.export.half,
         enable_mask_head=cfg.task == "segment",
     )
 

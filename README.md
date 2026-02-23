@@ -175,7 +175,7 @@ A web UI for uploading images and running inference interactively.
 
 ## Benchmarks
 
-### VisDrone (object detection)
+### VisDrone - object detection
 
 [VisDrone dataset](https://github.com/VisDrone/VisDrone-Dataset) - a large-scale drone-captured benchmark with 10 categories across diverse urban and rural scenes (~6500 train / ~550 val / ~1600 test-dev images).
 YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25, D-FINE - 0.5. F1-score measured with IoU threshold 0.5. Preserved original dataset split (VisDrone2019-DET-train, VisDrone2019-DET-val, VisDrone2019-DET-test-dev). Metrics are reported on **test-dev** set. Latency measured end-to-end (preprocessing + forward pass + postprocessing) on **RTX 5070 Ti** with **TensorRT FP16** at 640x640, batch size 1.
@@ -201,7 +201,7 @@ YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25
 
 </details>
 
-### TACO (object detection and instance segmentation)
+### TACO - object detection and instance segmentation
 
 [TACO dataset](http://tacodataset.org/) (1500 images, 59 effective classes of waste in diverse environments, 86/14 train/val split by batch ID). The benchmarking environment is the same as for VisDrone.
 

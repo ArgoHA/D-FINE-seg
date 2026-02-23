@@ -244,7 +244,6 @@ def main(cfg: DictConfig) -> None:
         input_height=cfg.train.img_size[0],
         conf_thresh=cfg.train.conf_thresh,
         rect=cfg.export.dynamic_input,
-        half=cfg.export.half,
         keep_ratio=cfg.train.keep_ratio,
         use_nms=True,  # to remove duplocated boxes on 1 GT object and not show them as FPs
     )
