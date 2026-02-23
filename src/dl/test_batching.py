@@ -25,7 +25,6 @@ def main(cfg: DictConfig):
         input_height=cfg.train.img_size[0],
         conf_thresh=cfg.train.conf_thresh,
         rect=cfg.export.dynamic_input,
-        half=cfg.export.half,
     )
 
     img_folder = Path(cfg.train.data_path) / "images"

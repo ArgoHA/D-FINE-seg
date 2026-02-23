@@ -20,7 +20,6 @@ class Torch_model:
         input_height: int = 640,
         conf_thresh: float = 0.5,
         rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
-        half: bool = False,
         keep_ratio: bool = False,
         use_nms: bool = False,
         enable_mask_head: bool = False,
@@ -33,7 +32,6 @@ class Torch_model:
         self.model_name = model_name
         self.model_path = model_path
         self.rect = rect
-        self.half = half
         self.keep_ratio = keep_ratio
         self.use_nms = use_nms
         self.enable_mask_head = enable_mask_head

@@ -17,14 +17,12 @@ class TRT_model:
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
         rect: bool = False,
-        half: bool = False,
         keep_ratio: bool = False,
         device: str = None,
     ) -> None:
         self.model_path = model_path
         self.n_outputs = n_outputs
         self.rect = rect
-        self.half = half
         self.keep_ratio = keep_ratio
         self.channels = 3
         self.binarize_masks = binarize_masks

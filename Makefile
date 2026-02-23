@@ -1,4 +1,4 @@
-.PHONY: main train split export bench infer test_batching check_errors ov_int8
+.PHONY: main train split export bench infer test_batching check_errors ov_int8 trt_int8
 
 main:
 	@$(MAKE) train
@@ -36,3 +36,6 @@ check_errors:
 
 ov_int8:
 	python -m src.dl.ov_int8
+
+trt_int8:
+	python -m src.dl.trt_int8

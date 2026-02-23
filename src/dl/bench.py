@@ -74,8 +74,9 @@ def test_model(
     all_gt = []
     all_preds = []
 
-    output_path = output_path / name
-    output_path.mkdir(exist_ok=True, parents=True)
+    if to_visualize:
+        output_path = output_path / name
+        output_path.mkdir(exist_ok=True, parents=True)
 
     # Warmup iterations
     first_batch = next(iter(test_loader))
@@ -176,7 +177,6 @@ def main(cfg: DictConfig):
         input_height=cfg.train.img_size[0],
         conf_thresh=conf_thresh,
         rect=cfg.export.dynamic_input,
-        half=cfg.export.half,
         keep_ratio=cfg.train.keep_ratio,
         enable_mask_head=cfg.task == "segment",
     )
@@ -186,7 +186,6 @@ def main(cfg: DictConfig):
         n_outputs=len(cfg.train.label_to_name),
         conf_thresh=conf_thresh,
         rect=False,
-        half=cfg.export.half,
         keep_ratio=cfg.train.keep_ratio,
     )
 
@@ -204,7 +203,6 @@ def main(cfg: DictConfig):
         n_outputs=len(cfg.train.label_to_name),
         conf_thresh=conf_thresh,
         rect=False,
-        half=False,
         keep_ratio=cfg.train.keep_ratio,
     )
 
@@ -217,6 +215,16 @@ def main(cfg: DictConfig):
             half=cfg.export.half,
             keep_ratio=cfg.train.keep_ratio,
             max_batch_size=1,
+        )
+
+    trt_int8_path = Path(cfg.train.path_to_save) / "model_int8.engine"
+    if trt_int8_path.exists():
+        trt_int8_model = TRT_model(
+            model_path=trt_int8_path,
+            n_outputs=len(cfg.train.label_to_name),
+            conf_thresh=conf_thresh,
+            rect=False,
+            keep_ratio=cfg.train.keep_ratio,
         )
 
     data_path = Path(cfg.train.data_path)
@@ -248,6 +256,8 @@ def main(cfg: DictConfig):
     }
     if ov_int8_path.exists():
         models["OpenVINO INT8"] = ov_int8_model
+    if trt_int8_path.exists():
+        models["TensorRT INT8"] = trt_int8_model
 
     for model_name, model in models.items():
         all_metrics[model_name] = test_model(
