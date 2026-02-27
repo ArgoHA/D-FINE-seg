@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <!-- <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg" alt="arXiv"></a> -->
+  <a href="https://arxiv.org/abs/2602.23043"><img src="https://img.shields.io/badge/arXiv-2602.23043-b31b1b.svg" alt="arXiv"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
   <a href="mailto:argo.cve@gmail.com"><img src="https://img.shields.io/badge/Contact%20me-email-green.svg" alt="Contact me"></a>
 </p>
@@ -28,7 +28,7 @@ The framework covers the full workflow — from data preparation and training (w
 
 This is **not** a fork. The detection core is based on the [original D-FINE paper](https://github.com/Peterande/D-FINE); everything else — segmentation head, training pipeline, export, inference, augmentations — was reimplemented from scratch.
 
-> **Paper**: *D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment* (coming soon)
+> [**Paper**](https://arxiv.org/abs/2602.23043): *D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment*
 
 ## Highlights
 
@@ -349,15 +349,14 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 
 If you use D-FINE-seg in your research, please cite:
 
-*D-FINE-seg - comming soon*
-<!-- ```bibtex
-@misc{dfineseg2025,
-  title={D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment},
-  author={Argo Saakyan and Dmitry Solntsev},
-  year={2026},
-  note={Paper in preparation}
+```bibtex
+@article{saakyan2026dfineseg,
+  title={D-FINE-seg: Object Detection and Instance Segmentation Framework with multi-backend deployment},
+  author={Saakyan Argo and Solntsev Dmitry},
+  journal={arXiv preprint arXiv:2602.23043},
+  year={2026}
 }
-``` -->
+```
 
 And the original D-FINE paper:
 
