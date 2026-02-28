@@ -44,7 +44,6 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
   <img src="assets/seg_benchmark.png" width="48%">
 </p>
 
-
 ## Quick Start
 
 ### Installation
@@ -61,7 +60,7 @@ For larger models (L, X), download pretrained backbone weights from [Google Driv
 
 Organize your dataset in the following structure with YOLO style annotations:
 
-```
+``` bash
 data/dataset/
 ├── images/    # all images: .jpg, .png, etc.
 └── labels/    # all labels: one .txt per image (same filename stem)
@@ -196,6 +195,7 @@ YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25
 > D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~6% higher mean relative F1-score with ~4% latency overhead. Notably, IoU is ~13% higher (mean relative improvement across all models).
 
 <details>
+<summary><b>Bench graph</b></summary>
 
 ![VisDrone](assets/visdrone_bench.png)
 
@@ -353,6 +353,7 @@ If you use D-FINE-seg in your research, please cite:
 @article{saakyan2026dfineseg,
   title={D-FINE-seg: Object Detection and Instance Segmentation Framework with multi-backend deployment},
   author={Saakyan Argo and Solntsev Dmitry},
+  eprint={2602.23043},
   journal={arXiv preprint arXiv:2602.23043},
   year={2026}
 }
