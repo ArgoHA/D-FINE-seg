@@ -78,7 +78,7 @@ sizes_cfg = {
             "reg_scale": 4,
             "num_points": [6, 6],
             "dim_feedforward": 512,
-            "mask_dim": 256,
+            "mask_dim": 128,
         },
     },
     "s": {

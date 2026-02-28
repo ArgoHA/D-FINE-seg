@@ -559,6 +559,7 @@ class DFINETransformer(nn.Module):
         layer_scale=1,
         enable_mask_head=False,
         mask_dim=256,
+        mask_low_level_ch=None,
     ):
         super().__init__()
         assert len(feat_channels) <= num_levels
@@ -638,7 +639,12 @@ class DFINETransformer(nn.Module):
 
         # segmentation head
         if self.enable_mask_head:
-            self.mask_decoder = MaskDecoder(in_chs=feat_channels, out_ch=self.mask_dim)
+            # When a low-level backbone feature is available (e.g. nano + seg),
+            # prepend its channel dim so MaskDecoder builds an extra lateral conv.
+            mask_in_chs = list(feat_channels)
+            if mask_low_level_ch is not None:
+                mask_in_chs = [mask_low_level_ch] + mask_in_chs
+            self.mask_decoder = MaskDecoder(in_chs=mask_in_chs, out_ch=self.mask_dim)
             self.mask_head = MLP(self.hidden_dim, self.hidden_dim, self.mask_dim, num_layers=3)
 
         # decoder embedding
@@ -934,7 +940,7 @@ class DFINETransformer(nn.Module):
         # einsum: (B,Q,C) x (B,C,H,W) -> (B,Q,H,W)
         return torch.einsum("bqc,bchw->bqhw", mask_embed, mask_feat)
 
-    def forward(self, feats, targets=None):
+    def forward(self, feats, targets=None, low_level_feat=None):
         enable_mask_head = self._should_do_masks(targets)
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
@@ -994,7 +1000,8 @@ class DFINETransformer(nn.Module):
             aux_masks = None
             dn_pred_masks = None
             dn_aux_masks = None
-            mask_feat = self.mask_decoder(feats)
+            mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
+            mask_feat = self.mask_decoder(mask_feats)
 
             # Compute masks for regular queries
             pred_masks = self._mask_logits_from_h(hs[-1], mask_feat)  # logits
