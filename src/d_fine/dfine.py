@@ -35,9 +35,17 @@ class DFINE(nn.Module):
         self.encoder = encoder
 
     def forward(self, x, targets=None):
-        x = self.backbone(x)
-        x = self.encoder(x)
-        x = self.decoder(x, targets)
+        feats = self.backbone(x)
+
+        # When backbone returns more features than encoder expects (e.g. nano + seg),
+        # the extra leading feature is the low-level 1/8 map for MaskDecoder.
+        low_level_feat = None
+        if len(feats) > len(self.encoder.in_channels):
+            low_level_feat = feats[0]
+            feats = feats[1:]
+
+        x = self.encoder(feats)
+        x = self.decoder(x, targets, low_level_feat=low_level_feat)
         return x
 
     def deploy(self):
@@ -56,6 +64,17 @@ def build_model(
     model_cfg["HybridEncoder"]["eval_spatial_size"] = img_size
     model_cfg["DFINETransformer"]["eval_spatial_size"] = img_size
     model_cfg["DFINETransformer"]["enable_mask_head"] = enable_mask_head
+
+    # For models without 1/8 stride (nano), when mask head is enabled,
+    # pass the backbone 1/8 feature as a low-level input for MaskDecoder
+    enc_strides = model_cfg["HybridEncoder"]["feat_strides"]
+    if enable_mask_head and 8 not in enc_strides:
+        return_idx = model_cfg["HGNetv2"]["return_idx"]
+        if 1 not in return_idx:  # stage index 1 = stride 8
+            model_cfg["HGNetv2"]["return_idx"] = [1] + return_idx
+        backbone_name = model_cfg["HGNetv2"]["name"]
+        stage2_ch = HGNetv2.arch_configs[backbone_name]["stage_config"]["stage2"][2]
+        model_cfg["DFINETransformer"]["mask_low_level_ch"] = stage2_ch
 
     backbone = HGNetv2(**model_cfg["HGNetv2"])
     encoder = HybridEncoder(**model_cfg["HybridEncoder"])
