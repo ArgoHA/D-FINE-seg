@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import coremltools as ct
 import hydra
 import onnx
 import onnxsim
@@ -84,17 +85,19 @@ class DFINEPostProcessor(nn.Module):
             topk_labels = topk_labels.gather(1, order)
             topk_qidx = order
 
-        # gather boxes for top-K queries
-        topk_boxes = abs_boxes.gather(1, topk_qidx.unsqueeze(-1).expand(-1, -1, 4))  # [B, K, 4]
+        # gather boxes for top-K queries using advanced indexing (CoreML-friendly)
+        batch_idx = (
+            torch.arange(abs_boxes.shape[0], device=abs_boxes.device)
+            .unsqueeze(1)
+            .expand_as(topk_qidx)
+        )
+        topk_boxes = abs_boxes[batch_idx, topk_qidx]  # [B, K, 4]
 
         result = (topk_labels, topk_boxes, topk_scores)
 
         if pred_masks is not None:
             # Gather masks for top-K queries: [B, Q, Hm, Wm] -> [B, K, Hm, Wm]
-            Hm, Wm = pred_masks.shape[2], pred_masks.shape[3]
-            topk_masks = pred_masks.gather(
-                1, topk_qidx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, Hm, Wm)
-            )
+            topk_masks = pred_masks[batch_idx, topk_qidx]
             result = result + (topk_masks,)
 
         return result
@@ -187,6 +190,49 @@ def export_to_openvino(onnx_path: Path, x_test, dynamic_input: bool, max_batch_s
 
     ov.serialize(model, str(onnx_path.with_suffix(".xml")), str(onnx_path.with_suffix(".bin")))
     logger.info("OpenVINO model exported")
+
+
+def export_to_coreml(
+    model: nn.Module,
+    model_path: Path,
+    x_test: torch.Tensor,
+    half: bool,
+    max_batch_size: int,
+) -> None:
+    """Convert PyTorch model to CoreML (.mlpackage) for iOS / macOS.
+
+    Mirrors the TensorRT path: converts the fused model (with postprocessor).
+    Uses torch.jit.trace + coremltools PyTorch converter.
+    """
+
+    compute_precision = ct.precision.FLOAT16 if half else ct.precision.FLOAT32
+
+    traced = torch.jit.trace(model.cpu(), x_test.cpu(), strict=False)
+
+    input_shape = list(x_test.shape)
+    if max_batch_size > 1:
+        ct_inputs = [
+            ct.TensorType(
+                name="input",
+                shape=ct.Shape(
+                    shape=[ct.RangeDim(lower_bound=1, upper_bound=max_batch_size), *input_shape[1:]]
+                ),
+            )
+        ]
+    else:
+        ct_inputs = [ct.TensorType(name="input", shape=input_shape)]
+
+    mlmodel = ct.convert(
+        traced,
+        inputs=ct_inputs,
+        convert_to="mlprogram",
+        compute_precision=compute_precision,
+        minimum_deployment_target=ct.target.iOS16,
+    )
+
+    output_path = model_path.with_suffix(".mlpackage")
+    mlmodel.save(str(output_path))
+    logger.info("CoreML model exported")
 
 
 def export_to_tensorrt(
@@ -330,6 +376,10 @@ def main(cfg: DictConfig):
         output_names=output_names,
     )
     export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
+
+    export_to_coreml(
+        model, model_path, x_test, half=False, max_batch_size=cfg.export.max_batch_size
+    )
 
     logger.info(f"Exports saved to: {model_path.parent}")
 

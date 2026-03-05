@@ -13,3 +13,9 @@ All notable changes to D-FINE-seg since the paper release will be documented in 
 |--------|--------|-------|
 | mIoU   | 0.096  | 0.107 (+11% relative) |
 | Latency | 4.0 ms | 4.1 ms (+2%) |
+
+## 2026-03-05 - Implement CoreML export and inference
+
+- Export now also supports CoreML in fp32 and fp16.
+- New inference module for CoreML. On m1pro fp32 was faster, so it is used by default
+- Readme updated with benchmarks (TACO detectoin and segmentation, S model, m1 pro model)
