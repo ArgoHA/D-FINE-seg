@@ -24,7 +24,7 @@
 
 **D-FINE-seg** extends the [D-FINE](https://arxiv.org/abs/2410.13842) real-time transformer based object detector with instance segmentation. It adds a lightweight mask head, segmentation-aware training (box-cropped BCE and dice mask losses, auxiliary and denoising mask supervision), and mask-aware Hungarian matching. On the TACO and VisDrone datasets, D-FINE-seg improves F1-score over Ultralytics YOLO26 under a unified TensorRT FP16 end-to-end benchmarking protocol, while maintaining competitive latency.
 
-The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO) to optimized multi-backend inference for both **object detection** and **instance segmentation** tasks.
+The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO, CoreML) to optimized multi-backend inference for both **object detection** and **instance segmentation** tasks.
 
 This is **not** a fork. The detection core is based on the [original D-FINE paper](https://github.com/Peterande/D-FINE); everything else — segmentation head, training pipeline, export, inference, augmentations — was reimplemented from scratch.
 
@@ -37,7 +37,7 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 - **Mask-aware denoising**: contrastive denoising training extended with mask supervision for faster convergence (adds no inference cost)
 - **Mask-aware matching**: Hungarian matcher augmented with Dice overlap cost and sigmoid focal mask cost alongside classification, L1, and GIoU costs
 - **5 model sizes** — Nano, Small, Medium, Large, Extra-Large — with HGNetv2 backbones
-- **Production-ready**: export to ONNX / TensorRT / OpenVINO, optimized inference with Torch / TRT / OV / ONNX backends
+- **Production-ready**: export to ONNX / TensorRT / OpenVINO / CoreML and optimized inference backends
 
 <p align="center">
   <img src="assets/det_benchmark.png" width="48%">
@@ -95,7 +95,7 @@ train:
 ```bash
 make split           # create train/val CSV splits (test split if configured)
 make train           # train the model
-make export          # export to ONNX, TensorRT, OpenVINO
+make export          # export to ONNX, TensorRT, OpenVINO, CoreML
 make bench           # benchmark all exported models on the val set
 
 make infer           # run on test folder, save visualizations + YOLO txt predictions
@@ -148,8 +148,9 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **ONNX** | — | With optional fused postprocessor |
 | **TensorRT** | FP16 | Must be exported on the target GPU |
 | **OpenVINO** | FP16, INT8 | Single export for FP32 or FP16 (pick during inference) and separate INT8 quantization script |
+| **CoreML** | FP16 | Cross-platform export, inference on macOS / iOS. FP32 by default (faster on Apple Silicon) |
 
-> **Tip**: FP16 is the best latency/accuracy trade-off. For GPU use TensorRT, for CPU - OpenVINO.
+> **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
 ## Inference
 
@@ -163,6 +164,7 @@ Four inference backends in `src/infer/`:
 | **TensorRT** | `.engine` | CUDA |
 | **OpenVINO** | `.xml` | CPU, iGPU |
 | **ONNX Runtime** | `.onnx` | CUDA, CPU |
+| **CoreML** | `.mlpackage` | macOS, iOS |
 
 ### Gradio Demo
 
@@ -310,6 +312,22 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 | D-FINE S | INT8 | 0.250 | 76.3 |
 
 > FP16 -> ~60% faster than FP32, no F1 drop. INT8 -> ~2x faster than FP32 but noticeable F1 drop
+
+</details>
+
+<details>
+<summary><b>Apple Silicon: MacBook Pro M1 Pro (CoreML)</b></summary>
+
+| Model | Format | F1-score | Latency (ms) |
+|:------|:-------|:--------:|:------------:|
+| D-FINE S Torch (mps) | FP32 | 0.278 | 59.3 |
+| D-FINE S CoreML | FP32 | 0.278 | 29.2 |
+| D-FINE S CoreML | FP16 | 0.270 | 38.3 |
+| D-FINE-seg S Torch (mps) | FP32 | 0.268 | 83.8 |
+| D-FINE-seg S CoreML | FP32 | 0.269 | 63.9 |
+| D-FINE-seg S CoreML | FP16 | 0.270 | 75.5 |
+
+> CoreML FP32 -> ~2x faster than Torch MPS, no F1 drop. FP16 is ~30% slower than FP32 on Apple Silicon — the Neural Engine prefers FP32 for this architecture. Use FP32 for CoreML.
 
 </details>
 
