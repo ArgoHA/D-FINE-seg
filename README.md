@@ -164,7 +164,7 @@ Four inference backends in `src/infer/`:
 | **TensorRT** | `.engine` | CUDA |
 | **OpenVINO** | `.xml` | CPU, iGPU |
 | **ONNX Runtime** | `.onnx` | CUDA, CPU |
-| **CoreML** | `.mlpackage` | macOS, iOS |
+| **CoreML** | `.mlpackage` | macOS (GPU), iOS |
 
 ### Gradio Demo
 
