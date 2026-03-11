@@ -1,3 +1,4 @@
+import platform
 import time
 from pathlib import Path
 from shutil import rmtree
@@ -20,7 +21,13 @@ from src.dl.validator import Validator
 from src.infer.onnx_model import ONNX_model
 from src.infer.ov_model import OV_model
 from src.infer.torch_model import Torch_model
-from src.infer.trt_model import TRT_model
+
+IS_MACOS = platform.system() == "Darwin"
+
+if IS_MACOS:
+    from src.infer.coreml_model import CoreML_model
+else:
+    from src.infer.trt_model import TRT_model
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -167,6 +174,10 @@ def main(cfg: DictConfig):
     to_visualize = True
     to_draw_gt = True
 
+    ov_half = cfg.export.half
+    if IS_MACOS:
+        ov_half = False
+
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
     torch_model = Torch_model(
@@ -181,19 +192,28 @@ def main(cfg: DictConfig):
         enable_mask_head=cfg.task == "segment",
     )
 
-    trt_model = TRT_model(
-        model_path=Path(cfg.train.path_to_save) / "model.engine",
-        n_outputs=len(cfg.train.label_to_name),
-        conf_thresh=conf_thresh,
-        rect=False,
-        keep_ratio=cfg.train.keep_ratio,
-    )
+    if IS_MACOS:
+        coreml_model = CoreML_model(
+            model_path=Path(cfg.train.path_to_save) / "model.mlpackage",
+            n_outputs=len(cfg.train.label_to_name),
+            conf_thresh=conf_thresh,
+            rect=False,
+            keep_ratio=cfg.train.keep_ratio,
+        )
+    else:
+        trt_model = TRT_model(
+            model_path=Path(cfg.train.path_to_save) / "model.engine",
+            n_outputs=len(cfg.train.label_to_name),
+            conf_thresh=conf_thresh,
+            rect=False,
+            keep_ratio=cfg.train.keep_ratio,
+        )
 
     ov_model = OV_model(
         model_path=Path(cfg.train.path_to_save) / "model.xml",
         conf_thresh=conf_thresh,
         rect=cfg.export.dynamic_input,
-        half=cfg.export.half,
+        half=ov_half,
         keep_ratio=cfg.train.keep_ratio,
         max_batch_size=1,
     )
@@ -212,20 +232,31 @@ def main(cfg: DictConfig):
             model_path=ov_int8_path,
             conf_thresh=conf_thresh,
             rect=cfg.export.dynamic_input,
-            half=cfg.export.half,
+            half=ov_half,
             keep_ratio=cfg.train.keep_ratio,
             max_batch_size=1,
         )
 
-    trt_int8_path = Path(cfg.train.path_to_save) / "model_int8.engine"
-    if trt_int8_path.exists():
-        trt_int8_model = TRT_model(
-            model_path=trt_int8_path,
-            n_outputs=len(cfg.train.label_to_name),
-            conf_thresh=conf_thresh,
-            rect=False,
-            keep_ratio=cfg.train.keep_ratio,
-        )
+    if IS_MACOS:
+        coreml_int8_path = Path(cfg.train.path_to_save) / "model_int8.mlpackage"
+        if coreml_int8_path.exists():
+            coreml_int8_model = CoreML_model(
+                model_path=coreml_int8_path,
+                n_outputs=len(cfg.train.label_to_name),
+                conf_thresh=conf_thresh,
+                rect=False,
+                keep_ratio=cfg.train.keep_ratio,
+            )
+    else:
+        trt_int8_path = Path(cfg.train.path_to_save) / "model_int8.engine"
+        if trt_int8_path.exists():
+            trt_int8_model = TRT_model(
+                model_path=trt_int8_path,
+                n_outputs=len(cfg.train.label_to_name),
+                conf_thresh=conf_thresh,
+                rect=False,
+                keep_ratio=cfg.train.keep_ratio,
+            )
 
     data_path = Path(cfg.train.data_path)
     val_loader, test_loader = BenchLoader(
@@ -249,15 +280,20 @@ def main(cfg: DictConfig):
 
     all_metrics = {}
     models = {
-        "OpenVINO": ov_model,
         "Torch": torch_model,
-        "TensorRT": trt_model,
         "ONNX": onnx_model,
+        "OpenVINO": ov_model,
     }
     if ov_int8_path.exists():
         models["OpenVINO INT8"] = ov_int8_model
-    if trt_int8_path.exists():
-        models["TensorRT INT8"] = trt_int8_model
+    if IS_MACOS:
+        models["CoreML"] = coreml_model
+        if coreml_int8_path.exists():
+            models["CoreML INT8"] = coreml_int8_model
+    else:
+        models["TensorRT"] = trt_model
+        if trt_int8_path.exists():
+            models["TensorRT INT8"] = trt_int8_model
 
     for model_name, model in models.items():
         all_metrics[model_name] = test_model(
