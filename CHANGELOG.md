@@ -19,3 +19,9 @@ All notable changes to D-FINE-seg since the paper release will be documented in 
 - Export now also supports CoreML in fp32 and fp16.
 - New inference module for CoreML. On m1pro fp32 was faster, so it is used by default
 - Readme updated with benchmarks (TACO detectoin and segmentation, S model, m1 pro model)
+
+## 2026-03-11 - CoreML int8
+
+- Add int8 quantzation for CoreML, ruexported by default alongside with fp32 versionduring `make export`
+- Adepted `make bench` to supprot macos and linux platforms automatically. Torch, OpenVINO, ONNX run for both. TensorRT - linux, CoreML - macos.
+

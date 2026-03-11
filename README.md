@@ -148,7 +148,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **ONNX** | — | With optional fused postprocessor |
 | **TensorRT** | FP16 | Must be exported on the target GPU |
 | **OpenVINO** | FP16, INT8 | Single export for FP32 or FP16 (pick during inference) and separate INT8 quantization script |
-| **CoreML** | FP16 | Cross-platform export, inference on macOS / iOS. FP32 by default (faster on Apple Silicon) |
+| **CoreML** | FP16, INT8 | Cross-platform export, inference on macOS / iOS. FP32 and INT8 exported by default  |
 
 > **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
@@ -318,16 +318,18 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 <details>
 <summary><b>Apple Silicon: MacBook Pro M1 Pro (CoreML)</b></summary>
 
-| Model | Format | F1-score | Latency (ms) |
-|:------|:-------|:--------:|:------------:|
-| D-FINE S Torch (mps) | FP32 | 0.278 | 59.3 |
-| D-FINE S CoreML | FP32 | 0.278 | 29.2 |
-| D-FINE S CoreML | FP16 | 0.270 | 38.3 |
-| D-FINE-seg S Torch (mps) | FP32 | 0.268 | 83.8 |
-| D-FINE-seg S CoreML | FP32 | 0.269 | 63.9 |
-| D-FINE-seg S CoreML | FP16 | 0.270 | 75.5 |
+| Model | Format | F1-score | Latency (ms) | Model size (mb) |
+|:------|:-------|:--------:|:------------:|:----------:|
+| D-FINE S Torch (mps) | FP32 | 0.278 | 45.2 | 41.6 |
+| D-FINE S CoreML | FP32 | 0.278 | 20.0 | 41.8 |
+| D-FINE S CoreML | FP16 | 0.270 | 32.5 | 21.1 |
+| D-FINE S CoreML | INT8 | 0.268 | 19.8 | 11.2 |
+| D-FINE-seg S Torch (mps) | FP32 | 0.261 | 72.3 | 48.3 |
+| D-FINE-seg S CoreML | FP32 | 0.261 | 64.6 | 48.3 |
+| D-FINE-seg S CoreML | FP16 | 0.259 | 79.1 | 24.3 |
+| D-FINE-seg S CoreML | INT8 | 0.256 | 62.1 | 12.8 |
 
-> CoreML FP32 -> ~2x faster than Torch MPS, no F1 drop. FP16 is ~30% slower than FP32 on Apple Silicon — the Neural Engine prefers FP32 for this architecture. Use FP32 for CoreML.
+> CoreML FP32 -> ~2x faster than Torch MPS, no F1 drop. FP16 is ~30% slower than FP32 on Apple Silicon — the Neural Engine prefers FP32 for this architecture. INT8 shows strong accuracy, same latency on this machine, but 4 times smaller weights size.
 
 </details>
 

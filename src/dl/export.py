@@ -8,6 +8,11 @@ import openvino as ov
 import tensorrt as trt
 import torch
 import torch.nn.functional as F
+from coremltools.optimize.coreml import (
+    OpLinearQuantizerConfig,
+    OptimizationConfig,
+    linear_quantize_weights,
+)
 from loguru import logger
 from omegaconf import DictConfig
 from onnxconverter_common import float16
@@ -233,6 +238,14 @@ def export_to_coreml(
     output_path = model_path.with_suffix(".mlpackage")
     mlmodel.save(str(output_path))
     logger.info("CoreML model exported")
+
+    # INT8 post-training weight quantization
+    op_config = OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8")
+    quant_config = OptimizationConfig(global_config=op_config)
+    mlmodel_int8 = linear_quantize_weights(mlmodel, config=quant_config)
+    int8_path = model_path.with_name("model_int8").with_suffix(".mlpackage")
+    mlmodel_int8.save(str(int8_path))
+    logger.info("CoreML INT8 model exported")
 
 
 def export_to_tensorrt(
