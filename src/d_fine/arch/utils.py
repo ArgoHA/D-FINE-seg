@@ -116,7 +116,7 @@ def get_activation(act: str, inpace: bool = True):
     return m
 
 
-def distance2bbox(points, distance, reg_scale):
+def distance2bbox(points, distance, reg_scale, deploy=False):
     """
     Decodes edge-distances into bounding box coordinates.
 
@@ -127,11 +127,13 @@ def distance2bbox(points, distance, reg_scale):
                            point to the left, top, right, and bottom boundaries.
 
         reg_scale (float): Controls the curvature of the Weighting Function.
+        deploy (bool): If True, skip abs() (assumes reg_scale is already positive).
 
     Returns:
         Tensor: Bounding boxes in (N, 4) or (B, N, 4) format [cx, cy, w, h].
     """
-    reg_scale = abs(reg_scale)
+    if not deploy:
+        reg_scale = abs(reg_scale)
     x1 = points[..., 0] - (0.5 * reg_scale + distance[..., 0]) * (points[..., 2] / reg_scale)
     y1 = points[..., 1] - (0.5 * reg_scale + distance[..., 1]) * (points[..., 3] / reg_scale)
     x2 = points[..., 0] + (0.5 * reg_scale + distance[..., 2]) * (points[..., 2] / reg_scale)
