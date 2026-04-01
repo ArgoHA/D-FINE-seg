@@ -18,6 +18,7 @@ from tqdm import tqdm
 from src.dl.dataset import CustomDataset, Loader
 from src.dl.utils import get_latest_experiment_name, process_boxes, process_masks, visualize
 from src.dl.validator import Validator
+from src.infer.litert_model import LiteRT_model
 from src.infer.onnx_model import ONNX_model
 from src.infer.ov_model import OV_model
 from src.infer.torch_model import Torch_model
@@ -174,15 +175,19 @@ def main(cfg: DictConfig):
     to_visualize = True
     to_draw_gt = True
 
+    # upd this to skip some formats even if they exist
+    formats_to_bench = ["torch", "onnx", "openvino", "tensorrt", "coreml", "litert"]
+
     ov_half = cfg.export.half
     if IS_MACOS:
         ov_half = False
 
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
+    models_path = Path(cfg.train.path_to_save)
 
     torch_model = Torch_model(
         model_name=cfg.model_name,
-        model_path=Path(cfg.train.path_to_save) / "model.pt",
+        model_path=models_path / "model.pt",
         n_outputs=len(cfg.train.label_to_name),
         input_width=cfg.train.img_size[1],
         input_height=cfg.train.img_size[0],
@@ -193,41 +198,67 @@ def main(cfg: DictConfig):
     )
 
     if IS_MACOS:
-        coreml_model = CoreML_model(
-            model_path=Path(cfg.train.path_to_save) / "model.mlpackage",
-            n_outputs=len(cfg.train.label_to_name),
-            conf_thresh=conf_thresh,
-            rect=False,
-            keep_ratio=cfg.train.keep_ratio,
-        )
+        coreml_path = models_path / "model.mlpackage"
+        if coreml_path.exists() and "coreml" in formats_to_bench:
+            coreml_model = CoreML_model(
+                model_path=coreml_path,
+                n_outputs=len(cfg.train.label_to_name),
+                conf_thresh=conf_thresh,
+                rect=False,
+                keep_ratio=cfg.train.keep_ratio,
+            )
+        coreml_int8_path = models_path / "model_int8.mlpackage"
+        if coreml_int8_path.exists() and "coreml" in formats_to_bench:
+            coreml_int8_model = CoreML_model(
+                model_path=coreml_int8_path,
+                n_outputs=len(cfg.train.label_to_name),
+                conf_thresh=conf_thresh,
+                rect=False,
+                keep_ratio=cfg.train.keep_ratio,
+            )
     else:
-        trt_model = TRT_model(
-            model_path=Path(cfg.train.path_to_save) / "model.engine",
+        trt_path = models_path / "model.engine"
+        if trt_path.exists() and "tensorrt" in formats_to_bench:
+            trt_model = TRT_model(
+                model_path=trt_path,
+                n_outputs=len(cfg.train.label_to_name),
+                conf_thresh=conf_thresh,
+                rect=False,
+                keep_ratio=cfg.train.keep_ratio,
+            )
+        trt_int8_path = models_path / "model_int8.engine"
+        if trt_int8_path.exists() and "tensorrt" in formats_to_bench:
+            trt_int8_model = TRT_model(
+                model_path=trt_int8_path,
+                n_outputs=len(cfg.train.label_to_name),
+                conf_thresh=conf_thresh,
+                rect=False,
+                keep_ratio=cfg.train.keep_ratio,
+            )
+
+    ov_path = models_path / "model.xml"
+    if ov_path.exists() and "openvino" in formats_to_bench:
+        ov_model = OV_model(
+            model_path=ov_path,
+            conf_thresh=conf_thresh,
+            rect=cfg.export.dynamic_input,
+            half=ov_half,
+            keep_ratio=cfg.train.keep_ratio,
+            max_batch_size=1,
+        )
+
+    onnx_path = models_path / "model.onnx"
+    if onnx_path.exists() and "onnx" in formats_to_bench:
+        onnx_model = ONNX_model(
+            model_path=onnx_path,
             n_outputs=len(cfg.train.label_to_name),
             conf_thresh=conf_thresh,
             rect=False,
             keep_ratio=cfg.train.keep_ratio,
         )
 
-    ov_model = OV_model(
-        model_path=Path(cfg.train.path_to_save) / "model.xml",
-        conf_thresh=conf_thresh,
-        rect=cfg.export.dynamic_input,
-        half=ov_half,
-        keep_ratio=cfg.train.keep_ratio,
-        max_batch_size=1,
-    )
-
-    onnx_model = ONNX_model(
-        model_path=Path(cfg.train.path_to_save) / "model.onnx",
-        n_outputs=len(cfg.train.label_to_name),
-        conf_thresh=conf_thresh,
-        rect=False,
-        keep_ratio=cfg.train.keep_ratio,
-    )
-
-    ov_int8_path = Path(cfg.train.path_to_save) / "model_int8.xml"
-    if ov_int8_path.exists():
+    ov_int8_path = models_path / "model_int8.xml"
+    if ov_int8_path.exists() and "openvino" in formats_to_bench:
         ov_int8_model = OV_model(
             model_path=ov_int8_path,
             conf_thresh=conf_thresh,
@@ -237,26 +268,25 @@ def main(cfg: DictConfig):
             max_batch_size=1,
         )
 
-    if IS_MACOS:
-        coreml_int8_path = Path(cfg.train.path_to_save) / "model_int8.mlpackage"
-        if coreml_int8_path.exists():
-            coreml_int8_model = CoreML_model(
-                model_path=coreml_int8_path,
-                n_outputs=len(cfg.train.label_to_name),
-                conf_thresh=conf_thresh,
-                rect=False,
-                keep_ratio=cfg.train.keep_ratio,
-            )
-    else:
-        trt_int8_path = Path(cfg.train.path_to_save) / "model_int8.engine"
-        if trt_int8_path.exists():
-            trt_int8_model = TRT_model(
-                model_path=trt_int8_path,
-                n_outputs=len(cfg.train.label_to_name),
-                conf_thresh=conf_thresh,
-                rect=False,
-                keep_ratio=cfg.train.keep_ratio,
-            )
+    litert_path = models_path / "model.tflite"
+    if litert_path.exists() and "litert" in formats_to_bench:
+        litert_model = LiteRT_model(
+            model_path=litert_path,
+            n_outputs=len(cfg.train.label_to_name),
+            conf_thresh=conf_thresh,
+            rect=False,
+            keep_ratio=cfg.train.keep_ratio,
+        )
+
+    litert_int8_path = models_path / "model_int8.tflite"
+    if litert_int8_path.exists() and "litert" in formats_to_bench:
+        litert_int8_model = LiteRT_model(
+            model_path=litert_int8_path,
+            n_outputs=len(cfg.train.label_to_name),
+            conf_thresh=conf_thresh,
+            rect=False,
+            keep_ratio=cfg.train.keep_ratio,
+        )
 
     data_path = Path(cfg.train.data_path)
     val_loader, test_loader = BenchLoader(
@@ -279,20 +309,26 @@ def main(cfg: DictConfig):
         rmtree(output_path)
 
     all_metrics = {}
-    models = {
-        "Torch": torch_model,
-        "ONNX": onnx_model,
-        "OpenVINO": ov_model,
-    }
-    if ov_int8_path.exists():
+    models = {"Torch": torch_model}
+    if onnx_path.exists() and "onnx" in formats_to_bench:
+        models["ONNX"] = onnx_model
+    if ov_path.exists() and "openvino" in formats_to_bench:
+        models["OpenVINO"] = ov_model
+    if ov_int8_path.exists() and "openvino" in formats_to_bench:
         models["OpenVINO INT8"] = ov_int8_model
+    if litert_path.exists() and "litert" in formats_to_bench:
+        models["LiteRT"] = litert_model
+    if litert_int8_path.exists() and "litert" in formats_to_bench:
+        models["LiteRT INT8"] = litert_int8_model
     if IS_MACOS:
-        models["CoreML"] = coreml_model
-        if coreml_int8_path.exists():
+        if coreml_path.exists() and "coreml" in formats_to_bench:
+            models["CoreML"] = coreml_model
+        if coreml_int8_path.exists() and "coreml" in formats_to_bench:
             models["CoreML INT8"] = coreml_int8_model
     else:
-        models["TensorRT"] = trt_model
-        if trt_int8_path.exists():
+        if trt_path.exists() and "tensorrt" in formats_to_bench:
+            models["TensorRT"] = trt_model
+        if trt_int8_path.exists() and "tensorrt" in formats_to_bench:
             models["TensorRT INT8"] = trt_int8_model
 
     for model_name, model in models.items():
