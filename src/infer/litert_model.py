@@ -38,9 +38,14 @@ class LiteRT_model:
         self._test_pred()
 
     def _load_model(self):
-        import tensorflow as tf
+        try:
+            from ai_edge_litert import interpreter as litert
 
-        self.interpreter = tf.lite.Interpreter(model_path=str(self.model_path))
+            self.interpreter = litert.Interpreter(model_path=str(self.model_path))
+        except ImportError:
+            import tensorflow as tf
+
+            self.interpreter = tf.lite.Interpreter(model_path=str(self.model_path))
         self.interpreter.allocate_tensors()
         self.input_details = self.interpreter.get_input_details()
         self.output_details = self.interpreter.get_output_details()
