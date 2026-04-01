@@ -153,6 +153,15 @@ def matched_state(state: Dict[str, torch.Tensor], params: Dict[str, torch.Tensor
     return matched_state, {"missed": missed_list, "unmatched": unmatched_list}
 
 
+def extract_pretrained_state_dict(state: Dict[str, torch.Tensor]):
+    """Extract the raw model state dict from legacy or current checkpoint formats."""
+    if "ema" in state:
+        return state["ema"]["module"]
+    if "model" in state:
+        return state["model"]
+    return state
+
+
 def load_tuning_state(model, path: str):
     """Load model for tuning and adjust mismatched head parameters"""
     if path.startswith("http"):
@@ -160,13 +169,7 @@ def load_tuning_state(model, path: str):
     else:
         state = torch.load(path, map_location="cpu", weights_only=True)
 
-    # Load the appropriate state dict
-    if "ema" in state:
-        pretrain_state_dict = state["ema"]["module"]
-    elif "model" in state:
-        pretrain_state_dict = state["model"]
-    else:
-        pretrain_state_dict = state
+    pretrain_state_dict = extract_pretrained_state_dict(state)
 
     # Adjust head parameters between datasets
     try:
