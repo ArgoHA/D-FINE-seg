@@ -306,11 +306,28 @@ class LQE(nn.Module):
         self.reg_conf = MLP(4 * (k + 1), hidden_dim, 1, num_layers)
         init.constant_(self.reg_conf.layers[-1].bias, 0)
         init.constant_(self.reg_conf.layers[-1].weight, 0)
+        self.deploy = False
+
+    def convert_to_deploy(self):
+        self.deploy = True
+
+    def _topk_no_sort(self, x, k):
+        """TFLite-compatible top-k using iterative argmax (avoids vhlo.sort_v1)."""
+        top_vals = []
+        for _ in range(k):
+            idx = x.argmax(dim=-1, keepdim=True)
+            val = x.gather(-1, idx)
+            top_vals.append(val)
+            x = x.scatter(-1, idx, torch.zeros_like(val))
+        return torch.cat(top_vals, dim=-1)
 
     def forward(self, scores, pred_corners):
         B, L, _ = pred_corners.size()
         prob = F.softmax(pred_corners.reshape(B, L, 4, self.reg_max + 1), dim=-1)
-        prob_topk, _ = prob.topk(self.k, dim=-1)
+        if self.deploy:
+            prob_topk = self._topk_no_sort(prob, self.k)
+        else:
+            prob_topk, _ = prob.topk(self.k, dim=-1)
         stat = torch.cat([prob_topk, prob_topk.mean(dim=-1, keepdim=True)], dim=-1)
         quality_score = self.reg_conf(stat.reshape(B, L, -1))
         return scores + quality_score
@@ -492,7 +509,10 @@ class TransformerDecoder(nn.Module):
             # Refine bounding box corners using FDR, integrating previous layer's corrections
             pred_corners = bbox_head[i](output + output_detach) + pred_corners_undetach
             inter_ref_bbox = distance2bbox(
-                ref_points_initial, integral(pred_corners, project), reg_scale
+                ref_points_initial,
+                integral(pred_corners, project),
+                reg_scale,
+                deploy=hasattr(self, "project"),
             )
 
             if self.training or i == self.eval_idx:
@@ -714,6 +734,9 @@ class DFINETransformer(nn.Module):
                 for i in range(len(self.dec_bbox_head))
             ]
         )
+        # Pre-compute abs so downstream ops (distance2bbox) don't need tfl.abs
+        self.reg_scale = nn.Parameter(self.reg_scale.abs(), requires_grad=False)
+        self.up = nn.Parameter(self.up.abs(), requires_grad=False)
 
     def _reset_parameters(self, feat_channels):
         bias = bias_init_with_prob(0.01)

@@ -1,21 +1,10 @@
 from pathlib import Path
 
-import coremltools as ct
 import hydra
-import onnx
-import onnxsim
-import openvino as ov
-import tensorrt as trt
 import torch
 import torch.nn.functional as F
-from coremltools.optimize.coreml import (
-    OpLinearQuantizerConfig,
-    OptimizationConfig,
-    linear_quantize_weights,
-)
 from loguru import logger
 from omegaconf import DictConfig
-from onnxconverter_common import float16
 from torch import nn
 
 from src.d_fine.configs import base_cfg
@@ -146,6 +135,10 @@ def export_to_onnx(
     input_name: str,
     output_names: list[str],
 ) -> None:
+    import onnx
+    import onnxsim
+    from onnxconverter_common import float16
+
     dynamic_axes = {}
     if max_batch_size > 1:
         for name in [input_name] + output_names:
@@ -182,6 +175,8 @@ def export_to_onnx(
 
 
 def export_to_openvino(onnx_path: Path, x_test, dynamic_input: bool, max_batch_size: int) -> None:
+    import openvino as ov
+
     if not dynamic_input and max_batch_size <= 1:
         inp = None
     elif max_batch_size > 1 and dynamic_input:
@@ -209,6 +204,13 @@ def export_to_coreml(
     Mirrors the TensorRT path: converts the fused model (with postprocessor).
     Uses torch.jit.trace + coremltools PyTorch converter.
     """
+
+    import coremltools as ct
+    from coremltools.optimize.coreml import (
+        OpLinearQuantizerConfig,
+        OptimizationConfig,
+        linear_quantize_weights,
+    )
 
     compute_precision = ct.precision.FLOAT16 if half else ct.precision.FLOAT32
 
@@ -248,11 +250,67 @@ def export_to_coreml(
     logger.info("CoreML INT8 model exported")
 
 
+def export_to_litert(
+    model: nn.Module,
+    model_path: Path,
+    x_test: torch.Tensor,
+) -> None:
+    """Convert PyTorch model to LiteRT (.tflite) for on-device inference.
+
+    Uses litert_torch for direct PyTorch -> TFLite conversion.
+    Exports FP32 and INT8 (dynamic quantization) variants.
+    Converts raw model dict output to tensor tuple via a local adapter.
+
+    Imports are deferred to avoid tensorflow/flatbuffers native library
+    conflicts that cause segfaults during ONNX/TRT export.
+    """
+    import litert_torch
+    from litert_torch.quantize.pt2e_quantizer import (
+        PT2EQuantizer,
+        get_symmetric_quantization_config,
+    )
+    from litert_torch.quantize.quant_config import QuantConfig
+
+    class _LiteRTRawAdapter(nn.Module):
+        def __init__(self, inner: nn.Module):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, x):
+            outputs = self.inner(x)
+            result = (outputs["pred_logits"], outputs["pred_boxes"])
+            pred_masks = outputs.get("pred_masks", None)
+            if pred_masks is not None:
+                result = result + (pred_masks,)
+            return result
+
+    sample = x_test[:1].cpu()
+    model = model.cpu().eval()
+    if hasattr(model, "deploy"):
+        model.deploy()
+    litert_model = _LiteRTRawAdapter(model)
+
+    edge_model = litert_torch.convert(litert_model, (sample,))
+    output_path = model_path.with_suffix(".tflite")
+    edge_model.export(str(output_path))
+    logger.info("LiteRT model exported")
+
+    quantizer = PT2EQuantizer().set_global(get_symmetric_quantization_config(is_dynamic=True))
+    quant_config = QuantConfig(pt2e_quantizer=quantizer)
+    edge_model_int8 = litert_torch.convert(litert_model, (sample,), quant_config=quant_config)
+    int8_path = model_path.with_name("model_int8").with_suffix(".tflite")
+    edge_model_int8.export(str(int8_path))
+    logger.info("LiteRT INT8 model exported")
+
+
 def export_to_tensorrt(
     onnx_file_path: Path,
     half: bool,
     max_batch_size: int,
 ) -> None:
+    import onnx
+    import tensorrt as trt
+
     tr_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(tr_logger)
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
@@ -393,6 +451,8 @@ def main(cfg: DictConfig):
     export_to_coreml(
         model, model_path, x_test, half=False, max_batch_size=cfg.export.max_batch_size
     )
+
+    export_to_litert(raw_model, model_path, x_test)
 
     logger.info(f"Exports saved to: {model_path.parent}")
 
