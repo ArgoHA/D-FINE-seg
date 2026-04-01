@@ -8,7 +8,7 @@ from loguru import logger
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from src.dl.utils import abs_xyxy_to_norm_xywh, draw_mask, get_latest_experiment_name, vis_one_box
+from src.dl.utils import Visualizer, abs_xyxy_to_norm_xywh, get_latest_experiment_name
 from src.infer.torch_model import Torch_model
 
 
@@ -31,11 +31,11 @@ def figure_input_type(folder_path: Path):
 
 def visualize(img, boxes, labels, scores, output_path, img_path, label_to_name, masks=None):
     output_path.mkdir(parents=True, exist_ok=True)
-    for box, label, score in zip(boxes, labels, scores):
-        vis_one_box(img, box, label, mode="pred", label_to_name=label_to_name, score=score)
+    results = {"boxes": boxes, "labels": labels, "scores": scores}
     if masks is not None:
-        for i in range(masks.shape[0]):
-            img = draw_mask(img, masks[i])
+        results["masks"] = masks
+    vis = Visualizer(n_classes=max(label_to_name.keys()) + 1, class_names=label_to_name)
+    img = vis.draw(img, results)
     if len(boxes):
         cv2.imwrite((str(f"{output_path / Path(img_path).stem}.jpg")), img)
 
@@ -103,6 +103,7 @@ def run_images(
         }
         if "masks" in raw_res[0]:
             res["masks"] = raw_res[batch]["masks"].cpu()
+            print(img.shape, res["masks"].shape)
             res["polys"] = torch_model.mask2poly(res["masks"], img.shape)
 
         visualize(
