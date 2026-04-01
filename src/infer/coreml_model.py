@@ -259,6 +259,9 @@ class CoreML_model:
         polys = []
 
         for mask in masks:
+            if not isinstance(mask, np.ndarray):
+                mask = mask.numpy()
+            mask = (mask > 0.5).astype(np.uint8)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
                 contour = max(contours, key=cv2.contourArea)
