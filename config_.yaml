@@ -10,7 +10,8 @@ train:
   ### Paths ###
   root: /path # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
-  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pth # dfine_m_obj2coco.pth
+  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
+  coco_dataset: False # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
 
   data_path: ${train.root}/data/dataset # path to dataset
   path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script

@@ -1,5 +1,5 @@
 project_name: vis_drone # for wandb
-exp_name: base # experiment name
+exp_name: test # experiment name
 
 exp: ${exp_name}_${now_dir}
 
@@ -10,7 +10,8 @@ train:
   ### Paths ###
   root: /home/argo/Desktop/Projects/vis_drone # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
-  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pth # dfine_m_obj2coco.pth
+  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
+  coco_dataset: False # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
 
   data_path: ${train.root}/data/dataset # path to dataset
   path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script
@@ -139,6 +140,8 @@ export: # TensorRT must be done on the inference device
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False
   ov_int8_max_drop: 0.02
+  trt_int8_workspace_gb: 4
+  trt_int8_validate: True
 
 
 infer:

@@ -25,3 +25,9 @@ All notable changes to D-FINE-seg since the paper release will be documented in 
 - Add int8 quantzation for CoreML, ruexported by default alongside with fp32 versionduring `make export`
 - Adepted `make bench` to supprot macos and linux platforms automatically. Torch, OpenVINO, ONNX run for both. TensorRT - linux, CoreML - macos.
 
+## 2026-04-05 - LiteRT export and COCO segmentation pretrained weights
+
+- Add LiteRT export, inference class and update bench.py to include LiteRT
+- Add support to coco dataset formats
+- Add pretrained weights on COCO dataset for segmentation models (n, s, m, l, x)
+- Convert all pretrained models to this repo format and pth -> pt
