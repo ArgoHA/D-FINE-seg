@@ -1,6 +1,8 @@
+import json
 import random
+from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import albumentations as A
 import cv2
@@ -73,6 +75,77 @@ def parse_yolo_label_file(path: Path):
     return boxes_norm, polys_norm
 
 
+def load_coco_split(json_path: Path, use_one_class: bool = False):
+    """
+    Load a COCO-format JSON annotation file and pre-parse all annotations.
+
+    Returns:
+      entries: list of dicts, each with:
+          'file_name': str
+          'targets': np.ndarray (N, 5) [class_id, x1, y1, x2, y2] absolute
+          'polys_abs': list of np.ndarray (K, 2) absolute polygon coordinates
+      cat_id_to_class_id: dict mapping COCO category_id -> 0-based contiguous class_id
+    """
+    with open(json_path, "r") as f:
+        coco = json.load(f)
+
+    categories = sorted(coco.get("categories", []), key=lambda c: c["id"])
+    cat_id_to_class_id = {c["id"]: i for i, c in enumerate(categories)}
+
+    img_to_anns = defaultdict(list)
+    for ann in coco.get("annotations", []):
+        img_to_anns[ann["image_id"]].append(ann)
+
+    entries = []
+    for img_info in coco.get("images", []):
+        img_id = img_info["id"]
+        file_name = img_info["file_name"]
+        anns = img_to_anns.get(img_id, [])
+
+        targets = []
+        polys_abs = []
+
+        for ann in anns:
+            if ann.get("iscrowd", 0):
+                continue
+
+            cat_id = ann["category_id"]
+            if cat_id not in cat_id_to_class_id:
+                continue
+
+            class_id = 0 if use_one_class else cat_id_to_class_id[cat_id]
+
+            bx, by, bw, bh = ann["bbox"]
+            targets.append([class_id, bx, by, bx + bw, by + bh])
+
+            seg = ann.get("segmentation")
+            if isinstance(seg, list) and len(seg) > 0:
+                largest = max(seg, key=len)
+                if len(largest) >= 6:
+                    poly = np.array(largest, dtype=np.float32).reshape(-1, 2)
+                    polys_abs.append(poly)
+                else:
+                    polys_abs.append(np.empty((0, 2), dtype=np.float32))
+            else:
+                polys_abs.append(np.empty((0, 2), dtype=np.float32))
+
+        if len(targets) == 0:
+            targets_arr = np.zeros((0, 5), dtype=np.float32)
+            polys_abs = []
+        else:
+            targets_arr = np.array(targets, dtype=np.float32)
+
+        entries.append(
+            {
+                "file_name": file_name,
+                "targets": targets_arr,
+                "polys_abs": polys_abs,
+            }
+        )
+
+    return entries, cat_id_to_class_id
+
+
 class CustomDataset(Dataset):
     def __init__(
         self,
@@ -82,11 +155,14 @@ class CustomDataset(Dataset):
         debug_img_processing: bool,
         mode: str,
         cfg: DictConfig,
+        coco_annotations: Optional[List[Dict]] = None,
     ) -> None:
         self.project_path = Path(cfg.train.root)
         self.root_path = root_path
         self.split = split
         self.target_h, self.target_w = img_size
+        self.coco_mode = coco_annotations is not None
+        self._coco_entries = coco_annotations
         self.norm = ([0, 0, 0], [1, 1, 1])
         self.debug_img_processing = debug_img_processing
         self.mode = mode
@@ -230,6 +306,9 @@ class CustomDataset(Dataset):
         """
         returns np.ndarray RGB image; targets as np.ndarray [[class_id, x1, y1, x2, y2]]
         """
+        if self.coco_mode:
+            return self._get_data_coco(idx)
+
         # Get image
         image_path = Path(self.split.iloc[idx].values[0])
         image = cv2.imread(str(self.root_path / "images" / f"{image_path}"))  # BGR, HWC
@@ -253,6 +332,21 @@ class CustomDataset(Dataset):
             xyxy_abs = norm_xywh_to_abs_xyxy(boxes_norm[:, 1:5], height, width).astype(np.float32)
             targets = np.concatenate([boxes_norm[:, [0]], xyxy_abs], axis=1)  # [N,5]
             polys_abs = [norm_poly_to_abs(p, height, width) for p in polys_norm]
+        return image, targets, orig_size, polys_abs
+
+    def _get_data_coco(self, idx) -> Tuple[np.ndarray, np.ndarray, torch.Tensor, list]:
+        """Load image and annotations from pre-parsed COCO entries."""
+        entry = self._coco_entries[idx]
+        image_path = Path(entry["file_name"])
+        image = cv2.imread(str(self.root_path / "images" / str(image_path)))
+        assert image is not None, f"Image wasn't loaded: {image_path}"
+
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        height, width, _ = image.shape
+        orig_size = torch.tensor([height, width])
+
+        targets = entry["targets"].copy()
+        polys_abs = [p.copy() for p in entry["polys_abs"]]
         return image, targets, orig_size, polys_abs
 
     def _load_mosaic(self, idx):
@@ -484,7 +578,9 @@ class Loader:
         self.num_workers = num_workers
         self.cfg = cfg
         self.use_one_class = cfg.train.use_one_class
+        self.coco_dataset = cfg.train.get("coco_dataset", False)
         self.debug_img_processing = debug_img_processing
+        self.coco_annotations = {"train": None, "val": None, "test": None}
         self._get_splits()
         self.class_names = list(cfg.train.label_to_name.values())
         self.multiscale_prob = cfg.train.augs.multiscale_prob
@@ -492,41 +588,84 @@ class Loader:
 
     def _get_splits(self) -> None:
         self.splits = {"train": None, "val": None, "test": None}
-        for split_name in self.splits.keys():
+        if self.coco_dataset:
+            self._get_splits_coco()
+        else:
+            self._get_splits_yolo()
+        assert len(self.splits["train"]) and len(self.splits["val"]), (
+            "Train and Val splits must be present"
+        )
+
+    def _get_splits_yolo(self) -> None:
+        for split_name in self.splits:
             if (self.root_path / f"{split_name}.csv").exists():
                 self.splits[split_name] = pd.read_csv(
                     self.root_path / f"{split_name}.csv", header=None
                 )
             else:
                 self.splits[split_name] = []
-        assert len(self.splits["train"]) and len(self.splits["val"]), (
-            "Train and Val splits must be present"
-        )
+
+    def _get_splits_coco(self) -> None:
+        for split_name in self.splits:
+            json_path = self.root_path / f"{split_name}.json"
+            if json_path.exists():
+                entries, _ = load_coco_split(json_path, use_one_class=self.use_one_class)
+                self.splits[split_name] = pd.DataFrame([e["file_name"] for e in entries])
+                self.coco_annotations[split_name] = entries
+                if is_main_process():
+                    logger.info(f"Loaded {len(entries)} images from {json_path.name}")
+            else:
+                self.splits[split_name] = []
 
     def _get_label_stats(self) -> Dict:
         if self.use_one_class:
             classes = {"target": 0}
         else:
             classes = {class_name: 0 for class_name in self.class_names}
-        for split in self.splits.values():
-            if not np.any(split):
-                continue
-            for image_path in split.iloc[:, 0]:
-                labels_path = self.root_path / "labels" / f"{Path(image_path).stem}.txt"
-                if not (labels_path.exists() and labels_path.stat().st_size > 1):
+
+        if self.coco_dataset:
+            for coco_anns in self.coco_annotations.values():
+                if coco_anns is None:
                     continue
-                targets, _ = parse_yolo_label_file(labels_path)
-                if targets.ndim == 1:
-                    targets = targets.reshape(1, -1)
-                labels = targets[:, 0]
-                for class_id in labels:
-                    if self.use_one_class:
-                        classes["target"] += 1
-                    else:
-                        classes[self.class_names[int(class_id)]] += 1
+                for entry in coco_anns:
+                    targets = entry["targets"]
+                    if targets.shape[0] == 0:
+                        continue
+                    for class_id in targets[:, 0]:
+                        if self.use_one_class:
+                            classes["target"] += 1
+                        else:
+                            classes[self.class_names[int(class_id)]] += 1
+        else:
+            for split in self.splits.values():
+                if not np.any(split):
+                    continue
+                for image_path in split.iloc[:, 0]:
+                    labels_path = self.root_path / "labels" / f"{Path(image_path).stem}.txt"
+                    if not (labels_path.exists() and labels_path.stat().st_size > 1):
+                        continue
+                    targets, _ = parse_yolo_label_file(labels_path)
+                    if targets.ndim == 1:
+                        targets = targets.reshape(1, -1)
+                    labels = targets[:, 0]
+                    for class_id in labels:
+                        if self.use_one_class:
+                            classes["target"] += 1
+                        else:
+                            classes[self.class_names[int(class_id)]] += 1
         return classes
 
     def _get_amount_of_background(self):
+        if self.coco_dataset:
+            count = 0
+            for coco_anns in self.coco_annotations.values():
+                if coco_anns is None:
+                    continue
+                for entry in coco_anns:
+                    if entry["targets"].shape[0] == 0:
+                        count += 1
+            return count
+
         labels = set()
         for label_path in (self.root_path / "labels").iterdir():
             if not label_path.stat().st_size:
@@ -594,6 +733,7 @@ class Loader:
             self.debug_img_processing,
             mode="train",
             cfg=self.cfg,
+            coco_annotations=self.coco_annotations["train"],
         )
         val_ds = CustomDataset(
             self.img_size,
@@ -602,6 +742,7 @@ class Loader:
             self.debug_img_processing,
             mode="val",
             cfg=self.cfg,
+            coco_annotations=self.coco_annotations["val"],
         )
 
         train_loader = self._build_dataloader_impl(train_ds, shuffle=True, distributed=distributed)
@@ -617,6 +758,7 @@ class Loader:
                 self.debug_img_processing,
                 mode="test",
                 cfg=self.cfg,
+                coco_annotations=self.coco_annotations["test"],
             )
             test_loader = self._build_dataloader_impl(
                 test_ds, shuffle=False, distributed=distributed

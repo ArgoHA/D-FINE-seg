@@ -116,6 +116,8 @@ class Trainer:
         self.eval_preds_path = Path(self.cfg.train.eval_preds_path)
         self.decision_metrics = cfg.train.decision_metrics
 
+        self.annotations_format = "COCO" if cfg.train.coco_dataset else "YOLO"
+
         if self.is_main:
             self.init_dirs()
 
@@ -136,7 +138,9 @@ class Trainer:
         if (not self.distributed) or self.is_main:
             log_file.unlink(missing_ok=True)
             logger.add(log_file, format="{message}", level="INFO", rotation="10 MB")
-            logger.info(f"Experiment: {cfg.exp}, Task: {self.task}")
+            logger.info(
+                f"Experiment: {cfg.exp}, Task: {self.task}, Annotations: {self.annotations_format}"
+            )
 
         seed = cfg.train.seed + self.rank if self.distributed else cfg.train.seed
         set_seeds(seed, cfg.train.cudnn_fixed)
