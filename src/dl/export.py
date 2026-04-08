@@ -258,18 +258,15 @@ def export_to_litert(
     """Convert PyTorch model to LiteRT (.tflite) for on-device inference.
 
     Uses litert_torch for direct PyTorch -> TFLite conversion.
-    Exports FP32 and INT8 (dynamic quantization) variants.
+    Exports FP32 and INT8 (weight-only quantization via ai_edge_quantizer) variants.
     Converts raw model dict output to tensor tuple via a local adapter.
 
     Imports are deferred to avoid tensorflow/flatbuffers native library
     conflicts that cause segfaults during ONNX/TRT export.
     """
     import litert_torch
-    from litert_torch.quantize.pt2e_quantizer import (
-        PT2EQuantizer,
-        get_symmetric_quantization_config,
-    )
-    from litert_torch.quantize.quant_config import QuantConfig
+    from ai_edge_quantizer import quantizer as aeq
+    from ai_edge_quantizer.qtyping import QuantGranularity, TFLOperationName
 
     class _LiteRTRawAdapter(nn.Module):
         def __init__(self, inner: nn.Module):
@@ -295,11 +292,18 @@ def export_to_litert(
     edge_model.export(str(output_path))
     logger.info("LiteRT model exported")
 
-    quantizer = PT2EQuantizer().set_global(get_symmetric_quantization_config(is_dynamic=True))
-    quant_config = QuantConfig(pt2e_quantizer=quantizer)
-    edge_model_int8 = litert_torch.convert(litert_model, (sample,), quant_config=quant_config)
+    # INT8 weight-only quantization on the exported FP32 tflite
+    qt = aeq.Quantizer(str(output_path))
+    qt.add_weight_only_config(
+        regex=".*",
+        operation_name=TFLOperationName.ALL_SUPPORTED,
+        num_bits=8,
+        granularity=QuantGranularity.CHANNELWISE,
+    )
+    result = qt.quantize()
     int8_path = model_path.with_name("model_int8").with_suffix(".tflite")
-    edge_model_int8.export(str(int8_path))
+    with open(int8_path, "wb") as f:
+        f.write(result.quantized_model)
     logger.info("LiteRT INT8 model exported")
 
 
