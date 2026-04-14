@@ -21,7 +21,8 @@ class Torch_model:
         conf_thresh: float = 0.5,
         rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
         keep_ratio: bool = False,
-        use_nms: bool = False,
+        apply_nms: bool = True,
+        nms_iou_thresh: float = 0.7,
         enable_mask_head: bool = False,
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
@@ -33,7 +34,8 @@ class Torch_model:
         self.model_path = model_path
         self.rect = rect
         self.keep_ratio = keep_ratio
-        self.use_nms = use_nms
+        self.apply_nms = apply_nms
+        self.nms_iou_thresh = nms_iou_thresh
         self.enable_mask_head = enable_mask_head
         self.channels = 3
         self.debug_mode = False
@@ -201,6 +203,11 @@ class Torch_model:
             # gather boxes once
             bb = boxes[b].gather(0, qb.unsqueeze(-1).repeat(1, 4))
 
+            if self.apply_nms and bb.numel() > 0:
+                nms_keep = nms(bb, sb, self.nms_iou_thresh)
+                sb, lb, bb = sb[nms_keep], lb[nms_keep], bb[nms_keep]
+                qb = qb[nms_keep]
+
             out = {"labels": lb, "boxes": bb, "scores": sb}
 
             if has_masks and qb.numel() > 0:
@@ -305,22 +312,7 @@ class Torch_model:
         processed_sizes: List[Tuple[int, int]],
         original_sizes: List[Tuple[int, int]],
     ):
-        output = self._preds_postprocess(preds, processed_sizes, original_sizes)
-        if self.use_nms:
-            for idx, res in enumerate(output):
-                boxes, scores, classes, masks = non_max_suppression(
-                    res["boxes"],
-                    res["scores"],
-                    res["labels"],
-                    masks=res.get("masks", None),
-                    iou_threshold=0.5,
-                )
-                output[idx]["boxes"] = boxes
-                output[idx]["scores"] = scores
-                output[idx]["labels"] = classes
-                if "masks" in res:
-                    output[idx]["masks"] = masks
-        return output
+        return self._preds_postprocess(preds, processed_sizes, original_sizes)
 
     @torch.no_grad()
     def __call__(self, inputs: NDArray[np.uint8]) -> List[Dict[str, torch.Tensor]]:

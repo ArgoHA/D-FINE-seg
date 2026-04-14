@@ -6,6 +6,7 @@ import torch
 from loguru import logger
 from numpy.typing import NDArray
 from openvino import Core
+from torchvision.ops import nms
 
 
 class OV_model:
@@ -20,6 +21,8 @@ class OV_model:
         keep_ratio: bool = False,
         max_batch_size: int = 1,
         device: str = None,
+        apply_nms: bool = True,
+        nms_iou_thresh: float = 0.7,
     ):
         self.model_path = model_path
         self.device = device.upper() if device else device
@@ -32,6 +35,8 @@ class OV_model:
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
         self.np_dtype = np.float32
+        self.apply_nms = apply_nms
+        self.nms_iou_thresh = nms_iou_thresh
 
         self._load_model()
         self._read_model_metadata()
@@ -248,6 +253,11 @@ class OV_model:
             qb = qb[keep]
             # gather boxes once
             bb = boxes[b].gather(0, qb.unsqueeze(-1).repeat(1, 4))
+
+            if self.apply_nms and bb.numel() > 0:
+                nms_keep = nms(bb, sb, self.nms_iou_thresh)
+                sb, lb, bb = sb[nms_keep], lb[nms_keep], bb[nms_keep]
+                qb = qb[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
 
