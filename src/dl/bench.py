@@ -174,6 +174,7 @@ def main(cfg: DictConfig):
     compute_maps = False
     to_visualize = True
     to_draw_gt = True
+    nms = True
 
     # upd this to skip some formats even if they exist
     formats_to_bench = ["torch", "onnx", "openvino", "tensorrt", "coreml", "litert"]
@@ -195,6 +196,7 @@ def main(cfg: DictConfig):
         rect=cfg.export.dynamic_input,
         keep_ratio=cfg.train.keep_ratio,
         enable_mask_head=cfg.task == "segment",
+        apply_nms=nms,
     )
 
     if IS_MACOS:
@@ -206,6 +208,7 @@ def main(cfg: DictConfig):
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
+                apply_nms=nms,
             )
         coreml_int8_path = models_path / "model_int8.mlpackage"
         if coreml_int8_path.exists() and "coreml" in formats_to_bench:
@@ -215,6 +218,7 @@ def main(cfg: DictConfig):
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
+                apply_nms=nms,
             )
     else:
         trt_path = models_path / "model.engine"
@@ -225,6 +229,7 @@ def main(cfg: DictConfig):
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
+                apply_nms=nms,
             )
         trt_int8_path = models_path / "model_int8.engine"
         if trt_int8_path.exists() and "tensorrt" in formats_to_bench:
@@ -234,6 +239,7 @@ def main(cfg: DictConfig):
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
+                apply_nms=nms,
             )
 
     ov_path = models_path / "model.xml"
@@ -245,6 +251,7 @@ def main(cfg: DictConfig):
             half=ov_half,
             keep_ratio=cfg.train.keep_ratio,
             max_batch_size=1,
+            apply_nms=nms,
         )
 
     onnx_path = models_path / "model.onnx"
@@ -255,6 +262,7 @@ def main(cfg: DictConfig):
             conf_thresh=conf_thresh,
             rect=False,
             keep_ratio=cfg.train.keep_ratio,
+            apply_nms=nms,
         )
 
     ov_int8_path = models_path / "model_int8.xml"
@@ -266,6 +274,7 @@ def main(cfg: DictConfig):
             half=ov_half,
             keep_ratio=cfg.train.keep_ratio,
             max_batch_size=1,
+            apply_nms=nms,
         )
 
     litert_path = models_path / "model.tflite"
@@ -276,6 +285,7 @@ def main(cfg: DictConfig):
             conf_thresh=conf_thresh,
             rect=False,
             keep_ratio=cfg.train.keep_ratio,
+            apply_nms=nms,
         )
 
     litert_int8_path = models_path / "model_int8.tflite"
@@ -286,6 +296,7 @@ def main(cfg: DictConfig):
             conf_thresh=conf_thresh,
             rect=False,
             keep_ratio=cfg.train.keep_ratio,
+            apply_nms=nms,
         )
 
     data_path = Path(cfg.train.data_path)
@@ -309,7 +320,9 @@ def main(cfg: DictConfig):
         rmtree(output_path)
 
     all_metrics = {}
-    models = {"Torch": torch_model}
+    models = {}
+    if "torch" in formats_to_bench:
+        models["PyTorch"] = torch_model
     if onnx_path.exists() and "onnx" in formats_to_bench:
         models["ONNX"] = onnx_model
     if ov_path.exists() and "openvino" in formats_to_bench:

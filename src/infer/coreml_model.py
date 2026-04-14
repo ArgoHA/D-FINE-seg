@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from loguru import logger
 from numpy.typing import NDArray
+from torchvision.ops import nms
 
 
 class CoreML_model:
@@ -18,6 +19,8 @@ class CoreML_model:
         mask_threshold: float = 0.5,
         rect: bool = False,
         keep_ratio: bool = False,
+        apply_nms: bool = True,
+        nms_iou_thresh: float = 0.7,
     ) -> None:
         self.model_path = model_path
         self.n_outputs = n_outputs
@@ -27,6 +30,8 @@ class CoreML_model:
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
         self.np_dtype = np.float32
+        self.apply_nms = apply_nms
+        self.nms_iou_thresh = nms_iou_thresh
 
         self._load_model()
         self._read_model_metadata()
@@ -204,15 +209,21 @@ class CoreML_model:
             # Apply per-class confidence thresholds
             if self.conf_threshs is not None:
                 conf_t = torch.tensor(self.conf_threshs, device=sb.device)
-                keep = sb >= conf_t[lb]
+                conf_keep = sb >= conf_t[lb]
             else:
-                keep = sb >= self.conf_thresh
-            sb, lb, bb = sb[keep], lb[keep], bb[keep]
+                conf_keep = sb >= self.conf_thresh
+            keep_indices = torch.where(conf_keep)[0]
+            sb, lb, bb = sb[conf_keep], lb[conf_keep], bb[conf_keep]
+
+            if self.apply_nms and bb.numel() > 0:
+                nms_keep = nms(bb, sb, self.nms_iou_thresh)
+                sb, lb, bb = sb[nms_keep], lb[nms_keep], bb[nms_keep]
+                keep_indices = keep_indices[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
 
             if pred_masks is not None and lb.numel() > 0:
-                mb = pred_masks[b][keep]  # [K, Hm, Wm] -- already gathered for top-K
+                mb = pred_masks[b][keep_indices]  # [K, Hm, Wm]
                 orig_sizes_tensor = torch.tensor([original_sizes[b]], device=mb.device)
                 masks_list = self.process_masks(
                     mb.unsqueeze(0),

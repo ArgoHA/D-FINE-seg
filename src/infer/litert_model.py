@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from loguru import logger
 from numpy.typing import NDArray
+from torchvision.ops import nms
 
 
 class LiteRT_model:
@@ -17,6 +18,8 @@ class LiteRT_model:
         mask_threshold: float = 0.5,
         rect: bool = False,
         keep_ratio: bool = False,
+        apply_nms: bool = True,
+        nms_iou_thresh: float = 0.7,
     ):
         self.model_path = model_path
         self.n_outputs = n_outputs
@@ -26,6 +29,8 @@ class LiteRT_model:
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
         self.np_dtype = np.float32
+        self.apply_nms = apply_nms
+        self.nms_iou_thresh = nms_iou_thresh
 
         self._load_model()
         self._read_model_metadata()
@@ -223,6 +228,11 @@ class LiteRT_model:
             lb = lb[keep]
             qb = qb[keep]
             bb = boxes[b].gather(0, qb.unsqueeze(-1).repeat(1, 4))
+
+            if self.apply_nms and bb.numel() > 0:
+                nms_keep = nms(bb, sb, self.nms_iou_thresh)
+                sb, lb, bb = sb[nms_keep], lb[nms_keep], bb[nms_keep]
+                qb = qb[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
 
