@@ -31,3 +31,14 @@ All notable changes to D-FINE-seg since the paper release will be documented in 
 - Add support to coco dataset formats
 - Add pretrained weights on COCO dataset for segmentation models (n, s, m, l, x)
 - Convert all pretrained models to this repo format and pth -> pt
+
+## 2026-04-14 - Run NMS in inference classes by default
+
+Although D-FINE doesn't require a NMS, it still helps to boost the accuracy with a tiny latency increase. TensorRT FP16, 5070ti, model D-FINEm, VisDrone dataset:
+
+| Metric | F1-score | Latency |
+|--------|--------|-------|
+| No NMS | 0.587 | 3.6 ms |
+| With NMS | 0.605 | 3.8 ms |
+
+Same behaviour on TACO dataset for both detectin and segmentation models.
