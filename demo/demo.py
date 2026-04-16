@@ -56,7 +56,9 @@ class Visualizer:
         return colors
 
     # ── public API ──────────────────────────────────────────────────────
-    def draw(self, img: np.ndarray, results: Dict[str, torch.Tensor]) -> np.ndarray:
+    def draw(
+        self, img: np.ndarray, results: Dict[str, torch.Tensor], minimize: bool = False
+    ) -> np.ndarray:
         img = img.copy()
         labels = results["labels"]
         boxes = results["boxes"]
@@ -93,8 +95,9 @@ class Visualizer:
 
             cv2.rectangle(img, (x1, y1), (x2, y2), color, box_thick)
 
-            text = f"{name} {score:.2f}"
-            self._draw_label(img, text, x1, y1, color, font_scale, font_thick)
+            if not minimize:
+                text = f"{name} {score:.2f}"
+                self._draw_label(img, text, x1, y1, color, font_scale, font_thick)
 
         return img
 
@@ -222,27 +225,27 @@ visualizer = Visualizer(n_classes=len(CLASSES), class_names=CLASSES)
 
 
 # ─── Inference helpers ───────────────────────────────────────────────────
-def _run_on_bgr(img_bgr: np.ndarray) -> np.ndarray:
+def _run_on_bgr(img_bgr: np.ndarray, minimize: bool = False) -> np.ndarray:
     """Run model + visualizer on a single BGR frame. Returns annotated BGR."""
     results = model(img_bgr)
-    return visualizer.draw(img_bgr, results[0])
+    return visualizer.draw(img_bgr, results[0], minimize=minimize)
 
 
 # ─── Tab 1: Images (single upload or webcam snapshot) ───────────────────
-def predict_image(img: np.ndarray | None):
+def predict_image(img: np.ndarray | None, minimize: bool = False):
     """Accept a single RGB image, return annotated RGB."""
     if img is None:
         return None
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     t0 = time.perf_counter()
-    vis = _run_on_bgr(img_bgr)
+    vis = _run_on_bgr(img_bgr, minimize=minimize)
     ms = (time.perf_counter() - t0) * 1000
     print(f"[image] {ms:.1f} ms")
     return cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
 
 
 # ─── Tab 2: Video ───────────────────────────────────────────────────────
-def predict_video(video_path: str | None, stride: int = 1):
+def predict_video(video_path: str | None, stride: int = 1, minimize: bool = False):
     """Process every `stride`-th frame; copy annotations to skipped frames."""
     if video_path is None:
         return None
@@ -271,7 +274,7 @@ def predict_video(video_path: str | None, stride: int = 1):
             results = model(frame)
             last_results = results[0]
         if last_results is not None:
-            frame = visualizer.draw(frame, last_results)
+            frame = visualizer.draw(frame, last_results, minimize=minimize)
         writer.write(frame)
         idx += 1
         if idx % 100 == 0:
@@ -336,10 +339,14 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                         type="numpy",
                         label="Upload or Capture",
                     )
+                    img_minimize = gr.Checkbox(
+                        value=False,
+                        label="Minimize visualization (boxes only, no labels)",
+                    )
                     img_btn = gr.Button("Run", variant="primary")
                 with gr.Column():
                     img_out = gr.Image(type="numpy", label="Result", format="png")
-            img_btn.click(fn=predict_image, inputs=img_in, outputs=img_out)
+            img_btn.click(fn=predict_image, inputs=[img_in, img_minimize], outputs=img_out)
 
         # ── Video: upload file ───────────────────────────────────────
         with gr.TabItem("Video"):
@@ -357,12 +364,16 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                         value=1,
                         label="Frame stride (1 = every frame)",
                     )
+                    vid_minimize = gr.Checkbox(
+                        value=False,
+                        label="Minimize visualization (boxes only, no labels)",
+                    )
                     vid_btn = gr.Button("Run", variant="primary")
                 with gr.Column():
                     vid_out = gr.Video(label="Annotated Video")
             vid_btn.click(
                 fn=predict_video,
-                inputs=[vid_in, vid_stride],
+                inputs=[vid_in, vid_stride, vid_minimize],
                 outputs=vid_out,
             )
 
