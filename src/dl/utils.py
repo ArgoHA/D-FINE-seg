@@ -1321,3 +1321,183 @@ def get_dense_mask_memory_size(n_masks: int, h: int, w: int) -> int:
     Calculate memory usage of dense masks in bytes.
     """
     return n_masks * h * w  # uint8 = 1 byte per pixel
+
+
+def auto_batch_size(
+    cfg,
+    device: torch.device,
+    target_fraction: float = 0.7,
+) -> int:
+    """
+    Probe the GPU to find the largest batch size that fits within *target_fraction*
+    of total VRAM. Uses a real forward + backward pass with the actual model and
+    dataset to account for activations, loss, etc.
+
+    Works with both detect and segment tasks.
+    Returns the selected per-device batch size.
+    Runs linearly through powers of 2, then does a binary search.
+    """
+    from torch.amp import GradScaler, autocast
+    from torch.utils.data import DataLoader
+
+    from src.d_fine.dfine import build_loss, build_model
+    from src.dl.dataset import Loader
+
+    if device.type != "cuda":
+        logger.warning("Auto batch size only works on CUDA devices, defaulting to batch_size=4")
+        return 4
+
+    logger.info("Searching for the optimal batch size...")
+
+    enable_mask_head = cfg.task == "segment"
+    num_labels = len(cfg.train.label_to_name)
+
+    # Suppress noisy logs from model/dataset init during probing
+    logger.disable("src")
+    try:
+        model = build_model(
+            cfg.model_name,
+            num_labels,
+            enable_mask_head,
+            str(device),
+            img_size=cfg.train.img_size,
+            pretrained_model_path=cfg.train.pretrained_model_path,
+        )
+        loss_fn = build_loss(
+            cfg.model_name,
+            num_labels,
+            label_smoothing=cfg.train.label_smoothing,
+            enable_mask_head=enable_mask_head,
+        )
+
+        # Build a small train loader (num_workers=0 to avoid forking overhead)
+        base_loader = Loader(
+            root_path=Path(cfg.train.data_path),
+            img_size=tuple(cfg.train.img_size),
+            batch_size=1,
+            num_workers=0,
+            cfg=cfg,
+            debug_img_processing=False,
+        )
+        train_ds = base_loader.build_dataloaders(distributed=False)[0].dataset
+    finally:
+        logger.enable("src")
+    probe_loader = DataLoader(
+        train_ds,
+        batch_size=1,
+        num_workers=0,
+        shuffle=False,
+        collate_fn=base_loader.train_collate_fn,
+        pin_memory=False,
+    )
+
+    # Scan a batch of samples and pick the one with the most objects (worst-case for memory)
+    max_objects = 0
+    sample_img, sample_targets = None, None
+    for i, (img, targets, _) in enumerate(probe_loader):
+        if img is None:
+            continue
+        n_objects = sum(t["labels"].numel() for t in targets)
+        if n_objects > max_objects:
+            max_objects = n_objects
+            sample_img, sample_targets = img, targets
+        if i >= 99:  # scan up to 100 samples
+            break
+
+    if sample_img is None:
+        logger.warning("Could not load a sample for auto batch size, defaulting to 4")
+        del model, loss_fn, probe_loader, train_ds, base_loader
+        torch.cuda.empty_cache()
+        return 4
+
+    sample_img = sample_img.to(device)  # [1, C, H, W]
+    sample_targets = [
+        {k: (v.to(device) if hasattr(v, "to") else v) for k, v in t.items()} for t in sample_targets
+    ]
+
+    total_mem = torch.cuda.get_device_properties(device).total_memory
+    target_mem = int(total_mem * target_fraction)
+
+    amp_enabled = cfg.train.amp_enabled
+    scaler = GradScaler() if amp_enabled else None
+    model.train()
+    loss_fn.train()
+
+    def _try_batch(
+        bs, model, loss_fn, sample_img, sample_targets, amp_enabled, scaler, device, target_mem
+    ) -> bool:
+        """Run fwd+bwd at batch size *bs*. Return True if it fits within target_mem."""
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(device)
+
+        batch_img = sample_img.repeat(bs, 1, 1, 1)
+        batch_targets = sample_targets * bs
+
+        try:
+            if amp_enabled:
+                with autocast(str(device)):
+                    output = model(batch_img, targets=batch_targets)
+                with autocast(str(device), enabled=False):
+                    loss_dict = loss_fn(output, batch_targets)
+                loss = sum(loss_dict.values())
+                scaler.scale(loss).backward()
+            else:
+                output = model(batch_img, targets=batch_targets)
+                loss_dict = loss_fn(output, batch_targets)
+                loss = sum(loss_dict.values())
+                loss.backward()
+
+            peak = torch.cuda.max_memory_reserved(device)
+            model.zero_grad(set_to_none=True)
+            return peak <= target_mem
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() or "CUDA" in str(e):
+                model.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                return False
+            raise
+
+    probe_args = (
+        model,
+        loss_fn,
+        sample_img,
+        sample_targets,
+        amp_enabled,
+        scaler,
+        device,
+        target_mem,
+    )
+
+    # Phase 1: escalate through powers of 2 to find the rough range
+    best_bs = 1
+    fail_bs = None
+    for bs in (2**i for i in range(1, 11)):  # 2, 4, 8, ... 1024
+        if _try_batch(bs, *probe_args):
+            best_bs = bs
+        else:
+            fail_bs = bs
+            break
+
+    # Phase 2: binary search within [best_bs+1, fail_bs-1] to find exact max
+    if fail_bs is not None and fail_bs - best_bs > 1:
+        lo, hi = best_bs + 1, fail_bs - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if _try_batch(mid, *probe_args):
+                best_bs = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+    # Clean up everything
+    del model, loss_fn, sample_img, sample_targets, probe_loader, train_ds, base_loader
+    if scaler is not None:
+        del scaler
+    torch.cuda.empty_cache()
+
+    logger.info(
+        f"Optimal batch size: {best_bs} "
+        f"(target {target_fraction:.0%} of {total_mem / 1024**3:.1f} GB VRAM)"
+    )
+    return best_bs
