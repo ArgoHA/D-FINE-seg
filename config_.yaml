@@ -50,7 +50,7 @@ train:
   amp_enabled: True # use automatic mixed precision
   clip_max_norm: 0.1 # gradient clipping
 
-  batch_size: 8 # physical, should fit on the device. In DDP used per GPU
+  batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
   b_accum_steps: 1 # grad accumulation (n * bs)
   epochs: 55
   early_stopping: 0 # 0 - no early stopping

@@ -706,17 +706,19 @@ class Loader:
             )
             shuffle_flag = False  # cannot use shuffle=True when sampler is set
 
-        dataloader = DataLoader(
-            dataset,
+        dl_kwargs = dict(
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=shuffle_flag,
             sampler=sampler,
             collate_fn=collate_fn,
             worker_init_fn=seed_worker,
-            prefetch_factor=4,
             pin_memory=True,
         )
+        if self.num_workers > 0:
+            dl_kwargs["prefetch_factor"] = 4
+
+        dataloader = DataLoader(dataset, **dl_kwargs)
 
         if dataset.mode == "train":
             self.train_sampler = sampler

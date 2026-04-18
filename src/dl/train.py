@@ -33,6 +33,7 @@ from src.d_fine.dist_utils import (
 )
 from src.dl.dataset import Loader
 from src.dl.utils import (
+    auto_batch_size,
     calculate_remaining_time,
     cleanup_masks,
     encode_sample_masks_to_rle,
@@ -128,11 +129,16 @@ class Trainer:
                 elif metric == "mAP_50_95":
                     self.decision_metrics[i] = "mAP_50_95_mask"
         if self.use_wandb and self.is_main:
-            wandb.init(
-                project=cfg.project_name,
-                name=cfg.exp,
-                config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
-            )
+            try:
+                wandb.init(
+                    project=cfg.project_name,
+                    name=cfg.exp,
+                    config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+                    settings=wandb.Settings(init_timeout=30),
+                )
+            except Exception as e:
+                logger.warning(f"wandb is not available ({e}); training will continue without it")
+                self.use_wandb = False
 
         log_file = Path(cfg.train.path_to_save) / "train_log.txt"
         if (not self.distributed) or self.is_main:
@@ -145,10 +151,17 @@ class Trainer:
         seed = cfg.train.seed + self.rank if self.distributed else cfg.train.seed
         set_seeds(seed, cfg.train.cudnn_fixed)
 
+        batch_size = cfg.train.batch_size
+        if batch_size == -1:
+            batch_size = auto_batch_size(cfg, self.device)
+            # In DDP, broadcast the result from rank 0 so all ranks agree
+            if self.distributed:
+                batch_size = int(broadcast_scalar(batch_size, src=0))
+
         base_loader = Loader(
             root_path=Path(cfg.train.data_path),
             img_size=tuple(cfg.train.img_size),
-            batch_size=cfg.train.batch_size,
+            batch_size=batch_size,
             num_workers=cfg.train.num_workers,
             cfg=cfg,
             debug_img_processing=cfg.train.debug_img_processing,
@@ -724,7 +737,7 @@ def main(cfg: DictConfig) -> None:
                 extended=True,
                 mode="val",
             )
-            if cfg.train.use_wandb:
+            if trainer.use_wandb:
                 wandb_logger(None, val_metrics, epoch=cfg.train.epochs + 1, mode="val")
 
             test_metrics = {}
@@ -737,7 +750,7 @@ def main(cfg: DictConfig) -> None:
                     extended=True,
                     mode="test",
                 )
-                if cfg.train.use_wandb:
+                if trainer.use_wandb:
                     wandb_logger(None, test_metrics, epoch=-1, mode="test")
 
             log_metrics_locally(
