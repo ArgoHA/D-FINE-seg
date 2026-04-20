@@ -311,8 +311,12 @@ class CustomDataset(Dataset):
 
         # Get image
         image_path = Path(self.split.iloc[idx].values[0])
-        image = cv2.imread(str(self.root_path / "images" / f"{image_path}"))  # BGR, HWC
-        assert image is not None, f"Image wasn't loaded: {image_path}"
+        try:
+            image = cv2.imread(str(self.root_path / "images" / f"{image_path}"))  # BGR, HWC
+        except Exception:
+            image = None
+        if image is None:
+            return None
 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # RGB, HWC
         height, width, _ = image.shape
@@ -338,8 +342,12 @@ class CustomDataset(Dataset):
         """Load image and annotations from pre-parsed COCO entries."""
         entry = self._coco_entries[idx]
         image_path = Path(entry["file_name"])
-        image = cv2.imread(str(self.root_path / "images" / str(image_path)))
-        assert image is not None, f"Image wasn't loaded: {image_path}"
+        try:
+            image = cv2.imread(str(self.root_path / "images" / str(image_path)))
+        except Exception:
+            image = None
+        if image is None:
+            return None
 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width, _ = image.shape
@@ -358,7 +366,16 @@ class CustomDataset(Dataset):
 
         mosaic_img = None
         for i_mosaic, m_idx in enumerate(indices):
-            img, targets, _, polys_abs = self._get_data(m_idx)
+            result = self._get_data(m_idx)
+            # Retry with random indices if image is corrupt
+            retries = 0
+            while result is None and retries < 3:
+                m_idx = random.randint(0, self.__len__() - 1)
+                result = self._get_data(m_idx)
+                retries += 1
+            if result is None:
+                return None
+            img, targets, _, polys_abs = result
             (h, w, c) = img.shape[:3]
 
             if self.keep_ratio:
@@ -487,9 +504,15 @@ class CustomDataset(Dataset):
         """
         image_path = Path(self.split.iloc[idx].values[0])
         if random.random() < self.mosaic_prob:
-            image, labels, boxes, masks_t, orig_size = self._load_mosaic(idx)
+            mosaic_result = self._load_mosaic(idx)
+            if mosaic_result is None:
+                return None
+            image, labels, boxes, masks_t, orig_size = mosaic_result
         else:
-            image, targets, orig_size, polys_abs = self._get_data(idx)  # boxes in abs xyxy format
+            result = self._get_data(idx)  # boxes in abs xyxy format
+            if result is None:
+                return None
+            image, targets, orig_size, polys_abs = result
 
             if self.ignore_background and np.all(targets == 0) and self.mode == "train":
                 return None
@@ -716,7 +739,11 @@ class Loader:
             pin_memory=True,
         )
         if self.num_workers > 0:
-            dl_kwargs["prefetch_factor"] = 4
+            dl_kwargs["prefetch_factor"] = 2
+            # Only train benefits from persistent workers (avoids re-forking from a
+            # post-validation bloated parent each epoch). Val/test run briefly once
+            # per epoch; keeping their workers alive is pure RAM overhead.
+            dl_kwargs["persistent_workers"] = dataset.mode == "train"
 
         dataloader = DataLoader(dataset, **dl_kwargs)
 
@@ -724,6 +751,15 @@ class Loader:
             self.train_sampler = sampler
 
         return dataloader
+
+    def rebuild_train_loader(self, train_dataset: Dataset, distributed: bool = False) -> DataLoader:
+        """Rebuild the train DataLoader around an existing dataset.
+
+        With persistent_workers=True the forked workers hold their own copy of the
+        dataset and won't see main-process mutations (e.g. close_mosaic). Calling
+        this after a mutation respawns workers so they fork a fresh copy.
+        """
+        return self._build_dataloader_impl(train_dataset, shuffle=True, distributed=distributed)
 
     def build_dataloaders(
         self, distributed: bool = False
@@ -785,7 +821,8 @@ class Loader:
         Input: List[Tuple[Tensor[channel, height, width], Tensor[labels], Tensor[boxes]], ...]
         where each tuple is a an item in a batch...]
         """
-        if None in batch:
+        batch = [item for item in batch if item is not None]
+        if len(batch) == 0:
             return None, None, None
         images = []
         targets = []

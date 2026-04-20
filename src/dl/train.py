@@ -1,3 +1,4 @@
+import gc
 import math
 import time
 from copy import deepcopy
@@ -158,7 +159,7 @@ class Trainer:
             if self.distributed:
                 batch_size = int(broadcast_scalar(batch_size, src=0))
 
-        base_loader = Loader(
+        self.base_loader = Loader(
             root_path=Path(cfg.train.data_path),
             img_size=tuple(cfg.train.img_size),
             batch_size=batch_size,
@@ -166,10 +167,10 @@ class Trainer:
             cfg=cfg,
             debug_img_processing=cfg.train.debug_img_processing,
         )
-        self.train_loader, self.val_loader, self.test_loader = base_loader.build_dataloaders(
+        self.train_loader, self.val_loader, self.test_loader = self.base_loader.build_dataloaders(
             distributed=self.distributed
         )
-        self.train_sampler = getattr(base_loader, "train_sampler", None)
+        self.train_sampler = getattr(self.base_loader, "train_sampler", None)
         if self.ignore_background_epochs:
             self.train_loader.dataset.ignore_background = True
 
@@ -485,6 +486,12 @@ class Trainer:
             if path_to_save:  # val and test
                 validator.save_plots(path_to_save / "plots" / mode)
 
+        # validator holds a deepcopy of preds; drop it before the caller moves on.
+        del local_gt, local_preds
+        if self.is_main and all_preds is not None and all_gt is not None:
+            del validator, all_gt, all_preds
+        gc.collect()
+
         # Synchronize before returning so all ranks wait for metrics computation
         if self.distributed:
             synchronize()
@@ -644,15 +651,27 @@ class Trainer:
                     use_wandb=self.use_wandb,
                 )
 
+            # Mutations to the train dataset must trigger a worker respawn so
+            # persistent_workers pick them up; otherwise forked workers keep
+            # running with stale dataset state.
+            train_dataset_changed = False
             if (
                 epoch >= self.epochs - self.no_mosaic_epochs
                 and self.train_loader.dataset.mosaic_prob
             ):
                 self.train_loader.dataset.close_mosaic()
+                train_dataset_changed = True
 
             if epoch == self.ignore_background_epochs:
                 self.train_loader.dataset.ignore_background = False
                 logger.info("Including background images")
+                train_dataset_changed = True
+
+            if train_dataset_changed:
+                self.train_loader = self.base_loader.rebuild_train_loader(
+                    self.train_loader.dataset, distributed=self.distributed
+                )
+                self.train_sampler = getattr(self.base_loader, "train_sampler", None)
 
             one_epoch_time = time.time() - epoch_start_time
 
