@@ -532,22 +532,40 @@ class Trainer:
         ema_iter = 0
         self.early_stopping_steps = 0
         one_epoch_time = None
+        skip_counter = 0
+        # Reload last.pt after this many consecutive non-finite steps as a recovery.
+        # One-offs are expected and handled by skipping; a run of skips implies
+        # weights are already corrupted.
+        max_consecutive_skips = 10
+        # GradScaler picks its loss scale by overflowing for the first few steps,
+        # so non-finite grads/loss are expected noise during warmup.
+        nan_warn_warmup_iters = 100
 
-        def optimizer_step(step_scheduler: bool):
+        def optimizer_step(step_scheduler: bool) -> bool:
             """
-            Clip grads, optimizer step, scheduler step, zero grad, EMA model update
+            Clip grads, optimizer step, scheduler step, zero grad, EMA model update.
+            Returns True if optimizer stepped, False if skipped due to non-finite grads.
             """
             nonlocal ema_iter
             if self.amp_enabled:
-                if self.clip_max_norm:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_max_norm)
+                self.scaler.unscale_(self.optimizer)
+            max_norm = self.clip_max_norm if self.clip_max_norm else float("inf")
+            total_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), max_norm, error_if_nonfinite=False
+            )
+
+            if not torch.isfinite(total_norm):
+                self.optimizer.zero_grad()
+                if self.amp_enabled:
+                    self.scaler.update()
+                if step_scheduler and self.scheduler:
+                    self.scheduler.step()
+                return False
+
+            if self.amp_enabled:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-
             else:
-                if self.clip_max_norm:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_max_norm)
                 self.optimizer.step()
 
             if step_scheduler and self.scheduler:
@@ -557,6 +575,29 @@ class Trainer:
             if self.ema_model:
                 ema_iter += 1
                 self.ema_model.update(ema_iter, self.model)
+            return True
+
+        def reload_last_checkpoint() -> bool:
+            ckpt_path = self.path_to_save / "last.pt"
+            if not ckpt_path.exists():
+                if self.is_main:
+                    logger.error(
+                        f"{max_consecutive_skips} consecutive non-finite steps but "
+                        f"{ckpt_path} not found; cannot recover"
+                    )
+                return False
+            if self.is_main:
+                logger.warning(
+                    f"{max_consecutive_skips} consecutive non-finite steps; "
+                    f"reloading weights from {ckpt_path}"
+                )
+            state = torch.load(ckpt_path, map_location=self.device, weights_only=True)
+            target = self.model.module if isinstance(self.model, DDP) else self.model
+            target.load_state_dict(state)
+            if self.ema_model:
+                self.ema_model.model.load_state_dict(state)
+            self.optimizer.zero_grad()
+            return True
 
         for epoch in range(1, self.epochs + 1):
             if self.distributed and self.train_sampler is not None:
@@ -566,6 +607,7 @@ class Trainer:
             self.model.train()
             self.loss_fn.train()
             losses = []
+            had_backward_in_window = False
 
             data_iter = self.train_loader
             if self.is_main:
@@ -596,18 +638,45 @@ class Trainer:
                     with autocast(str(self.device), enabled=False):
                         loss_dict = self.loss_fn(output, targets)
                     loss = sum(loss_dict.values()) / self.b_accum_steps
-                    self.scaler.scale(loss).backward()
-
                 else:
                     output = self.model(inputs, targets=targets)
                     loss_dict = self.loss_fn(output, targets)
                     loss = sum(loss_dict.values()) / self.b_accum_steps
-                    loss.backward()
+
+                # In DDP, any rank's backward() triggers gradient all-reduce; if one rank
+                # skips backward because of a local NaN, the others hang. Sync the decision.
+                loss_finite_t = torch.isfinite(loss.detach()).to(torch.int32)
+                if self.distributed:
+                    torch.distributed.all_reduce(loss_finite_t, op=torch.distributed.ReduceOp.MIN)
+                loss_finite = bool(loss_finite_t.item())
+
+                if loss_finite:
+                    if self.amp_enabled:
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                    had_backward_in_window = True
+                    losses.append(loss.item())
+                elif self.is_main and cur_iter > nan_warn_warmup_iters:
+                    logger.warning(
+                        f"Skipping batch at iter {cur_iter} (epoch {epoch}, "
+                        f"batch {batch_idx}): non-finite loss"
+                    )
 
                 if (batch_idx + 1) % self.b_accum_steps == 0:
-                    optimizer_step(step_scheduler=True)
+                    if had_backward_in_window:
+                        stepped = optimizer_step(step_scheduler=True)
+                        skip_counter = 0 if stepped else skip_counter + 1
+                    else:
+                        # Nothing to step, but keep the LR schedule aligned with wall time.
+                        if self.scheduler:
+                            self.scheduler.step()
+                        skip_counter += 1
+                    had_backward_in_window = False
 
-                losses.append(loss.item())
+                    if skip_counter >= max_consecutive_skips:
+                        reload_last_checkpoint()
+                        skip_counter = 0
 
                 if self.is_main:
                     data_iter.set_postfix(
@@ -624,8 +693,9 @@ class Trainer:
                     )
 
             # Final update for any leftover gradients from an incomplete accumulation step
-            if (batch_idx + 1) % self.b_accum_steps != 0:
+            if (batch_idx + 1) % self.b_accum_steps != 0 and had_backward_in_window:
                 optimizer_step(step_scheduler=False)
+                had_backward_in_window = False
 
             if self.use_wandb and self.is_main:
                 wandb.log({"lr": lr, "epoch": epoch})
