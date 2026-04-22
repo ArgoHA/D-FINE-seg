@@ -225,6 +225,15 @@ visualizer = Visualizer(n_classes=len(CLASSES), class_names=CLASSES)
 
 
 # ─── Inference helpers ───────────────────────────────────────────────────
+def _set_model_conf_threshold(conf_thresh: float) -> None:
+    """Set a uniform confidence threshold for the currently loaded backend."""
+    conf = float(np.clip(conf_thresh, 0.0, 1.0))
+    if hasattr(model, "conf_threshs") and model.conf_threshs is not None:
+        model.conf_threshs = [conf] * len(model.conf_threshs)
+    elif hasattr(model, "conf_thresh"):
+        model.conf_thresh = conf
+
+
 def _run_on_bgr(img_bgr: np.ndarray, minimize: bool = False) -> np.ndarray:
     """Run model + visualizer on a single BGR frame. Returns annotated BGR."""
     results = model(img_bgr)
@@ -232,10 +241,11 @@ def _run_on_bgr(img_bgr: np.ndarray, minimize: bool = False) -> np.ndarray:
 
 
 # ─── Tab 1: Images (single upload or webcam snapshot) ───────────────────
-def predict_image(img: np.ndarray | None, minimize: bool = False):
+def predict_image(img: np.ndarray | None, conf_thresh: float = CONF_THRESH, minimize: bool = False):
     """Accept a single RGB image, return annotated RGB."""
     if img is None:
         return None
+    _set_model_conf_threshold(conf_thresh)
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     t0 = time.perf_counter()
     vis = _run_on_bgr(img_bgr, minimize=minimize)
@@ -339,6 +349,13 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                         type="numpy",
                         label="Upload or Capture",
                     )
+                    img_conf_thresh = gr.Slider(
+                        minimum=0.0,
+                        maximum=1.0,
+                        step=0.01,
+                        value=CONF_THRESH,
+                        label="Confidence threshold",
+                    )
                     img_minimize = gr.Checkbox(
                         value=False,
                         label="Minimize visualization (boxes only, no labels)",
@@ -346,7 +363,11 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                     img_btn = gr.Button("Run", variant="primary")
                 with gr.Column():
                     img_out = gr.Image(type="numpy", label="Result", format="png")
-            img_btn.click(fn=predict_image, inputs=[img_in, img_minimize], outputs=img_out)
+            img_btn.click(
+                fn=predict_image,
+                inputs=[img_in, img_conf_thresh, img_minimize],
+                outputs=img_out,
+            )
 
         # ── Video: upload file ───────────────────────────────────────
         with gr.TabItem("Video"):
