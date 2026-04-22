@@ -172,16 +172,16 @@ def norm_xywh_to_abs_xyxy(boxes: np.ndarray, height: int, width: int, to_round=T
 
     # Convert coordinates to integers
     if to_round:
-        x_min = np.maximum(np.floor(x_min), 1)
-        y_min = np.maximum(np.floor(y_min), 1)
-        x_max = np.minimum(np.ceil(x_max), width - 1)
-        y_max = np.minimum(np.ceil(y_max), height - 1)
+        x_min = np.clip(np.floor(x_min), 0, width - 1)
+        y_min = np.clip(np.floor(y_min), 0, height - 1)
+        x_max = np.clip(np.ceil(x_max), 0, width - 1)
+        y_max = np.clip(np.ceil(y_max), 0, height - 1)
         return np.stack([x_min, y_min, x_max, y_max], axis=1)
     else:
-        x_min = np.maximum(x_min, 0)
-        y_min = np.maximum(y_min, 0)
-        x_max = np.minimum(x_max, width)
-        y_max = np.minimum(y_max, height)
+        x_min = np.clip(x_min, 0, width)
+        y_min = np.clip(y_min, 0, height)
+        x_max = np.clip(x_max, 0, width)
+        y_max = np.clip(y_max, 0, height)
         return np.stack([x_min, y_min, x_max, y_max], axis=1)
 
 
