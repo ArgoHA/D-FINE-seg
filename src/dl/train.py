@@ -1,3 +1,4 @@
+import collections
 import gc
 import math
 import time
@@ -596,6 +597,8 @@ class Trainer:
             target.load_state_dict(state)
             if self.ema_model:
                 self.ema_model.model.load_state_dict(state)
+            # Drop Adam m/v buffers
+            self.optimizer.state = collections.defaultdict(dict)
             self.optimizer.zero_grad()
             return True
 
