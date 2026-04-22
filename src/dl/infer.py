@@ -138,8 +138,10 @@ def run_videos(
     batch = 0
     vid_paths = [vid.name for vid in folder_path.iterdir() if not str(vid.name).startswith(".")]
     labels = set()
-    for vid_path in tqdm(vid_paths):
+    for vid_path in vid_paths:
         vid = cv2.VideoCapture(str(folder_path / vid_path))
+        total_frames = int(vid.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+        pbar = tqdm(total=total_frames, desc=vid_path, unit="frame")
         success, img = vid.read()
         idx = 0
         while success:
@@ -181,7 +183,10 @@ def run_videos(
             if to_crop:
                 crops(img, res, paddings, output_path, frame_name)
 
+            pbar.update(1)
             success, img = vid.read()
+        pbar.close()
+        vid.release()
 
     with open(output_path / "labels.txt", "w") as f:
         for class_id in labels:
