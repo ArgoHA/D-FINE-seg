@@ -630,12 +630,14 @@ class Visualizer:
 
     @staticmethod
     def _generate_colors(n: int) -> List[tuple]:
-        """Evenly spaced hues on the HSV wheel -> BGR tuples."""
+        """Evenly spaced hues on a violet→red arc -> BGR tuples. Class 0 = deep purple, last = red."""
         colors = []
         n = max(n, 1)
+        hue_start = 135  # deep violet in OpenCV's [0, 179] hue range
+        denom = max(n - 1, 1)
         for i in range(n):
-            hue = int(180 * i / n)
-            hsv = np.array([[[hue, 210, 210]]], dtype=np.uint8)
+            hue = int(hue_start * (n - 1 - i) / denom)
+            hsv = np.array([[[hue, 230, 200]]], dtype=np.uint8)
             bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
             colors.append(tuple(int(c) for c in bgr))
         return colors
@@ -646,7 +648,9 @@ class Visualizer:
 
         Args:
             results: dict with keys ``labels``, ``boxes``, ``scores``,
-                     and optionally ``masks``.
+                     and optionally ``masks`` and ``track_ids``. When
+                     ``track_ids`` is present the label is prefixed with
+                     ``id=N``.
         Returns:
             Annotated copy of *img*.
         """
@@ -654,6 +658,7 @@ class Visualizer:
         labels = results["labels"]
         boxes = results["boxes"]
         scores = results["scores"]
+        track_ids = results.get("track_ids")
         has_masks = "masks" in results and results["masks"] is not None
 
         if len(labels) == 0:
@@ -683,6 +688,8 @@ class Visualizer:
             color = self.colors[label_id % len(self.colors)]
             score = float(scores[i].item()) if hasattr(scores[i], "item") else float(scores[i])
             text = f"{name} {score:.2f}"
+            if track_ids is not None:
+                text = f"id={self._as_int(track_ids[i])} {text}"
 
             x1, y1, x2, y2 = self._box_coords(boxes[i])
             cv2.rectangle(img, (x1, y1), (x2, y2), color, box_thick)
