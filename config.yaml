@@ -146,6 +146,7 @@ export: # TensorRT must be done on the inference device
 
 infer:
   to_crop: True  # if True - saves crops of detected objects
+  to_track: True  # videos only: assign persistent IDs via ByteTrack and write annotated mp4
   paddings: # if int - amount of pixes, if float - percentage of image size
     w: 0.05
     h: 0.05
