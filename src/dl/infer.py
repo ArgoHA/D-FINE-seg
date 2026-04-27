@@ -3,13 +3,16 @@ from shutil import rmtree
 
 import cv2
 import hydra
-import torch
+import numpy as np
 from loguru import logger
 from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.dl.utils import Visualizer, abs_xyxy_to_norm_xywh, get_latest_experiment_name
+from src.infer.byte_track import ByteTrack, Detection
 from src.infer.torch_model import Torch_model
+
+VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 
 
 def figure_input_type(folder_path: Path):
@@ -193,12 +196,130 @@ def run_videos(
             f.write(f"{label_to_name[int(class_id)]}\n")
 
 
+def _run_video_tracked(torch_model, tracker, visualizer, video_path, output_path):
+    vid = cv2.VideoCapture(str(video_path))
+    if not vid.isOpened():
+        logger.warning(f"Could not open {video_path}, skipping")
+        return
+
+    fps = vid.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(vid.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+    width = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    out_vid = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+
+    pbar = tqdm(total=total_frames, desc=video_path.name, unit="frame")
+    success, frame = vid.read()
+    while success:
+        raw_res = torch_model(frame)
+        res = raw_res[0]
+
+        boxes = res["boxes"].cpu().numpy()
+        labels = res["labels"].cpu().numpy()
+        scores = res["scores"].cpu().numpy()
+
+        detections = [
+            Detection(bbox=tuple(b.tolist()), score=float(s), cls_id=int(c))
+            for b, c, s in zip(boxes, labels, scores)
+        ]
+        tracked = tracker.update(detections, frame_shape=(height, width))
+
+        if tracked:
+            tracked_results = {
+                "track_ids": np.array([t[0] for t in tracked], dtype=int),
+                "labels": np.array([t[1] for t in tracked], dtype=int),
+                "boxes": np.array([t[2] for t in tracked], dtype=np.float64),
+                "scores": np.array([t[3] for t in tracked], dtype=np.float64),
+            }
+        else:
+            tracked_results = {
+                "track_ids": np.zeros(0, dtype=int),
+                "labels": np.zeros(0, dtype=int),
+                "boxes": np.zeros((0, 4), dtype=np.float64),
+                "scores": np.zeros(0, dtype=np.float64),
+            }
+
+        out_vid.write(visualizer.draw(frame, tracked_results))
+        pbar.update(1)
+        success, frame = vid.read()
+
+    pbar.close()
+    vid.release()
+    out_vid.release()
+    logger.info(f"Output video saved: {output_path}")
+
+
+def run_videos_tracked(torch_model, folder_path, output_path, label_to_name, tracker_cfg):
+    video_files = sorted(
+        f
+        for f in folder_path.iterdir()
+        if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith(".")
+    )
+    if not video_files:
+        logger.error(f"No video files found in {folder_path}")
+        return
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    visualizer = Visualizer(n_classes=max(label_to_name.keys()) + 1, class_names=label_to_name)
+
+    for video_path in video_files:
+        # Fresh tracker per video so IDs don't bleed across unrelated clips.
+        tracker = ByteTrack(
+            track_thresh=tracker_cfg["track_thresh"],
+            unmatched_thresh=tracker_cfg["unmatched_thresh"],
+            detrack_thresh=tracker_cfg["detrack_thresh"],
+            tracking_thresh=tracker_cfg["tracking_thresh"],
+            track_buffer=tracker_cfg["track_buffer"],
+            max_age=tracker_cfg["max_age"],
+            min_hits=tracker_cfg["min_hits"],
+            iou_weight=tracker_cfg["iou_weight"],
+            drag=tracker_cfg["drag"],
+            velocity_alpha=tracker_cfg["velocity_alpha"],
+        )
+        out_path = output_path / f"{video_path.stem}_tracked.mp4"
+        logger.info(f"Processing: {video_path}")
+        _run_video_tracked(torch_model, tracker, visualizer, video_path, out_path)
+
+
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg: DictConfig):
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
     to_crop = cfg.infer.to_crop
     paddings = cfg.infer.paddings
+    to_track = cfg.infer.get("to_track", True)
+
+    folder_path = Path(str(cfg.train.path_to_test_data))
+    data_type = figure_input_type(folder_path)
+
+    # Tracking only applies to videos.
+    use_tracking = to_track and data_type == "video"
+
+    if use_tracking:
+        # ByteTrack defaults — picked to exercise the two-stage association.
+        tracker_cfg = {
+            "track_thresh": float(cfg.train.conf_thresh),  # high/low pool split
+            "unmatched_thresh": 0.7,  # min score to start a new track
+            "detrack_thresh": 0.4,  # hard floor inside the tracker
+            "tracking_thresh": 0.8,  # max match cost (iou_weight*(1-IoU)+...)
+            "track_buffer": 30,
+            "max_age": 0,
+            "min_hits": 2,
+            "iou_weight": 0.75,
+            "drag": 0.85,
+            "velocity_alpha": 0.6,
+        }
+        if "track" in cfg:
+            for k, v in dict(cfg.track).items():
+                tracker_cfg[k] = v
+    else:
+        tracker_cfg = None
 
     torch_model = Torch_model(
         model_name=cfg.model_name,
@@ -210,9 +331,6 @@ def main(cfg: DictConfig):
         rect=cfg.export.dynamic_input,
         enable_mask_head=cfg.task == "segment",
     )
-
-    folder_path = Path(str(cfg.train.path_to_test_data))
-    data_type = figure_input_type(folder_path)
 
     output_path = Path(cfg.train.infer_path)
     if output_path.exists():
@@ -229,15 +347,24 @@ def main(cfg: DictConfig):
             conf_thresh=cfg.train.conf_thresh,
         )
     elif data_type == "video":
-        run_videos(
-            torch_model,
-            folder_path,
-            output_path,
-            label_to_name=cfg.train.label_to_name,
-            to_crop=to_crop,
-            paddings=paddings,
-            conf_thresh=cfg.train.conf_thresh,
-        )
+        if use_tracking:
+            run_videos_tracked(
+                torch_model,
+                folder_path,
+                output_path,
+                label_to_name=cfg.train.label_to_name,
+                tracker_cfg=tracker_cfg,
+            )
+        else:
+            run_videos(
+                torch_model,
+                folder_path,
+                output_path,
+                label_to_name=cfg.train.label_to_name,
+                to_crop=to_crop,
+                paddings=paddings,
+                conf_thresh=cfg.train.conf_thresh,
+            )
 
 
 if __name__ == "__main__":
