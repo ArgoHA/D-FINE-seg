@@ -643,7 +643,7 @@ class Visualizer:
         return colors
 
     # ── public API ──────────────────────────────────────────────────────
-    def draw(self, img: np.ndarray, results: dict) -> np.ndarray:
+    def draw(self, img: np.ndarray, results: dict, alpha: float = 0.6) -> np.ndarray:
         """Draw prediction results on *img* (BGR, uint8).
 
         Args:
@@ -651,6 +651,9 @@ class Visualizer:
                      and optionally ``masks`` and ``track_ids``. When
                      ``track_ids`` is present the label is prefixed with
                      ``id=N``.
+            alpha: opacity of bbox outlines and label background rectangles
+                in [0, 1]. Lower values make annotations less likely to fully
+                occlude small neighboring objects. Text stays fully opaque.
         Returns:
             Annotated copy of *img*.
         """
@@ -681,7 +684,16 @@ class Visualizer:
                 color = self.colors[label_id % len(self.colors)]
                 self._draw_mask(img, masks[i], color, edge_thickness=edge_thick)
 
-        # Boxes + labels
+        # Boxes — draw onto an overlay, then alpha-blend back into img
+        overlay = img.copy()
+        for i in range(len(labels)):
+            label_id = self._as_int(labels[i])
+            color = self.colors[label_id % len(self.colors)]
+            x1, y1, x2, y2 = self._box_coords(boxes[i])
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, box_thick)
+        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, dst=img)
+
+        # Labels (background blended internally, text opaque)
         for i in range(len(labels)):
             label_id = self._as_int(labels[i])
             name = self.class_names.get(label_id, str(label_id))
@@ -691,9 +703,8 @@ class Visualizer:
             if track_ids is not None:
                 text = f"id={self._as_int(track_ids[i])} {text}"
 
-            x1, y1, x2, y2 = self._box_coords(boxes[i])
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, box_thick)
-            self._draw_label(img, text, x1, y1, color, font_scale, font_thick)
+            x1, y1, _, _ = self._box_coords(boxes[i])
+            self._draw_label(img, text, x1, y1, color, font_scale, font_thick, alpha)
 
         return img
 
@@ -717,6 +728,7 @@ class Visualizer:
         bg_color: tuple,
         font_scale: float,
         font_thick: int,
+        alpha: float = 0.6,
     ):
         font = cv2.FONT_HERSHEY_SIMPLEX
         (tw, th), _ = cv2.getTextSize(text, font, font_scale, font_thick)
@@ -728,7 +740,14 @@ class Visualizer:
         else:
             bg_y1, bg_y2, text_y = y, y + th + 2 * pad, y + th + pad
 
-        cv2.rectangle(img, (x, bg_y1), (x + tw + 2 * pad, bg_y2), bg_color, -1)
+        bg_x1, bg_x2 = x, x + tw + 2 * pad
+        h_img, w_img = img.shape[:2]
+        x1c, x2c = max(0, bg_x1), min(w_img, bg_x2)
+        y1c, y2c = max(0, bg_y1), min(h_img, bg_y2)
+        if x2c > x1c and y2c > y1c:
+            roi = img[y1c:y2c, x1c:x2c]
+            overlay = np.full_like(roi, bg_color, dtype=np.uint8)
+            cv2.addWeighted(overlay, alpha, roi, 1 - alpha, 0, dst=roi)
 
         # White or black text depending on background brightness
         lum = 0.299 * bg_color[2] + 0.587 * bg_color[1] + 0.114 * bg_color[0]
