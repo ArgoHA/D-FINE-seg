@@ -106,7 +106,6 @@ def run_images(
         }
         if "masks" in raw_res[0]:
             res["masks"] = raw_res[batch]["masks"].cpu()
-            print(img.shape, res["masks"].shape)
             res["polys"] = torch_model.mask2poly(res["masks"], img.shape)
 
         visualize(
