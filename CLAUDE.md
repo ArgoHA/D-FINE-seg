@@ -25,7 +25,7 @@ src/
 
 - Python 3, PyTorch 2.9, CUDA 12.x (see [requirements.txt](requirements.txt))
 - Install with `pip install -r requirements.txt`
-- Pretrained weights are **not** auto-downloaded. If `pretrained/dfine_<size>_<dataset>.pt` is missing, fetch from the Google Drive link in [README.md](README.md) before training.
+- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via [src/dl/hf_pretrained.py](src/dl/hf_pretrained.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
 
 ## 4. Configuration model
 
@@ -213,7 +213,7 @@ OpenVINO path respects `ov_int8_max_drop` (default 0.02 F1 drop allowed).
 
 1. **Hydra interpolation order.** Keys like `${train.lrs.${model_name}.base_lr}` resolve `${model_name}` first. If you override `model_name`, the nested LR lookup follows automatically — don't also override LRs unless intentional.
 2. **`exp` is timestamped.** `exp: ${exp_name}_${now_dir}` → outputs always nest under a dated folder.
-3. **No auto-download of pretrained weights.** Check `pretrained/dfine_<size>_<dataset>.pt` exists before `make train`; otherwise training hard-errors.
+3. **Pretrained weights auto-download from HF on first use** for the standard `dfine_<size>_<dataset>.pt` filenames. Custom `train.pretrained_model_path` values (e.g. fine-tuning checkpoints) are not fetched — those must exist on disk.
 4. **COCO vs YOLO is mutually exclusive.** Flipping `train.coco_dataset` without having the matching files on disk will fail in the loader.
 5. **`label_to_name` must be 0-indexed and contiguous.**
 6. **`task: segment` disables mosaic-friendliness.** Mosaic augmentation is not recommended for segmentation — lower `mosaic_augs.mosaic_prob` toward 0 if masks look wrong.
