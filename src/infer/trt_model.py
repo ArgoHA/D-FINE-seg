@@ -21,6 +21,7 @@ class TRT_model:
         device: str = None,
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
+        use_cuda_graph: bool = True,
     ) -> None:
         self.model_path = model_path
         self.n_outputs = n_outputs
@@ -32,6 +33,9 @@ class TRT_model:
         self.np_dtype = np.float32
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
+        self.use_cuda_graph = use_cuda_graph
+
+        assert not rect, "rect=True is not supported by the current TRT_model implementation"
 
         if not device:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -40,14 +44,23 @@ class TRT_model:
 
         self._load_model()
         self._read_engine_metadata()
+        self._stream = torch.cuda.Stream(device=self.device) if self.device == "cuda" else None
+        self._setup_io_buffers()
 
         # Per-class confidence thresholds
         if isinstance(conf_thresh, float):
             self.conf_threshs = [conf_thresh] * self.n_outputs
         elif isinstance(conf_thresh, list):
             self.conf_threshs = conf_thresh
+        self._conf_threshs_t = torch.tensor(
+            self.conf_threshs, device=self.device, dtype=torch.float32
+        )
 
+        self._graph = None
         self._test_pred()
+
+        if self.device == "cuda" and self.use_cuda_graph:
+            self._capture_cuda_graph()
 
     def _load_model(self):
         self.TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
@@ -83,11 +96,70 @@ class TRT_model:
         else:
             raise TypeError(f"Unsupported TensorRT data type: {trt_dtype}")
 
+    def _setup_io_buffers(self):
+        """Pre-allocate persistent IO tensors and bind them to the execution context.
+
+        For static-shape engines, this lets us call ``execute_async_v3`` without
+        re-binding pointers per frame and lets us optionally capture the engine
+        forward into a CUDA graph for replay.
+        """
+        self._outputs: List[torch.Tensor] = []
+        self._input_tensor: torch.Tensor | None = None
+        self._input_dtype = torch.float32
+
+        n_io = self.engine.num_io_tensors
+        for i in range(n_io):
+            name = self.engine.get_tensor_name(i)
+            mode = self.engine.get_tensor_mode(name)
+            shape = tuple(self.engine.get_tensor_shape(name))
+            dtype = self._torch_dtype_from_trt(self.engine.get_tensor_dtype(name))
+
+            tensor = torch.empty(shape, dtype=dtype, device=self.device)
+            self.context.set_tensor_address(name, tensor.data_ptr())
+
+            if mode == trt.TensorIOMode.INPUT:
+                self._input_tensor = tensor
+                self._input_dtype = dtype
+                # Static-shape engines still require an explicit set_input_shape on TRT 10.
+                self.context.set_input_shape(name, shape)
+            else:
+                self._outputs.append(tensor)
+
+        # Pinned host + uint8 GPU staging buffer for fast preprocessing.
+        H, W = self.input_size
+        if self.device == "cuda":
+            self._cpu_pinned_hwc = torch.empty(
+                (H, W, self.channels), dtype=torch.uint8, pin_memory=True
+            )
+            self._gpu_hwc = torch.empty(
+                (H, W, self.channels), dtype=torch.uint8, device=self.device
+            )
+
+    def _capture_cuda_graph(self):
+        """Capture the engine forward into a CUDA graph for low-overhead replay."""
+        try:
+            self._stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(self._stream):
+                # Warmup so cudnn/cublas/etc. pick algos before capture.
+                for _ in range(3):
+                    self.context.execute_async_v3(self._stream.cuda_stream)
+            self._stream.synchronize()
+            torch.cuda.current_stream().wait_stream(self._stream)
+
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=self._stream):
+                self.context.execute_async_v3(self._stream.cuda_stream)
+            self._graph = graph
+        except Exception:
+            # Some kernels may not be capturable; fall back to plain async exec.
+            self._graph = None
+
     def _test_pred(self) -> None:
         random_image = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
-        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(random_image)
-        preds = self._predict(processed_inputs)
-        self._postprocess(preds, processed_sizes, original_sizes)
+        # Route through __call__ so the dedicated stream context is applied,
+        # otherwise the engine (on _stream) and post-processing (on default
+        # stream) race and trigger device-side asserts asynchronously.
+        self(random_image)
 
     @staticmethod
     def rescale_boxes(boxes, processed_sizes, orig_sizes, keep_ratio):
@@ -155,10 +227,21 @@ class TRT_model:
         new_shape = [int(round(dim * scale)) for dim in shape]
         return [max(stride, int(np.ceil(dim / stride) * stride)) for dim in new_shape]
 
+    def _preprocess_to_pinned(self, img: NDArray) -> None:
+        """Resize + BGR->RGB into the persistent pinned HWC uint8 buffer."""
+        H, W = self.input_size
+        if not self.keep_ratio:
+            resized = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
+        elif self.rect:
+            target_height, target_width = self._compute_nearest_size(img.shape[:2], max(H, W))
+            resized = letterbox(img, (target_height, target_width), stride=32, auto=False)[0]
+        else:
+            resized = letterbox(img, (H, W), stride=32, auto=False)[0]
+
+        cv2.cvtColor(resized, cv2.COLOR_BGR2RGB, dst=self._cpu_pinned_hwc.numpy())
+
     def _preprocess(self, img: NDArray, stride: int = 32) -> NDArray:
-        """
-        Resize, RGB, CHW
-        """
+        """CPU-only preprocess used by the batched fall-back path."""
         if not self.keep_ratio:  # simple resize
             img = cv2.resize(
                 img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_LINEAR
@@ -175,21 +258,34 @@ class TRT_model:
 
         # BGR to RGB, HWC to CHW
         img = img[..., ::-1].transpose(2, 0, 1)
-        return np.ascontiguousarray(img, dtype=np.uint8)
+        img = np.ascontiguousarray(img, dtype=self.np_dtype)
+        img /= 255.0
+        return img
 
     def _prepare_inputs(self, inputs):
-        original_sizes = []
-        processed_sizes = []
+        # Single image fast path: avoid np->torch->pin->H2D->fp32 round-trip.
+        if isinstance(inputs, np.ndarray) and inputs.ndim == 3 and self.device == "cuda":
+            H, W = self.input_size
+            self._preprocess_to_pinned(inputs)
+            self._gpu_hwc.copy_(self._cpu_pinned_hwc, non_blocking=True)
+            # HWC uint8 view -> CHW; copy_ does the cast to fp32 into the engine input.
+            chw_view = self._gpu_hwc.permute(2, 0, 1)
+            self._input_tensor[0].copy_(chw_view, non_blocking=True)
+            self._input_tensor.div_(255.0)
+            return self._input_tensor, [(H, W)], [(inputs.shape[0], inputs.shape[1])]
 
-        if isinstance(inputs, np.ndarray) and inputs.ndim == 3:  # single image
+        # Generic / batched / CPU path: keep original behavior.
+        original_sizes: List[Tuple[int, int]] = []
+        processed_sizes: List[Tuple[int, int]] = []
+
+        if isinstance(inputs, np.ndarray) and inputs.ndim == 3:  # single image, CPU
             processed_inputs = self._preprocess(inputs)[None]
             original_sizes.append((inputs.shape[0], inputs.shape[1]))
             processed_sizes.append((processed_inputs[0].shape[1], processed_inputs[0].shape[2]))
-
         elif isinstance(inputs, np.ndarray) and inputs.ndim == 4:  # batch of images
             processed_inputs = np.zeros(
                 (inputs.shape[0], self.channels, self.input_size[0], self.input_size[1]),
-                dtype=np.uint8,
+                dtype=self.np_dtype,
             )
             for idx, image in enumerate(inputs):
                 processed_inputs[idx] = self._preprocess(image)
@@ -197,49 +293,45 @@ class TRT_model:
                 processed_sizes.append(
                     (processed_inputs[idx].shape[1], processed_inputs[idx].shape[2])
                 )
-
-        # Normalize to [0,1] on GPU
-        if self.device == "cuda":
-            tensor = torch.from_numpy(processed_inputs).to(self.device, non_blocking=True)
-            tensor = tensor.to(dtype=torch.float32).div_(255.0)
         else:
-            tensor = torch.from_numpy(processed_inputs).to(dtype=torch.float32).div_(255.0)
+            raise TypeError(f"Unsupported input type: {type(inputs)}")
+
+        tensor = torch.from_numpy(processed_inputs)
+        if self.device == "cuda":
+            tensor = tensor.pin_memory().to(self.device, non_blocking=True)
+        else:
+            tensor = tensor.to(self.device)
         return tensor, processed_sizes, original_sizes
 
     def _predict(self, img: torch.Tensor) -> List[torch.Tensor]:
-        # 1) make contiguous and grab the full (B, C, H, W) shape
-        img = img.contiguous()
-        batch_shape = tuple(img.shape)
-
-        # 2) prepare our buffer-pointer list
-        n_io = self.engine.num_io_tensors
-        bindings: List[int] = [None] * n_io
-        outputs: List[torch.Tensor] = []
-
-        # 3) for each I/O slot, either bind the input or allocate an output
-        for i in range(n_io):
-            name = self.engine.get_tensor_name(i)
-            mode = self.engine.get_tensor_mode(name)
-            dims = tuple(self.engine.get_tensor_shape(name))
-            dt = self.engine.get_tensor_dtype(name)
-            t_dt = self._torch_dtype_from_trt(dt)
-
-            if mode == trt.TensorIOMode.INPUT:
-                # set our actual batch‐shape on the context
-                ok = self.context.set_input_shape(name, batch_shape)
-                assert ok, f"Failed to set input shape for {name} -> {batch_shape}"
-                # point that binding at our tensor’s data ptr
-                bindings[i] = img.data_ptr()
+        # Fast path: if `img` is the persistent input buffer we already wrote in
+        # _prepare_inputs, just (graph-)replay or async-execute.
+        if img is self._input_tensor:
+            if self._graph is not None:
+                self._graph.replay()
             else:
-                # allocate a matching output tensor (B, *dims[1:])
-                out_shape = (batch_shape[0],) + dims[1:]
-                out = torch.empty(out_shape, dtype=t_dt, device=self.device)
-                outputs.append(out)
-                bindings[i] = out.data_ptr()
+                stream_handle = self._stream.cuda_stream if self.device == "cuda" else 0
+                self.context.execute_async_v3(stream_handle)
+            return self._outputs
 
-        # 4) run inference
-        self.context.execute_v2(bindings)
-        return outputs
+        # Generic path: the caller passed a freshly built tensor (e.g. batched
+        # numpy fall-back). Copy into the persistent input and run.
+        img = img.contiguous()
+        if img.shape != tuple(self._input_tensor.shape):
+            # Engines built with max_batch_size>1 are not used by bench, but
+            # support the slow path for safety.
+            self.context.set_input_shape(self.engine.get_tensor_name(0), tuple(img.shape))
+            self.context.set_tensor_address(self.engine.get_tensor_name(0), img.data_ptr())
+            input_buf = img
+        else:
+            self._input_tensor.copy_(img, non_blocking=True)
+            input_buf = self._input_tensor
+
+        if self.device == "cuda":
+            self.context.execute_async_v3(self._stream.cuda_stream)
+        else:
+            self.context.execute_v2([input_buf.data_ptr()] + [o.data_ptr() for o in self._outputs])
+        return self._outputs
 
     def _postprocess(
         self,
@@ -261,12 +353,9 @@ class TRT_model:
         results = []
         for b in range(B):
             sb, lb, bb = scores[b], labels[b], boxes[b]
-            # Apply per-class confidence thresholds
-            if self.conf_threshs is not None:
-                conf_t = torch.tensor(self.conf_threshs, device=sb.device)
-                conf_keep = sb >= conf_t[lb]
-            else:
-                conf_keep = sb >= self.conf_thresh
+            # Apply per-class confidence thresholds (cached tensor avoids per-call alloc)
+            conf_t = self._conf_threshs_t.to(sb.device, non_blocking=True)
+            conf_keep = sb >= conf_t[lb]
             keep_indices = torch.where(conf_keep)[0]
             sb, lb, bb = sb[conf_keep], lb[conf_keep], bb[conf_keep]
 
@@ -306,9 +395,15 @@ class TRT_model:
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
         """
-        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
-        preds = self._predict(processed_inputs)
-        return self._postprocess(preds, processed_sizes, original_sizes)
+        # Run all GPU work on the model's dedicated stream so TRT can avoid the
+        # extra default-stream synchronisations triggered by enqueueV3, then have
+        # the default stream wait so subsequent .cpu() copies stay ordered.
+        with torch.cuda.stream(self._stream):
+            processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
+            preds = self._predict(processed_inputs)
+            results = self._postprocess(preds, processed_sizes, original_sizes)
+        torch.cuda.default_stream(self.device).wait_stream(self._stream)
+        return results
 
     @staticmethod
     def mask2poly(masks: np.ndarray, img_shape: Tuple[int, int]) -> List[np.ndarray]:

@@ -131,7 +131,7 @@ split:
 export: # TensorRT must be done on the inference device
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
-  dynamic_input: False
+  dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
   ov_int8_max_drop: 0.01
 
 

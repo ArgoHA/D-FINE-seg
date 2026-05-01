@@ -164,7 +164,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | Format | Half Precision | Notes |
 |:-------|:--------------:|:------|
 | **ONNX** | — | With optional fused postprocessor |
-| **TensorRT** | FP16 | Must be exported on the target GPU |
+| **TensorRT** | FP16 | Must be exported on the target GPU. **Static input shape only** |
 | **OpenVINO** | FP16, INT8 | Single export for FP32 or FP16 (pick during inference) and separate INT8 quantization script |
 | **CoreML** | FP16, INT8 | Cross-platform export, inference on macOS / iOS. FP32 and INT8 exported by default  |
 
@@ -201,18 +201,18 @@ YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25
 
 | Model | F1-score | IoU | Precision | Recall | Latency (ms) |
 |:------|:--------:|:---:|:---------:|:------:|:------------:|
-| **D-FINE N** | **0.513** | 0.275 | 0.665 | 0.417 | 2.7 |
+| **D-FINE N** | **0.531** | 0.288 | 0.724 | 0.42 | 1.6 |
 | YOLO26 N | 0.455 | 0.226 | 0.631 | 0.356 | 2.8 |
-| **D-FINE S** | **0.563** | 0.315 | 0.681 | 0.479 | 3.2 |
+| **D-FINE S** | **0.584** | 0.332 | 0.73 | 0.486 | 2.1 |
 | YOLO26 S | 0.510 | 0.264 | 0.652 | 0.419 | 3.1 |
-| **D-FINE M** | **0.587** | 0.335 | 0.684 | 0.514 | 3.8 |
+| **D-FINE M** | **0.605** | 0.351 | 0.732 | 0.516 | 2.7 |
 | YOLO26 M | 0.562 | 0.301 | 0.667 | 0.485 | 3.6 |
-| **D-FINE L** | **0.584** | 0.333 | 0.669 | 0.518 | 4.4 |
+| **D-FINE L** | **0.606** | 0.351 | 0.722 | 0.523 | 3.3 |
 | YOLO26 L | 0.568 | 0.308 | 0.676 | 0.490 | 4.1 |
-| **D-FINE X** | **0.592** | 0.338 | 0.672 | 0.530 | 5.7 |
+| **D-FINE X** | **0.611** | 0.354 | 0.718 | 0.532 | 4.5 |
 | YOLO26 X | 0.584 | 0.319 | 0.682 | 0.510 | 5.3 |
 
-> D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~6% higher mean relative F1-score with ~4% latency overhead. Notably, IoU is ~13% higher (mean relative improvement across all models).
+> D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~7% higher mean relative F1-score with ~28% latency reduction. Notably, IoU is ~15% higher (mean relative improvement across all models).
 
 <details>
 <summary><b>Bench graph</b></summary>
@@ -229,33 +229,35 @@ YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25
 
 | Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
 |:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
-| **D-FINE-seg N** | 5.1 | **0.213** | 0.095 | 0.272 | 0.175 | 4.3 |
+| **D-FINE-seg N** | 5.1 | **0.231** | 0.106 | 0.307 | 0.185 | 3.2 |
 | YOLO26-seg N | 2.7 | 0.062 | 0.027 | 0.272 | 0.035 | 3.8 |
-| **D-FINE-seg S** | 11.9 | **0.263** | 0.125 | 0.339 | 0.215 | 5.0 |
+| **D-FINE-seg S** | 11.9 | **0.281** | 0.134 | 0.405 | 0.215 | 3.7 |
 | YOLO26-seg S | 10.4 | 0.177 | 0.080 | 0.278 | 0.130 | 4.3 |
-| **D-FINE-seg M** | 21.2 | **0.284** | 0.134 | 0.316 | 0.258 | 5.8 |
+| **D-FINE-seg M** | 21.2 | **0.296** | 0.14 | 0.355 | 0.254 | 4.5 |
 | YOLO26-seg M | 23.6 | 0.267 | 0.128 | 0.365 | 0.210 | 5.3 |
-| **D-FINE-seg L** | 32.8 | **0.317** | 0.152 | 0.369 | 0.278 | 6.4 |
+| **D-FINE-seg L** | 32.8 | **0.342** | 0.167 | 0.439 | 0.279 | 5.0 |
 | YOLO26-seg L | 28.0 | 0.287 | 0.137 | 0.394 | 0.226 | 5.8 |
-| **D-FINE-seg X** | 64.3 | **0.350** | 0.172 | 0.391 | 0.318 | 7.8 |
+| **D-FINE-seg X** | 64.3 | **0.380** | 0.19 | 0.46 | 0.324 | 6.3 |
 | YOLO26-seg X | 62.8 | 0.300 | 0.146 | 0.408 | 0.238 | 7.6 |
 
 #### Object Detection
 
 | Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
 |:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
-| **D-FINE N** | 3.8 | **0.223** | 0.108 | 0.295 | 0.180 | 3.2 |
+| **D-FINE N** | 3.8 | **0.237** | 0.115 | 0.34 | 0.181 | 1.9 |
 | YOLO26 N | 2.4 | 0.072 | 0.033 | 0.274 | 0.042 | 3.4 |
-| **D-FINE S** | 10.3 | **0.274** | 0.140 | 0.327 | 0.240 | 3.6 |
+| **D-FINE S** | 10.3 | **0.300** | 0.155 | 0.416 | 0.234 | 2.4 |
 | YOLO26 S | 9.5 | 0.170 | 0.081 | 0.279 | 0.122 | 3.5 |
-| **D-FINE M** | 19.6 | **0.282** | 0.147 | 0.342 | 0.239 | 4.3 |
+| **D-FINE M** | 19.6 | **0.299** | 0.157 | 0.391 | 0.242 | 2.9 |
 | YOLO26 M | 20.4 | 0.232 | 0.115 | 0.303 | 0.188 | 4.2 |
-| **D-FINE L** | 31.2 | **0.342** | 0.180 | 0.409 | 0.294 | 4.9 |
+| **D-FINE L** | 31.2 | **0.355** | 0.188 | 0.452 | 0.292 | 3.5 |
 | YOLO26 L | 24.8 | 0.250 | 0.128 | 0.356 | 0.193 | 4.7 |
-| **D-FINE X** | 62.6 | **0.364** | 0.195 | 0.394 | 0.339 | 6.2 |
+| **D-FINE X** | 62.6 | **0.391** | 0.212 | 0.454 | 0.343 | 4.7 |
 | YOLO26 X | 55.7 | 0.303 | 0.158 | 0.412 | 0.239 | 6.1 |
 
-> D-FINE-seg outperforms YOLO26 in fine-tuning setting on TACO dataset in F1-score across every model size (N/S/M/L/X). In segmentation task - ~65% higher mean relative F1-score and 10% latency overhead. In detection task - ~70% higher F1-score and 1% latency overhead.
+> D-FINE-seg outperforms YOLO26 in fine-tuning setting on TACO dataset in F1-score across every model size (N/S/M/L/X). In segmentation task - ~75% higher mean relative F1-score and ~16% latency reduction. In detection task - ~80% higher F1-score and ~28% latency reduction.
+
+Note: although D-FINE does not require NMS, it still provides a small accuracy boost, so NMS is enabled by default in the current version. This is included in the reported latency.
 
 #### COCO-style APs
 
