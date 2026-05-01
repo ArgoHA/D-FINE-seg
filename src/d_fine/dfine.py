@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from src.d_fine.dfine_criterion import DFINECriterion
+from src.d_fine.utils import ensure_pretrained
 
 from .arch.dfine_decoder import DFINETransformer
 from .arch.hgnetv2 import HGNetv2
@@ -83,9 +84,10 @@ def build_model(
     model = DFINE(backbone, encoder, decoder)
 
     if pretrained_model_path:
-        if not Path(pretrained_model_path).exists():
+        resolved = ensure_pretrained(pretrained_model_path)
+        if not Path(resolved).exists():
             raise FileNotFoundError(f"{pretrained_model_path} does not exist")
-        model = load_tuning_state(model, str(pretrained_model_path))
+        model = load_tuning_state(model, resolved)
     return model.to(device)
 
 

@@ -1,9 +1,14 @@
+import re
+from pathlib import Path
 from typing import Dict
 
 import torch
 from loguru import logger
 
 from .dist_utils import is_main_process
+
+HF_REPO_ID = "ArgoSA/D-FINE-seg"
+_FILENAME_RE = re.compile(r"^dfine_(?:seg_(n|s|m|l|x)_coco|(n|s|m|l|x)_(coco|obj2coco))\.pt$")
 
 obj365_ids = [
     0,
@@ -182,3 +187,38 @@ def load_tuning_state(model, path: str):
     if is_main_process():
         logger.info(f"Pretrained weigts from {path}, {infos}")
     return model
+
+
+def ensure_pretrained(path: str | Path) -> str:
+    """Resolve a pretrained checkpoint path, fetching from HF if missing.
+
+    If the file already exists, returns the path unchanged. If it's missing and
+    the filename matches the standard `dfine_<size>_<dataset>.pt` pattern, it's
+    downloaded from `HF_REPO_ID` into the same directory. For non-standard
+    filenames (e.g. user-supplied fine-tuning checkpoints), returns the path
+    as-is so the caller raises FileNotFoundError as before.
+    """
+    p = Path(path)
+    if p.exists():
+        return str(p)
+
+    if not _FILENAME_RE.match(p.name):
+        return str(p)
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as e:
+        raise ImportError(
+            "huggingface_hub is required to auto-download pretrained weights. "
+            "Install with `pip install huggingface_hub` or place the file at "
+            f"{p} manually."
+        ) from e
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Pretrained weights not found at {p}; downloading from {HF_REPO_ID}")
+    downloaded = hf_hub_download(
+        repo_id=HF_REPO_ID,
+        filename=p.name,
+        local_dir=str(p.parent),
+    )
+    return downloaded
