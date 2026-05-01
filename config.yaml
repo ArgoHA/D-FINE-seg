@@ -57,7 +57,7 @@ train:
   amp_enabled: True # use automatic mixed precision
   clip_max_norm: 0.1 # gradient clipping
 
-  batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
+  batch_size: -1 # physical, should fit on the device. In DDP used per GPU
   b_accum_steps: 1 # grad accumulation (n * bs)
   epochs: 75
   early_stopping: 0 # 0 - no early stopping
@@ -138,7 +138,7 @@ split:
 export: # TensorRT must be done on the inference device
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
-  dynamic_input: False
+  dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
   ov_int8_max_drop: 0.02
   trt_int8_workspace_gb: 4
   trt_int8_validate: True
