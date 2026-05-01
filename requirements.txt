@@ -23,6 +23,7 @@ scipy==1.15.1
 tensorrt==10.10.0.31
 torchmetrics==1.7.4
 faster-coco-eval==1.6.5
+huggingface_hub==1.13.0
 pycocotools==2.0.8
 tqdm==4.66.5
 difPy==4.2.1

@@ -54,7 +54,7 @@ cd D-FINE-seg
 pip install -r requirements.txt
 ```
 
-For larger models (L, X), download pretrained backbone weights from [Google Drive](https://drive.google.com/drive/folders/1cjfMS_YV5LcoJsYi-fy0HWBZQU6eeP-7?usp=share_link) and place them in the `pretrained/` folder.
+Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) into `pretrained/` on first use, so no manual setup is needed. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also availible in the Hugging Face model card.
 
 ### Prepare Your Data
 

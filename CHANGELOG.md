@@ -46,3 +46,5 @@ Same behaviour on TACO dataset for both detectin and segmentation models.
 ## 2026-05-01 - Optimize TensorRT inference class
 
 Several improvements in the TensorRT inference class. Although it doesn't support dynamic input size, it is very well optimized for the static input. With S size model latency went from 3.1ms to 2.1ms without changes in the accuracy.
+
+Minor improvement - now pretrained weigts automatically download from HuggingFace
