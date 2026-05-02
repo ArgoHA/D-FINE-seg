@@ -18,19 +18,8 @@ from tqdm import tqdm
 from src.dl.dataset import CustomDataset, Loader
 from src.dl.utils import get_latest_experiment_name, process_boxes, process_masks, visualize
 from src.dl.validator import Validator
-from src.infer.litert_model import LiteRT_model
-from src.infer.onnx_model import ONNX_model
-from src.infer.ov_model import OV_model
-from src.infer.torch_model import Torch_model
 
 IS_MACOS = platform.system() == "Darwin"
-
-if IS_MACOS:
-    from src.infer.coreml_model import CoreML_model
-else:
-    from src.infer.trt_model import TRT_model
-
-torch.multiprocessing.set_sharing_strategy("file_system")
 
 
 class BenchLoader(Loader):
@@ -169,6 +158,8 @@ def test_model(
 
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg: DictConfig):
+    torch.multiprocessing.set_sharing_strategy("file_system")
+
     conf_thresh = cfg.train.conf_thresh
     iou_thresh = 0.5
     compute_maps = False
@@ -186,22 +177,27 @@ def main(cfg: DictConfig):
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
     models_path = Path(cfg.train.path_to_save)
 
-    torch_model = Torch_model(
-        model_name=cfg.model_name,
-        model_path=models_path / "model.pt",
-        n_outputs=len(cfg.train.label_to_name),
-        input_width=cfg.train.img_size[1],
-        input_height=cfg.train.img_size[0],
-        conf_thresh=conf_thresh,
-        rect=cfg.export.dynamic_input,
-        keep_ratio=cfg.train.keep_ratio,
-        enable_mask_head=cfg.task == "segment",
-        apply_nms=nms,
-    )
+    if "torch" in formats_to_bench:
+        from src.infer.torch_model import Torch_model
+
+        torch_model = Torch_model(
+            model_name=cfg.model_name,
+            model_path=models_path / "model.pt",
+            n_outputs=len(cfg.train.label_to_name),
+            input_width=cfg.train.img_size[1],
+            input_height=cfg.train.img_size[0],
+            conf_thresh=conf_thresh,
+            rect=cfg.export.dynamic_input,
+            keep_ratio=cfg.train.keep_ratio,
+            enable_mask_head=cfg.task == "segment",
+            apply_nms=nms,
+        )
 
     if IS_MACOS:
         coreml_path = models_path / "model.mlpackage"
         if coreml_path.exists() and "coreml" in formats_to_bench:
+            from src.infer.coreml_model import CoreML_model
+
             coreml_model = CoreML_model(
                 model_path=coreml_path,
                 n_outputs=len(cfg.train.label_to_name),
@@ -223,6 +219,8 @@ def main(cfg: DictConfig):
     else:
         trt_path = models_path / "model.engine"
         if trt_path.exists() and "tensorrt" in formats_to_bench:
+            from src.infer.trt_model import TRT_model
+
             trt_model = TRT_model(
                 model_path=trt_path,
                 n_outputs=len(cfg.train.label_to_name),
@@ -244,6 +242,8 @@ def main(cfg: DictConfig):
 
     ov_path = models_path / "model.xml"
     if ov_path.exists() and "openvino" in formats_to_bench:
+        from src.infer.ov_model import OV_model
+
         ov_model = OV_model(
             model_path=ov_path,
             conf_thresh=conf_thresh,
@@ -256,6 +256,8 @@ def main(cfg: DictConfig):
 
     onnx_path = models_path / "model.onnx"
     if onnx_path.exists() and "onnx" in formats_to_bench:
+        from src.infer.onnx_model import ONNX_model
+
         onnx_model = ONNX_model(
             model_path=onnx_path,
             n_outputs=len(cfg.train.label_to_name),
@@ -279,6 +281,8 @@ def main(cfg: DictConfig):
 
     litert_path = models_path / "model.tflite"
     if litert_path.exists() and "litert" in formats_to_bench:
+        from src.infer.litert_model import LiteRT_model
+
         litert_model = LiteRT_model(
             model_path=litert_path,
             n_outputs=len(cfg.train.label_to_name),
