@@ -16,6 +16,7 @@
 
 <p align="center">
   <a href="https://arxiv.org/abs/2602.23043"><img src="https://img.shields.io/badge/arXiv-2602.23043-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://huggingface.co/ArgoSA/D-FINE-seg"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20Card-yellow.svg" alt="Hugging Face Model Card"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
   <a href="mailto:argo.cve@gmail.com"><img src="https://img.shields.io/badge/Contact%20me-email-green.svg" alt="Contact me"></a>
 </p>
@@ -183,6 +184,10 @@ Four inference backends in `src/infer/`:
 | **OpenVINO** | `.xml` | CPU, iGPU |
 | **ONNX Runtime** | `.onnx` | CUDA, CPU |
 | **CoreML** | `.mlpackage` | macOS (GPU), iOS |
+
+### Multi-Object Tracking
+
+A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.06864)) is included for persistent object tracking across video frames — uses constant-velocity motion prediction with EMA-smoothed velocity instead of a Kalman filter, blends IoU with centroid distance in the match cost, and does per-class matching by default.
 
 ### Gradio Demo
 

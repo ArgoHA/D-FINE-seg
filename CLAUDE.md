@@ -25,7 +25,7 @@ src/
 
 - Python 3, PyTorch 2.9, CUDA 12.x (see [requirements.txt](requirements.txt))
 - Install with `pip install -r requirements.txt`
-- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via [src/dl/hf_pretrained.py](src/dl/hf_pretrained.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
+- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
 
 ## 4. Configuration model
 
@@ -165,6 +165,7 @@ Outputs land under `${train.infer_path}`:
 - `images/` — annotated frames (boxes + masks + labels)
 - `labels/` — YOLO-format predictions per frame
 - `crops/` — per-object crops (when `infer.to_crop: True`, padded by `infer.paddings.{w,h}`)
+- `<stem>_tracked.mp4` — for videos, when `infer.to_track: True` (default): persistent IDs via ByteTrack ([src/infer/byte_track.py](src/infer/byte_track.py)). Defaults are baked into [src/dl/infer.py](src/dl/infer.py); override any of them via a top-level `track:` block (e.g. `track.track_buffer=60`). A fresh tracker is instantiated per video so IDs don't bleed across clips.
 - `labels.txt` — classes seen across the run
 
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [src/infer/torch_model.py](src/infer/torch_model.py).
