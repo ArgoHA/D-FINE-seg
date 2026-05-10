@@ -772,10 +772,11 @@ class Visualizer:
         if mask.max() == 0:
             return
 
+        color_arr = np.array(color, dtype=np.float32)
+
         # Semi-transparent body fill
         m = mask.astype(bool)
-        overlay = np.full_like(img, color, dtype=np.uint8)
-        img[m] = cv2.addWeighted(img[m], 1 - body_alpha, overlay[m], body_alpha, 0)
+        img[m] = (img[m] * (1 - body_alpha) + color_arr * body_alpha).astype(np.uint8)
 
         # More opaque edge
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -783,8 +784,7 @@ class Visualizer:
             edge_mask = np.zeros_like(mask)
             cv2.drawContours(edge_mask, contours, -1, 1, edge_thickness)
             e = edge_mask.astype(bool)
-            edge_ov = np.full_like(img, color, dtype=np.uint8)
-            img[e] = cv2.addWeighted(img[e], 1 - edge_alpha, edge_ov[e], edge_alpha, 0)
+            img[e] = (img[e] * (1 - edge_alpha) + color_arr * edge_alpha).astype(np.uint8)
 
 
 def clip_boxes(boxes, shape):
