@@ -99,31 +99,54 @@ class TRT_model:
     def _setup_io_buffers(self):
         """Pre-allocate persistent IO tensors and bind them to the execution context.
 
-        For static-shape engines, this lets us call ``execute_async_v3`` without
-        re-binding pointers per frame and lets us optionally capture the engine
-        forward into a CUDA graph for replay.
+        Static-shape engines: allocate at the engine's nominal shape and bind once.
+        Dynamic-shape engines (e.g. exported with max_batch_size>1): allocate at
+        the optimization profile's max so a single buffer accommodates any valid
+        batch; the actual run shape is set on the context per call in `_predict`.
         """
         self._outputs: List[torch.Tensor] = []
         self._input_tensor: torch.Tensor | None = None
         self._input_dtype = torch.float32
+        self._is_dynamic = False
+        self._max_batch = 1
+        self._input_name = ""
 
-        n_io = self.engine.num_io_tensors
-        for i in range(n_io):
+        # Pass 1: input. Resolve dynamic dims via the optimization profile so we
+        # can allocate a max-sized buffer and set the context's input shape
+        # (required before output shapes can be queried in pass 2).
+        for i in range(self.engine.num_io_tensors):
             name = self.engine.get_tensor_name(i)
-            mode = self.engine.get_tensor_mode(name)
-            shape = tuple(self.engine.get_tensor_shape(name))
+            if self.engine.get_tensor_mode(name) != trt.TensorIOMode.INPUT:
+                continue
+            shape = list(self.engine.get_tensor_shape(name))
             dtype = self._torch_dtype_from_trt(self.engine.get_tensor_dtype(name))
+
+            if any(d < 0 for d in shape):
+                self._is_dynamic = True
+                _, _, max_shape = self.engine.get_tensor_profile_shape(name, 0)
+                max_shape = list(max_shape)
+                shape = [m if d < 0 else d for d, m in zip(shape, max_shape)]
+            self._max_batch = shape[0]
+            self._input_name = name
 
             tensor = torch.empty(shape, dtype=dtype, device=self.device)
             self.context.set_tensor_address(name, tensor.data_ptr())
+            self.context.set_input_shape(name, tuple(shape))
+            self._input_tensor = tensor
+            self._input_dtype = dtype
 
-            if mode == trt.TensorIOMode.INPUT:
-                self._input_tensor = tensor
-                self._input_dtype = dtype
-                # Static-shape engines still require an explicit set_input_shape on TRT 10.
-                self.context.set_input_shape(name, shape)
-            else:
-                self._outputs.append(tensor)
+        # Pass 2: outputs. With the input shape set, the context resolves each
+        # output's concrete (max) shape — use it directly instead of the
+        # engine's possibly-symbolic shape.
+        for i in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(i)
+            if self.engine.get_tensor_mode(name) != trt.TensorIOMode.OUTPUT:
+                continue
+            shape = tuple(self.context.get_tensor_shape(name))
+            dtype = self._torch_dtype_from_trt(self.engine.get_tensor_dtype(name))
+            tensor = torch.empty(shape, dtype=dtype, device=self.device)
+            self.context.set_tensor_address(name, tensor.data_ptr())
+            self._outputs.append(tensor)
 
         # Pinned host + uint8 GPU staging buffer for fast preprocessing.
         H, W = self.input_size
@@ -137,6 +160,10 @@ class TRT_model:
 
     def _capture_cuda_graph(self):
         """Capture the engine forward into a CUDA graph for low-overhead replay."""
+        if self._is_dynamic:
+            # Graphs lock in a single shape; useless when batch varies per call.
+            self._graph = None
+            return
         try:
             self._stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(self._stream):
@@ -303,27 +330,39 @@ class TRT_model:
             tensor = tensor.to(self.device)
         return tensor, processed_sizes, original_sizes
 
-    def _predict(self, img: torch.Tensor) -> List[torch.Tensor]:
+    def _predict(self, img: torch.Tensor, actual_batch: int | None = None) -> List[torch.Tensor]:
+        # `actual_batch` is the real run-time batch (== len(processed_sizes)).
+        # Falling back to img.shape[0] is wrong for the single-image fast path
+        # on dynamic engines, where img is the max-sized persistent buffer.
+        if actual_batch is None:
+            actual_batch = img.shape[0]
+
         # Fast path: if `img` is the persistent input buffer we already wrote in
         # _prepare_inputs, just (graph-)replay or async-execute.
         if img is self._input_tensor:
+            if self._is_dynamic:
+                run_shape = (actual_batch,) + tuple(self._input_tensor.shape[1:])
+                self.context.set_input_shape(self._input_name, run_shape)
             if self._graph is not None:
                 self._graph.replay()
             else:
                 stream_handle = self._stream.cuda_stream if self.device == "cuda" else 0
                 self.context.execute_async_v3(stream_handle)
-            return self._outputs
+            return self._slice_outputs(actual_batch)
 
         # Generic path: the caller passed a freshly built tensor (e.g. batched
         # numpy fall-back). Copy into the persistent input and run.
         img = img.contiguous()
-        if img.shape != tuple(self._input_tensor.shape):
-            # Engines built with max_batch_size>1 are not used by bench, but
-            # support the slow path for safety.
-            self.context.set_input_shape(self.engine.get_tensor_name(0), tuple(img.shape))
-            self.context.set_tensor_address(self.engine.get_tensor_name(0), img.data_ptr())
+        rebound = img.shape != tuple(self._input_tensor.shape)
+        if rebound:
+            self.context.set_input_shape(self._input_name, tuple(img.shape))
+            self.context.set_tensor_address(self._input_name, img.data_ptr())
             input_buf = img
         else:
+            if self._is_dynamic:
+                # Buffer matches img shape, but the context may still hold a
+                # smaller batch from a prior call — re-assert it.
+                self.context.set_input_shape(self._input_name, tuple(img.shape))
             self._input_tensor.copy_(img, non_blocking=True)
             input_buf = self._input_tensor
 
@@ -331,7 +370,16 @@ class TRT_model:
             self.context.execute_async_v3(self._stream.cuda_stream)
         else:
             self.context.execute_v2([input_buf.data_ptr()] + [o.data_ptr() for o in self._outputs])
-        return self._outputs
+
+        # Restore the persistent-input binding so subsequent fast-path calls work.
+        if rebound:
+            self.context.set_tensor_address(self._input_name, self._input_tensor.data_ptr())
+        return self._slice_outputs(actual_batch)
+
+    def _slice_outputs(self, batch: int) -> List[torch.Tensor]:
+        # Outputs are sized at max batch; trim views to the actual run batch so
+        # downstream postprocessing doesn't iterate empty rows. Cheap (no copy).
+        return [o[:batch] for o in self._outputs]
 
     def _postprocess(
         self,
@@ -400,7 +448,7 @@ class TRT_model:
         # the default stream wait so subsequent .cpu() copies stay ordered.
         with torch.cuda.stream(self._stream):
             processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
-            preds = self._predict(processed_inputs)
+            preds = self._predict(processed_inputs, actual_batch=len(processed_sizes))
             results = self._postprocess(preds, processed_sizes, original_sizes)
         torch.cuda.default_stream(self.device).wait_stream(self._stream)
         return results
