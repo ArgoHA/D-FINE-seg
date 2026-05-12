@@ -52,8 +52,10 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 ```bash
 git clone https://github.com/ArgoHA/D-FINE-seg.git
 cd D-FINE-seg
-pip install -r requirements.txt
+uv sync
 ```
+
+This creates a `.venv/` with all dependencies pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
 
 Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) into `pretrained/` on first use, so no manual setup is needed. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also availible in the Hugging Face model card.
 
@@ -138,7 +140,7 @@ make                 # train -> export -> bench (does not run split)
 Or run overwriting configs from CLI
 
 ```bash
-python -m src.dl.train exp_name=my_exp
+uv run python -m src.dl.train exp_name=my_exp
 ```
 
 Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` — it auto-launches with `torchrun`.
@@ -192,7 +194,7 @@ A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.068
 ### Gradio Demo
 
 ```bash
-python -m demo.demo
+uv run python -m demo.demo
 ```
 
 A web UI for uploading images and running inference interactively.
