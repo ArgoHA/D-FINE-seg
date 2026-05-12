@@ -23,8 +23,9 @@ src/
 
 ## 3. Environment
 
-- Python 3, PyTorch 2.9, CUDA 12.x (see [requirements.txt](requirements.txt))
-- Install with `pip install -r requirements.txt`
+- Python 3.11–3.13, PyTorch 2.9, CUDA 12.x. Dependencies live in [pyproject.toml](pyproject.toml); [uv.lock](uv.lock) is the source of truth for versions.
+- Install with `uv sync` (creates `.venv/`). All Makefile targets shell out via `uv run`, so no manual activation is needed for `make train` / `make bench` / etc. For ad-hoc commands either prefix with `uv run` or activate the venv (`source .venv/bin/activate`).
+- Platform-specific deps are gated by markers in `pyproject.toml`: `tensorrt` installs on Linux only. `coremltools` ships wheels for both platforms (Linux can run the converter for `make export`, even though the CoreML runtime itself is macOS-only). `uv.lock` covers both so the same lockfile works on the dev mac and the lab box.
 - Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
 
 ## 4. Configuration model
@@ -194,7 +195,7 @@ Produces, under `${train.path_to_save}`:
 - `model.onnx` (always)
 - `model.engine` — TensorRT (skipped on macOS; engine is GPU-specific, rebuild on target hardware)
 - `model.xml` + `model.bin` — OpenVINO
-- `model.mlpackage` + `model_int8.mlpackage` — CoreML (macOS only)
+- `model.mlpackage` + `model_int8.mlpackage` — CoreML (converter runs on Linux + macOS; runtime/`make bench` on the CoreML backend is macOS-only)
 - `model.tflite` + `model_int8.tflite` — LiteRT
 
 Knobs under `export:` in `config.yaml`: `half` (FP16), `max_batch_size`, `dynamic_input`.
