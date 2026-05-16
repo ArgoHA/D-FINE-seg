@@ -1,5 +1,7 @@
+import multiprocessing as mp
 import os
 import time
+from multiprocessing import shared_memory
 from pathlib import Path
 from queue import Queue
 from shutil import rmtree
@@ -7,6 +9,7 @@ from threading import Thread
 
 import cv2
 import hydra
+import numpy as np
 from omegaconf import DictConfig
 from tabulate import tabulate
 from tqdm import tqdm
@@ -190,6 +193,169 @@ def run_optimized_v2(
     return n
 
 
+def _drawer_proc(
+    in_q: "mp.Queue",
+    free_q: "mp.Queue",
+    save_dir_str: str,
+    n_classes: int,
+    class_names: dict,
+    frame_shape: tuple,
+    frame_dtype_str: str,
+) -> None:
+    """
+    Worker entrypoint for run_optimized_v3. Reads frames from a pool of
+    shared-memory blocks (attached by name) instead of from pickled queue
+    payloads. Returns the block to free_q as soon as visualizer.draw is
+    done with it (draw copies internally).
+    """
+    visualizer = Visualizer(n_classes=n_classes, class_names=class_names)
+    save_dir = Path(save_dir_str)
+    dtype = np.dtype(frame_dtype_str)
+    shm_cache: dict[str, shared_memory.SharedMemory] = {}
+    view_cache: dict[str, np.ndarray] = {}
+    try:
+        while True:
+            item = in_q.get()
+            if item is None:
+                return
+            i, shm_name, res = item
+            view = view_cache.get(shm_name)
+            if view is None:
+                shm = shared_memory.SharedMemory(name=shm_name)
+                shm_cache[shm_name] = shm
+                view = np.ndarray(frame_shape, dtype=dtype, buffer=shm.buf)
+                view_cache[shm_name] = view
+            drawn = visualizer.draw(view, res)
+            free_q.put(shm_name)
+            cv2.imwrite(str(save_dir / f"{i:06d}.jpg"), drawn)
+    finally:
+        for shm in shm_cache.values():
+            shm.close()
+
+
+def run_optimized_v3(
+    model,
+    visualizer,
+    source,
+    save_dir: Path,
+    max_frames: int | None = None,
+    cpu_frac: float = 0.8,
+    n_draw: int | None = None,
+) -> int:
+    """
+    Multiprocessing variant of run_optimized_v2, with shared memory for frames.
+      - 1 reader thread (in main process)
+      - main process runs inference, memcpys the frame into a free shm block,
+        and ships only (idx, shm_name, res) over the mp.Queue
+      - n_draw worker processes attach to the shm block by name, draw, imwrite,
+        and return the block to the free pool
+
+    Removes the pickling tax of a naive multiprocessing version (which would
+    serialize every ~6MB frame through a pipe). Only the small result dict
+    crosses the queue; the frame travels through a fixed pool of shm blocks.
+    """
+    if n_draw is None:
+        n_draw = max(1, int((os.cpu_count() or 4) * cpu_frac) - 1)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    ctx = mp.get_context("spawn")
+    cap = open_capture(source)
+
+    # Peek the first frame to learn shape + dtype + nbytes for the shm pool.
+    ok, first_frame = cap.read()
+    if not ok:
+        cap.release()
+        return 0
+    frame_shape = first_frame.shape
+    frame_dtype_str = first_frame.dtype.str
+    nbytes = first_frame.nbytes
+
+    pool_size = 2 * n_draw + 4
+    shms = [shared_memory.SharedMemory(create=True, size=nbytes) for _ in range(pool_size)]
+    free_q: "mp.Queue" = ctx.Queue()
+    for shm in shms:
+        free_q.put(shm.name)
+
+    draw_q: "mp.Queue" = ctx.Queue(maxsize=2 * n_draw + 2)
+    read_q: Queue = Queue(maxsize=2 * n_draw + 2)
+    READ_DONE = object()
+
+    def reader():
+        read_q.put((0, first_frame))
+        i = 1
+        while True:
+            if max_frames and i >= max_frames:
+                break
+            ok2, frame = cap.read()
+            if not ok2:
+                break
+            read_q.put((i, frame))
+            i += 1
+        read_q.put(READ_DONE)
+
+    n_classes = len(visualizer.class_names)
+    class_names = dict(visualizer.class_names)
+    save_dir_str = str(save_dir)
+
+    drawers = [
+        ctx.Process(
+            target=_drawer_proc,
+            args=(
+                draw_q,
+                free_q,
+                save_dir_str,
+                n_classes,
+                class_names,
+                frame_shape,
+                frame_dtype_str,
+            ),
+            daemon=True,
+        )
+        for _ in range(n_draw)
+    ]
+    for p in drawers:
+        p.start()
+
+    t_r = Thread(target=reader, daemon=True)
+    t_r.start()
+
+    # Producer-side: keep a numpy view onto every owned shm block so writes
+    # are a single memcpy with no re-attach cost.
+    views = {
+        s.name: np.ndarray(frame_shape, dtype=np.dtype(frame_dtype_str), buffer=s.buf) for s in shms
+    }
+
+    pbar = tqdm(total=total_frames(cap, max_frames))
+    n = 0
+    try:
+        while True:
+            item = read_q.get()
+            if item is READ_DONE:
+                break
+            i, frame = item
+            res = model(frame)[0]
+            shm_name = free_q.get()  # blocks if all blocks are in flight (backpressure)
+            views[shm_name][...] = frame
+            draw_q.put((i, shm_name, res))
+            n += 1
+            pbar.update(1)
+        for _ in drawers:
+            draw_q.put(None)
+        for p in drawers:
+            p.join()
+        t_r.join()
+    finally:
+        cap.release()
+        pbar.close()
+        for shm in shms:
+            shm.close()
+            try:
+                shm.unlink()
+            except FileNotFoundError:
+                pass
+    return n
+
+
 def profile_stages(model, visualizer, source, save_dir: Path, n_frames: int = 200) -> None:
     """
     Run each stage in isolation and print ms/frame.
@@ -284,7 +450,8 @@ def main(cfg: DictConfig):
 
     n_workers = max(2, int((os.cpu_count() or 4) * 0.8))
     n_draw = max(1, n_workers - 1)
-    time_run(f"Pooled (1r/{n_draw}d)", run_optimized_v2, "pooled", n_draw=n_draw)
+    time_run(f"Pooled threads (1r/{n_draw}d)", run_optimized_v2, "pooled", n_draw=n_draw)
+    # time_run(f"Pooled procs (1r/{n_draw}d)", run_optimized_v3, "pooled_mp", n_draw=n_draw)
 
     print(
         "\n"
