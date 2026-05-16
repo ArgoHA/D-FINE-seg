@@ -497,7 +497,7 @@ dependencies = [
     { name = "onnxconverter-common", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "onnxruntime", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "onnxscript", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "onnxsim", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxsim", marker = "sys_platform == 'linux'" },
     { name = "opencv-python", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "opencv-python-headless", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "openvino", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -536,7 +536,7 @@ requires-dist = [
     { name = "onnxconverter-common", specifier = "==1.16.0" },
     { name = "onnxruntime", specifier = "==1.21.1" },
     { name = "onnxscript", specifier = "==0.6.2" },
-    { name = "onnxsim", specifier = "==0.4.36" },
+    { name = "onnxsim", marker = "sys_platform == 'linux'", specifier = "==0.4.36" },
     { name = "opencv-python", specifier = "==4.10.0.84" },
     { name = "opencv-python-headless", specifier = "==4.10.0.84" },
     { name = "openvino", specifier = "==2025.2.0" },
@@ -1698,12 +1698,11 @@ name = "onnxsim"
 version = "0.4.36"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "onnx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "rich", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnx", marker = "sys_platform == 'linux'" },
+    { name = "rich", marker = "sys_platform == 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ce/9e/f34238413ebeda9a3a8802feeaa5013934455466b9ab390b48ad9c7e184f/onnxsim-0.4.36.tar.gz", hash = "sha256:6e0ee9d6d4a83042bdef7319fbe58352d9fda5f253386be2b267c7c27f0638ee", size = 20993703, upload-time = "2024-03-04T08:25:00.086Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2e/a3/f6cad8499f375a3acc8a7837721f82860244656cf62984cf80ebe187cc68/onnxsim-0.4.36-cp311-cp311-macosx_10_15_universal2.whl", hash = "sha256:150b9a3a409af2f3161af3fecda2113e0e6e296fb015b5205a9ddf645765acad", size = 3471242, upload-time = "2024-03-04T08:24:33.289Z" },
     { url = "https://files.pythonhosted.org/packages/db/94/22aab761b3d416bce02020d9ca98dc692427c2717b0325952e30ce41f83b/onnxsim-0.4.36-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fa7596e6b806ed19077f7652788a50ee576c172b4d16d421f0593aef1a6fa4c4", size = 2255003, upload-time = "2024-03-04T08:24:35.024Z" },
 ]
 
