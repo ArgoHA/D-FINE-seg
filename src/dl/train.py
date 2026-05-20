@@ -334,9 +334,6 @@ class Trainer:
                     orig_sizes=orig_sizes[b].unsqueeze(0),
                     keep_ratio=keep_ratio,
                 )
-                out["mask_probs"] = (
-                    masks_list[0].to(dtype=torch.float32).detach().cpu()
-                )  # [K, H0, W0]
 
                 # binarize masks
                 out["masks"] = (
@@ -345,7 +342,6 @@ class Trainer:
 
                 # clean up masks outside of the corresponding bbox
                 out["masks"] = cleanup_masks(out["masks"], out["boxes"])
-                del out["mask_probs"]
 
             results.append(out)
         return results
