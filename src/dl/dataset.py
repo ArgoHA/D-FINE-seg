@@ -501,8 +501,12 @@ class CustomDataset(Dataset):
             masks_t: (N,H,W) uint8 (possibly N=0)
             image_path: Path
             orig_size: torch.tensor([H, W])
+            polys_out: list[(K,2)] absolute polygons at ORIGINAL resolution, aligned with
+                labels/boxes — only populated for val/test segmentation eval, else None.
         """
         image_path = Path(self.split.iloc[idx].values[0])
+        # Original-resolution GT polygons, for val/test eval.
+        polys_out = None
         if random.random() < self.mosaic_prob:
             mosaic_result = self._load_mosaic(idx)
             if mosaic_result is None:
@@ -549,11 +553,16 @@ class CustomDataset(Dataset):
                 if masks_all and surviving_indices:
                     masks = [masks_all[int(i)] for i in surviving_indices]
                     masks_t = torch.stack([m.squeeze().to(dtype=torch.uint8) for m in masks], dim=0)
+                    surviving_polys = [polys_abs[int(i)] for i in surviving_indices]
                 else:
                     masks_t = torch.zeros(
                         (0, transformed["image"].shape[1], transformed["image"].shape[2]),
                         dtype=torch.uint8,
                     )
+                    surviving_polys = []
+
+                if self.mode != "train":
+                    polys_out = surviving_polys
             else:
                 transformed = self.transform(
                     image=image,
@@ -579,7 +588,7 @@ class CustomDataset(Dataset):
         boxes = torch.tensor(
             abs_xyxy_to_norm_xywh(boxes, image.shape[1], image.shape[2]), dtype=torch.float32
         )
-        return image, labels, boxes, masks_t, image_path, orig_size
+        return image, labels, boxes, masks_t, image_path, orig_size, polys_out
 
     def __len__(self):
         return len(self.split)
@@ -834,6 +843,7 @@ class Loader:
                 "boxes": item[2],
                 "masks": item[3],
                 "orig_size": item[5],
+                "polys": item[6],
             }
             images.append(item[0])
             targets.append(target_dict)
