@@ -16,7 +16,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.dl.dataset import CustomDataset, Loader
-from src.dl.utils import get_latest_experiment_name, process_boxes, process_masks, visualize
+from src.dl.utils import (
+    get_latest_experiment_name,
+    poly_abs_to_mask,
+    process_boxes,
+    visualize,
+)
 from src.dl.validator import Validator
 
 IS_MACOS = platform.system() == "Darwin"
@@ -99,9 +104,25 @@ def test_model(
             gt_labels = targets["labels"]
 
             if "masks" in targets:
-                gt_masks = process_masks(
-                    targets["masks"][None], processed_size, targets["orig_size"][None], keep_ratio
-                )[batch].cpu()
+                # GT masks rasterized from original-resolution polygons (see audit A2);
+                # `polys` is empty for background images and the detection task.
+                polys = targets.get("polys")
+                H0 = int(targets["orig_size"][0])
+                W0 = int(targets["orig_size"][1])
+                if polys:
+                    gt_masks = torch.from_numpy(
+                        np.stack(
+                            [
+                                poly_abs_to_mask(p, H0, W0)
+                                if getattr(p, "size", 0)
+                                else np.zeros((H0, W0), dtype=np.uint8)
+                                for p in polys
+                            ],
+                            axis=0,
+                        )
+                    ).to(torch.uint8)
+                else:
+                    gt_masks = torch.zeros((0, H0, W0), dtype=torch.uint8)
 
             gt_dict = {"boxes": gt_boxes, "labels": gt_labels.int()}
             if "masks" in targets:
