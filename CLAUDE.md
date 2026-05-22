@@ -245,3 +245,7 @@ OpenVINO path respects `ov_int8_max_drop` (default 0.02 F1 drop allowed).
 | Inspect FP/FN | `python -m src.dl.check_errors` |
 | OpenVINO INT8 | `make ov_int8` |
 | TensorRT INT8 | `make trt_int8` |
+
+## 13. Code style
+
+- **Keep comments short — core info only.** Prefer a single terse line. Don't restate what the code already says or narrate rationale at length; capture just the non-obvious fact. Match the existing comment density of the surrounding file.

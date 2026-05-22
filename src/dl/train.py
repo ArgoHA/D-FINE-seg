@@ -42,6 +42,7 @@ from src.dl.utils import (
     get_latest_experiment_name,
     get_vram_usage,
     log_metrics_locally,
+    poly_abs_to_mask,
     process_boxes,
     process_masks,
     save_metrics,
@@ -360,30 +361,24 @@ class Trainer:
             )
             result = dict(labels=lab.detach().cpu(), boxes=box.squeeze(0).detach().cpu())
 
-            # GT masks come from dataset already rasterized at network size; map to original size
-            if (
-                "masks" in targets[idx]
-                and targets[idx]["masks"] is not None
-                and targets[idx]["masks"].numel() > 0
-            ):
-                gt_m = targets[idx]["masks"].to(
-                    dtype=inputs.dtype, device=inputs.device
-                )  # [Ni,Hnet,Wnet]
-                gt_m = gt_m.unsqueeze(0)  # [1,Ni,Hnet,Wnet] to match helper API
-                # Helper expects [B,Q,Hm,Wm]; we pass B=1, Q=Ni
-                masks_list = process_masks(
-                    gt_m,
-                    processed_size=inputs[idx].shape[1:],  # (Hnet, Wnet)
-                    orig_sizes=orig_sizes[idx].unsqueeze(0),  # [1,2]
-                    keep_ratio=keep_ratio,
+            # Original res GT polys for eval
+            H0 = int(orig_sizes[idx, 0].item())
+            W0 = int(orig_sizes[idx, 1].item())
+            polys = targets[idx].get("polys")
+
+            if polys:
+                gt_masks = np.stack(
+                    [
+                        poly_abs_to_mask(p, H0, W0)
+                        if getattr(p, "size", 0)
+                        else np.zeros((H0, W0), dtype=np.uint8)
+                        for p in polys
+                    ],
+                    axis=0,
                 )
-                # back to [Ni,H0,W0] and uint8
-                result["masks"] = (masks_list[0].clamp(0, 1) >= 0.5).to(torch.uint8).detach().cpu()
+                result["masks"] = torch.from_numpy(gt_masks).to(torch.uint8)
             else:
-                result["masks"] = torch.zeros(
-                    (0, int(orig_sizes[idx, 0].item()), int(orig_sizes[idx, 1].item())),
-                    dtype=torch.uint8,
-                )
+                result["masks"] = torch.zeros((0, H0, W0), dtype=torch.uint8)
 
             results.append(result)
         return results
