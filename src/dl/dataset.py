@@ -426,6 +426,7 @@ class CustomDataset(Dataset):
             valid_indices = []
             for i, poly in enumerate(mosaic_segments):
                 if poly.size == 0:
+                    # detection-only annotation (no polygon) — keep the box
                     clipped_segments.append(np.empty((0, 2), dtype=np.float32))
                     valid_indices.append(i)
                     continue
@@ -437,11 +438,10 @@ class CustomDataset(Dataset):
                     x_min, y_min = clipped.min(axis=0)
                     x_max, y_max = clipped.max(axis=0)
                     mosaic_targets[i, 1:5] = [x_min, y_min, x_max, y_max]
-                else:
-                    # Polygon became invalid after clipping, mark for removal
-                    clipped_segments.append(np.empty((0, 2), dtype=np.float32))
-                    valid_indices.append(i)
+                # else: polygon fully clipped away — drop box and segment
 
+            # keep only rows whose polygon survived clipping (det-only rows always kept)
+            mosaic_targets = mosaic_targets[valid_indices]
             mosaic_segments = clipped_segments
 
             # Clip bboxes (for detection-only annotations that don't have polygons)
