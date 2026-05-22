@@ -243,9 +243,6 @@ class Trainer:
         if self.amp_enabled:
             self.scaler = GradScaler()
 
-        if self.use_wandb and self.is_main:
-            wandb.watch(self.model)
-
     def init_dirs(self):
         for path in [self.debug_img_path, self.eval_preds_path]:
             if path.exists():
