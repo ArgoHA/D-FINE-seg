@@ -89,26 +89,26 @@ def test_model(
         torch.cuda.synchronize()
 
     for _, targets, img_paths in tqdm(test_loader, total=len(test_loader)):
-        for img_path, targets in zip(img_paths, targets):
+        for img_path, target in zip(img_paths, targets):
             img = cv2.imread(str(data_path / "images" / img_path))
 
             # laod GT
             gt_boxes = process_boxes(
-                targets["boxes"][None],
+                target["boxes"][None],
                 processed_size,
-                targets["orig_size"][None],
+                target["orig_size"][None],
                 keep_ratio,
                 device,
             )[batch].cpu()
 
-            gt_labels = targets["labels"]
+            gt_labels = target["labels"]
 
-            if "masks" in targets:
+            if "masks" in target:
                 # GT masks rasterized from original-resolution polygons (see audit A2);
                 # `polys` is empty for background images and the detection task.
-                polys = targets.get("polys")
-                H0 = int(targets["orig_size"][0])
-                W0 = int(targets["orig_size"][1])
+                polys = target.get("polys")
+                H0 = int(target["orig_size"][0])
+                W0 = int(target["orig_size"][1])
                 if polys:
                     gt_masks = torch.from_numpy(
                         np.stack(
@@ -125,7 +125,7 @@ def test_model(
                     gt_masks = torch.zeros((0, H0, W0), dtype=torch.uint8)
 
             gt_dict = {"boxes": gt_boxes, "labels": gt_labels.int()}
-            if "masks" in targets:
+            if "masks" in target:
                 gt_dict["masks"] = gt_masks
             all_gt.append(gt_dict)
 
