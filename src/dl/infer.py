@@ -95,6 +95,9 @@ def run_images(
     labels = set()
     for img_path in tqdm(imag_paths):
         img = cv2.imread(str(folder_path / img_path))
+        if img is None:
+            logger.warning(f"Skipping unreadable image: {img_path}")
+            continue
         or_img = img.copy()
         raw_res = torch_model(img)
 
