@@ -92,8 +92,10 @@ def build_model(
 
 
 def build_loss(model_name, num_classes, label_smoothing, enable_mask_head):
-    model_cfg = models[model_name]
-    if enable_mask_head:
+    # deepcopy so appending "masks" mutates a private copy, not the shared
+    # global `models` config — build_loss may be called more than once per run.
+    model_cfg = deepcopy(models[model_name])
+    if enable_mask_head and "masks" not in model_cfg["DFINECriterion"]["losses"]:
         model_cfg["DFINECriterion"]["losses"].append("masks")
     matcher = HungarianMatcher(**model_cfg["matcher"])
     loss_fn = DFINECriterion(

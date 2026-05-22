@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 base_cfg = {
     "HGNetv2": {
         "pretrained": False,
@@ -201,12 +203,14 @@ sizes_cfg = {
 
 
 def merge_configs(base, size_specific):
-    result = {**base}
+    # deepcopy so list/dict values (e.g. DFINECriterion.losses) are not shared
+    # between model sizes — a shared list lets one size's mutation leak into all.
+    result = deepcopy(base)
     for key, value in size_specific.items():
         if key in result and isinstance(result[key], dict):
             result[key] = merge_configs(result[key], value)
         else:
-            result[key] = value
+            result[key] = deepcopy(value)
     return result
 
 
