@@ -58,7 +58,13 @@ class DFINE(nn.Module):
 
 
 def build_model(
-    model_name, num_classes, enable_mask_head, device, img_size=None, pretrained_model_path=None
+    model_name,
+    num_classes,
+    enable_mask_head,
+    device,
+    img_size=None,
+    in_channels: int = 3,
+    pretrained_model_path=None,
 ):
     model_cfg = deepcopy(models[model_name])
 
@@ -77,7 +83,7 @@ def build_model(
         stage2_ch = HGNetv2.arch_configs[backbone_name]["stage_config"]["stage2"][2]
         model_cfg["DFINETransformer"]["mask_low_level_ch"] = stage2_ch
 
-    backbone = HGNetv2(**model_cfg["HGNetv2"])
+    backbone = HGNetv2(in_channels=in_channels, **model_cfg["HGNetv2"])
     encoder = HybridEncoder(**model_cfg["HybridEncoder"])
     decoder = DFINETransformer(num_classes=num_classes, **model_cfg["DFINETransformer"])
 
