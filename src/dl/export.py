@@ -119,6 +119,7 @@ def prepare_model(cfg, device):
         enable_mask_head=cfg.task == "segment",
         device=device,
         img_size=cfg.train.img_size,
+        in_channels=cfg.train.in_channels,
     )
     model.load_state_dict(torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True))
     model.eval()
@@ -177,14 +178,15 @@ def export_to_onnx(
 def export_to_openvino(onnx_path: Path, x_test, dynamic_input: bool, max_batch_size: int) -> None:
     import openvino as ov
 
+    channels = int(x_test.shape[1])
     if not dynamic_input and max_batch_size <= 1:
         inp = None
     elif max_batch_size > 1 and dynamic_input:
-        inp = [-1, 3, -1, -1]
+        inp = [-1, channels, -1, -1]
     elif max_batch_size > 1:
         inp = [-1, *x_test.shape[1:]]
     elif dynamic_input:
-        inp = [1, 3, -1, -1]
+        inp = [1, channels, -1, -1]
 
     model = ov.convert_model(input_model=str(onnx_path), input=inp, example_input=x_test)
 
@@ -421,7 +423,9 @@ def main(cfg: DictConfig):
     model.eval()
     raw_model.eval()
 
-    x_test = torch.randn(cfg.export.max_batch_size, 3, *cfg.train.img_size).to(device)
+    x_test = torch.randn(
+        cfg.export.max_batch_size, cfg.train.in_channels, *cfg.train.img_size
+    ).to(device)
     _ = model(x_test)
 
     # Openvino currently doesn't supprort some operations in postprocessor

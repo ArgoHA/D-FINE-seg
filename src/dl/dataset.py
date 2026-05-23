@@ -163,7 +163,8 @@ class CustomDataset(Dataset):
         self.target_h, self.target_w = img_size
         self.coco_mode = coco_annotations is not None
         self._coco_entries = coco_annotations
-        self.norm = ([0, 0, 0], [1, 1, 1])
+        self.in_channels = int(cfg.train.in_channels)
+        self.norm = ([0.0] * self.in_channels, [1.0] * self.in_channels)
         self.debug_img_processing = debug_img_processing
         self.mode = mode
         self.ignore_background = False
@@ -184,6 +185,7 @@ class CustomDataset(Dataset):
         self.debug_img_path = Path(cfg.train.debug_img_path)
 
     def _init_augs(self, cfg) -> None:
+        pad_color = tuple([114] * self.in_channels)
         if self.keep_ratio:
             scaleup = False
             if self.mode == "train":
@@ -193,7 +195,7 @@ class CustomDataset(Dataset):
                 LetterboxRect(
                     height=self.target_h,
                     width=self.target_w,
-                    color=(114, 114, 114),
+                    color=pad_color,
                     scaleup=scaleup,
                     always_apply=True,
                 )
@@ -218,7 +220,6 @@ class CustomDataset(Dataset):
                 A.RandomGamma(p=cfg.train.augs.gamma),
                 A.Blur(p=cfg.train.augs.blur),
                 A.GaussNoise(p=cfg.train.augs.noise, std_range=(0.1, 0.2)),
-                A.ToGray(p=cfg.train.augs.to_gray),
                 A.Affine(
                     rotate=[90, 90],
                     p=cfg.train.augs.rotate_90,
@@ -232,10 +233,13 @@ class CustomDataset(Dataset):
                     p=cfg.train.augs.rotation_p,
                     interpolation=cv2.INTER_LINEAR,
                     border_mode=cv2.BORDER_CONSTANT,
-                    fill=(114, 114, 114),
+                    fill=pad_color,
                     mask_interpolation=cv2.INTER_LINEAR,
                 ),
             ]
+            # ToGray is RGB-only; skip silently when input is not 3-channel.
+            if self.in_channels == 3:
+                augs.insert(5, A.ToGray(p=cfg.train.augs.to_gray))
 
             self.transform = A.Compose(
                 augs + resize + norm,
@@ -278,6 +282,11 @@ class CustomDataset(Dataset):
         # Convert from [C, H, W] to [H, W, C]
         image_np = np.transpose(image_np, (1, 2, 0))
 
+        # For N>3 channels, only the first 3 are saved (assumed RGB) so the
+        # debug viewer stays useful.
+        if image_np.shape[2] > 3:
+            image_np = image_np[:, :, :3]
+
         # Convert pixel values from [0, 1] to [0, 255]
         image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
         image_np = np.ascontiguousarray(image_np)
@@ -302,9 +311,32 @@ class CustomDataset(Dataset):
         save_path = save_dir / f"{idx}_idx_{img_path.stem}_debug.jpg"
         cv2.imwrite(str(save_path), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
 
+    def _read_image(self, path) -> Optional[np.ndarray]:
+        """Load an image as HWC. RGB for 3-channel input (BGR->RGB swap);
+        for ``in_channels != 3`` reads multi-channel TIFFs as-is via
+        ``IMREAD_UNCHANGED``. Returns ``None`` if the file cannot be decoded.
+        Raises ``ValueError`` when the file has a wrong channel count."""
+        if self.in_channels == 3:
+            image = cv2.imread(str(path))  # BGR, HWC
+            if image is None:
+                return None
+            return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            return None
+        if image.ndim == 2:
+            image = image[..., None]
+        if image.shape[2] != self.in_channels:
+            raise ValueError(
+                f"Expected {self.in_channels} channels at {path}, got {image.shape[2]}"
+            )
+        return image
+
     def _get_data(self, idx) -> Tuple[np.ndarray, np.ndarray]:
         """
-        returns np.ndarray RGB image; targets as np.ndarray [[class_id, x1, y1, x2, y2]]
+        returns np.ndarray image (RGB for 3ch, multi-channel TIFF as-is for >3ch);
+        targets as np.ndarray [[class_id, x1, y1, x2, y2]]
         """
         if self.coco_mode:
             return self._get_data_coco(idx)
@@ -312,13 +344,12 @@ class CustomDataset(Dataset):
         # Get image
         image_path = Path(self.split.iloc[idx].values[0])
         try:
-            image = cv2.imread(str(self.root_path / "images" / f"{image_path}"))  # BGR, HWC
+            image = self._read_image(self.root_path / "images" / f"{image_path}")
         except Exception:
             image = None
         if image is None:
             return None
 
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # RGB, HWC
         height, width, _ = image.shape
         orig_size = torch.tensor([height, width])
 
@@ -343,13 +374,12 @@ class CustomDataset(Dataset):
         entry = self._coco_entries[idx]
         image_path = Path(entry["file_name"])
         try:
-            image = cv2.imread(str(self.root_path / "images" / str(image_path)))
+            image = self._read_image(self.root_path / "images" / str(image_path))
         except Exception:
             image = None
         if image is None:
             return None
 
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width, _ = image.shape
         orig_size = torch.tensor([height, width])
 

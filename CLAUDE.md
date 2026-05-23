@@ -289,4 +289,6 @@ uv run python -m tests.generate_fixtures
 
 ## 14. Code style
 
+- **Be consice** - write as little code as possible to achieve the goal.
+
 - **Keep comments short — core info only.** Prefer a single terse line. Don't restate what the code already says or narrate rationale at length; capture just the non-obvious fact. Match the existing comment density of the surrounding file.

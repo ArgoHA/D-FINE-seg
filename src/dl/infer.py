@@ -17,13 +17,13 @@ VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 
 def figure_input_type(folder_path: Path):
     video_types = ["mp4", "avi", "mov", "mkv"]
-    img_types = ["jpg", "png", "jpeg"]
+    img_types = ["jpg", "png", "jpeg", "tif", "tiff"]
 
     for f in folder_path.iterdir():
-        if f.suffix[1:] in video_types:
+        if f.suffix[1:].lower() in video_types:
             data_type = "video"
             break
-        elif f.suffix[1:] in img_types:
+        elif f.suffix[1:].lower() in img_types:
             data_type = "image"
             break
     logger.info(
@@ -94,10 +94,12 @@ def run_images(
     imag_paths = [img.name for img in folder_path.iterdir() if not str(img).startswith(".")]
     labels = set()
     for img_path in tqdm(imag_paths):
-        img = cv2.imread(str(folder_path / img_path))
+        img = cv2.imread(str(folder_path / img_path), cv2.IMREAD_UNCHANGED)
         if img is None:
             logger.warning(f"Skipping unreadable image: {img_path}")
             continue
+        if img.ndim == 2:
+            img = img[..., None]
         or_img = img.copy()
         raw_res = torch_model(img)
 
@@ -111,8 +113,12 @@ def run_images(
             res["masks"] = raw_res[batch]["masks"].cpu()
             res["polys"] = torch_model.mask2poly(res["masks"], img.shape)
 
+        # visualization / crops only support 3-channel; slice for N>3.
+        vis_img = img[:, :, :3] if img.shape[2] > 3 else img
+        crop_img = or_img[:, :, :3] if or_img.shape[2] > 3 else or_img
+
         visualize(
-            img=img,
+            img=vis_img,
             boxes=res["boxes"],
             labels=res["labels"],
             scores=res["scores"],
@@ -130,7 +136,7 @@ def run_images(
         )
 
         if to_crop:
-            crops(or_img, res, paddings, output_path, Path(img_path).stem)
+            crops(crop_img, res, paddings, output_path, Path(img_path).stem)
 
     with open(output_path / "labels.txt", "w") as f:
         for class_id in labels:
@@ -332,7 +338,13 @@ def main(cfg: DictConfig):
         conf_thresh=cfg.train.conf_thresh,
         rect=cfg.export.dynamic_input,
         enable_mask_head=cfg.task == "segment",
+        channels=cfg.train.in_channels,
     )
+
+    if data_type == "video" and cfg.train.in_channels != 3:
+        raise ValueError(
+            f"Video inference only supports 3-channel input, got in_channels={cfg.train.in_channels}"
+        )
 
     output_path = Path(cfg.train.infer_path)
     if output_path.exists():

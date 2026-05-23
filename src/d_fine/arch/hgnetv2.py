@@ -431,12 +431,16 @@ class HGNetv2(nn.Module):
         freeze_norm=True,
         pretrained=True,
         local_model_dir="weight/hgnetv2/",
+        in_channels: int = 3,
     ):
         super().__init__()
         self.use_lab = use_lab
         self.return_idx = return_idx
 
-        stem_channels = self.arch_configs[name]["stem_channels"]
+        # Copy stem_channels (it's a class-level list — mutating in place would
+        # corrupt arch_configs for subsequent builds).
+        stem_channels = list(self.arch_configs[name]["stem_channels"])
+        stem_channels[0] = in_channels
         stage_config = self.arch_configs[name]["stage_config"]
         download_url = self.arch_configs[name]["url"]
 

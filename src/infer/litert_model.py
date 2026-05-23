@@ -25,7 +25,6 @@ class LiteRT_model:
         self.n_outputs = n_outputs
         self.rect = rect
         self.keep_ratio = keep_ratio
-        self.channels = 3
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
         self.np_dtype = np.float32
@@ -57,7 +56,8 @@ class LiteRT_model:
         logger.info(f"LiteRT model loaded: {self.model_path}")
 
     def _read_model_metadata(self):
-        inp_shape = self.input_details[0]["shape"]  # [1, 3, H, W]
+        inp_shape = self.input_details[0]["shape"]  # [1, C, H, W]
+        self.channels = int(inp_shape[1])
         self.input_size = (int(inp_shape[2]), int(inp_shape[3]))  # (H, W)
         self.has_masks = len(self.output_details) > 2
 
@@ -140,7 +140,10 @@ class LiteRT_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, then HWC to CHW
+        if self.channels == 3:
+            img = img[:, :, ::-1].transpose(2, 0, 1)
+        else:
+            img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=self.np_dtype)
         img /= 255.0
         return img
@@ -271,7 +274,7 @@ class LiteRT_model:
 def letterbox(
     im,
     new_shape=(640, 640),
-    color=(114, 114, 114),
+    color=None,
     auto=True,
     scale_fill=False,
     scaleup=True,
@@ -280,6 +283,9 @@ def letterbox(
     shape = im.shape[:2]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
+    if color is None:
+        c = im.shape[2] if im.ndim == 3 else 1
+        color = tuple([114] * c)
 
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
     if not scaleup:
