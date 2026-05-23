@@ -1,4 +1,4 @@
-.PHONY: main train split export bench infer test_batching check_errors ov_int8 trt_int8
+.PHONY: main train split export bench infer test test-fast test_batching check_errors ov_int8 trt_int8
 
 PY := uv run python
 
@@ -41,3 +41,9 @@ ov_int8:
 
 trt_int8:
 	$(PY) -m src.dl.trt_int8
+
+test:
+	uv run pytest -q
+
+test-fast:
+	uv run pytest -q -m "not slow and not gpu"

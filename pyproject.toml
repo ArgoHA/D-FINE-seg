@@ -42,6 +42,23 @@ dependencies = [
     "wandb==0.26.1",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-xdist>=3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: integration tests that load pretrained weights (~10-30s)",
+    "gpu: requires CUDA",
+]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::pyparsing.exceptions.PyparsingDeprecationWarning",
+]
+
 [tool.uv]
 package = false
 # Lock for both dev (mac) and training (linux) so uv.lock is portable.
