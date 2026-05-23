@@ -27,6 +27,7 @@ class Torch_model:
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
         device: str = None,
+        channels: int = 3,
     ):
         self.input_size = (input_height, input_width)
         self.n_outputs = n_outputs
@@ -37,7 +38,7 @@ class Torch_model:
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
         self.enable_mask_head = enable_mask_head
-        self.channels = 3
+        self.channels = channels
         self.debug_mode = False
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
@@ -68,6 +69,7 @@ class Torch_model:
             self.enable_mask_head,
             self.device,
             img_size=None,
+            in_channels=self.channels,
         )
         self.model.load_state_dict(
             torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu")),
@@ -257,14 +259,22 @@ class Torch_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        img = img[..., ::-1].transpose(2, 0, 1)  # BGR to RGB, HWC to CHW
+        # 3-channel input: caller supplies BGR (cv2.imread default) -> reverse to RGB.
+        # N-channel input: caller already supplies the correct channel order.
+        if self.channels == 3:
+            img = img[..., ::-1].transpose(2, 0, 1)
+        else:
+            img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=np.uint8)
 
         # save debug image
         if self.debug_mode:
             debug_img = img.reshape([1, *img.shape])
             debug_img = debug_img[0].transpose(1, 2, 0)  # CHW to HWC
-            debug_img = debug_img[:, :, ::-1]  # RGB to BGR for saving
+            if self.channels == 3:
+                debug_img = debug_img[:, :, ::-1]  # RGB to BGR for saving
+            elif debug_img.shape[2] > 3:
+                debug_img = debug_img[:, :, :3][:, :, ::-1]
             cv2.imwrite("torch_infer.jpg", debug_img)
         return img
 
@@ -371,7 +381,7 @@ class Torch_model:
 def letterbox(
     im,
     new_shape=(640, 640),
-    color=(114, 114, 114),
+    color=None,
     auto=True,
     scale_fill=False,
     scaleup=True,
@@ -381,6 +391,9 @@ def letterbox(
     shape = im.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
+    if color is None:
+        c = im.shape[2] if im.ndim == 3 else 1
+        color = tuple([114] * c)
 
     # Scale ratio (new / old)
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])

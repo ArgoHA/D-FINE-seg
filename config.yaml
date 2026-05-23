@@ -50,6 +50,7 @@ train:
   - iou
 
   img_size: [640, 640] # (h, w)
+  in_channels: 3 # 3 = RGB (default). >3 reads multi-channel TIFFs via cv2.IMREAD_UNCHANGED
   keep_ratio: False # image aspect ratio, if True - image will be padded
   to_visualize_eval: True # save images with gt and preds
   debug_img_processing: True # save images after preprocessing

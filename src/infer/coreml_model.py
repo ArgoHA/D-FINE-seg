@@ -26,7 +26,6 @@ class CoreML_model:
         self.n_outputs = n_outputs
         self.rect = rect
         self.keep_ratio = keep_ratio
-        self.channels = 3
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
         self.np_dtype = np.float32
@@ -59,8 +58,10 @@ class CoreML_model:
 
         shape = inp.type.multiArrayType.shape  # [B, C, H, W] or [C, H, W]
         if len(shape) == 4:
+            self.channels = int(shape[1])
             self.input_size = (int(shape[2]), int(shape[3]))
         elif len(shape) == 3:
+            self.channels = int(shape[0])
             self.input_size = (int(shape[1]), int(shape[2]))
         else:
             raise ValueError(f"Unexpected input shape: {list(shape)}")
@@ -153,7 +154,10 @@ class CoreML_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        img = img[..., ::-1].transpose(2, 0, 1)  # BGR to RGB, HWC to CHW
+        if self.channels == 3:
+            img = img[..., ::-1].transpose(2, 0, 1)
+        else:
+            img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=self.np_dtype)
         img /= 255.0
         return img
@@ -293,7 +297,7 @@ class CoreML_model:
 def letterbox(
     im,
     new_shape=(640, 640),
-    color=(114, 114, 114),
+    color=None,
     auto=True,
     scale_fill=False,
     scaleup=True,
@@ -302,6 +306,9 @@ def letterbox(
     shape = im.shape[:2]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
+    if color is None:
+        c = im.shape[2] if im.ndim == 3 else 1
+        color = tuple([114] * c)
 
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
     if not scaleup:
