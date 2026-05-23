@@ -189,7 +189,14 @@ def main(cfg: DictConfig):
     nms = True
 
     # upd this to skip some formats even if they exist
-    formats_to_bench = ["torch", "onnx", "openvino", "tensorrt", "coreml", "litert"]
+    formats_to_bench = [
+        "torch",
+        "tensorrt",
+        # "onnx",
+        # "openvino",
+        # "coreml",
+        # "litert",
+    ]
 
     ov_half = cfg.export.half
     if IS_MACOS:
