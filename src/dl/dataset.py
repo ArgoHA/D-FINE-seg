@@ -312,21 +312,27 @@ class CustomDataset(Dataset):
         cv2.imwrite(str(save_path), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
 
     def _read_image(self, path) -> Optional[np.ndarray]:
-        """Load an image as HWC. RGB for 3-channel input (BGR->RGB swap);
-        for ``in_channels != 3`` reads multi-channel TIFFs as-is via
-        ``IMREAD_UNCHANGED``. Returns ``None`` if the file cannot be decoded.
-        Raises ``ValueError`` when the file has a wrong channel count."""
-        if self.in_channels == 3:
-            image = cv2.imread(str(path))  # BGR, HWC
-            if image is None:
-                return None
-            return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        """Load an image as HWC with channels in RGB(+extras) order.
 
+        All files are read via ``IMREAD_UNCHANGED`` and the first 3 channels
+        are swapped BGR->RGB — files in this repo (incl. multi-channel TIFFs
+        from m3fd_to_yolo.py) follow OpenCV's BGR(+extras) storage
+        convention end-to-end. Extra channels (e.g. thermal) are preserved.
+        For ``in_channels == 3`` on a multi-channel file, trailing channels
+        are dropped.
+        Returns ``None`` if the file cannot be decoded.
+        Raises ``ValueError`` when the channel count is wrong after slicing."""
         image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if image is None:
             return None
         if image.ndim == 2:
             image = image[..., None]
+
+        if image.shape[2] >= 3:
+            image = image[..., [2, 1, 0, *range(3, image.shape[2])]]
+
+        if self.in_channels == 3 and image.shape[2] > 3:
+            image = image[..., :3]
         if image.shape[2] != self.in_channels:
             raise ValueError(
                 f"Expected {self.in_channels} channels at {path}, got {image.shape[2]}"
