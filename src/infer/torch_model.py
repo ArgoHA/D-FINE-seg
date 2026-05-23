@@ -259,10 +259,11 @@ class Torch_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        # 3-channel input: caller supplies BGR (cv2.imread default) -> reverse to RGB.
-        # N-channel input: caller already supplies the correct channel order.
+        # Caller supplies BGR(+extras) from cv2.imread; swap first 3 to RGB.
         if self.channels == 3:
             img = img[..., ::-1].transpose(2, 0, 1)
+        elif self.channels > 3:
+            img = img[..., [2, 1, 0, *range(3, self.channels)]].transpose(2, 0, 1)
         else:
             img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=np.uint8)
@@ -271,10 +272,8 @@ class Torch_model:
         if self.debug_mode:
             debug_img = img.reshape([1, *img.shape])
             debug_img = debug_img[0].transpose(1, 2, 0)  # CHW to HWC
-            if self.channels == 3:
-                debug_img = debug_img[:, :, ::-1]  # RGB to BGR for saving
-            elif debug_img.shape[2] > 3:
-                debug_img = debug_img[:, :, :3][:, :, ::-1]
+            if debug_img.shape[2] >= 3:
+                debug_img = debug_img[:, :, :3][:, :, ::-1]  # RGB to BGR for saving
             cv2.imwrite("torch_infer.jpg", debug_img)
         return img
 

@@ -8,9 +8,10 @@ M3FD ships as:
       Ir/*.png           thermal, stored as a grayscale-replicated 3-channel uint8 PNG
 
 We collapse the Ir channels (they are identical) to a single thermal plane and
-stack with RGB to produce 4-channel TIFFs that ``CustomDataset._read_image``
-loads as-is when ``train.in_channels=4``. Channel order in the TIFF is
-[R, G, B, Thermal] so channels 0:3 align with the pretrained RGB stem.
+stack with the visible image to produce 4-channel TIFFs. Channel storage
+follows OpenCV's BGR convention end-to-end: [B, G, R, Thermal]. The dataset
+reader applies a BGR->RGB swap on the first 3 channels at load time, matching
+how PNG/JPEG are handled, so the model sees [R, G, B, Thermal].
 
 Usage:
     uv run python -m src.etl.m3fd_to_yolo \\
@@ -98,13 +99,13 @@ def _process_one(args) -> Tuple[str, str]:
     if vis.shape[:2] != (height, width):
         return stem, f"xml_size_mismatch xml=({height},{width}) img={vis.shape[:2]}"
 
-    # Vis is BGR -> swap to RGB; Ir is 3ch grayscale-replicated -> take one channel.
-    rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+    # Keep vis in cv2's native BGR; collapse the replicated IR to one channel.
+    # Stored channel order is [B, G, R, T]; the dataset reader swaps to RGB on load.
     if ir.ndim == 3:
         thermal = ir[..., 0]
     else:
         thermal = ir
-    stacked = np.dstack([rgb, thermal]).astype(np.uint8, copy=False)  # H,W,4
+    stacked = np.dstack([vis, thermal]).astype(np.uint8, copy=False)  # H,W,4
 
     out_img = dst_dir / "images" / f"{stem}.tiff"
     out_lbl = dst_dir / "labels" / f"{stem}.txt"

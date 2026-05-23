@@ -169,8 +169,11 @@ class OV_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
+        # Caller supplies BGR(+extras) from cv2.imread; swap first 3 to RGB.
         if self.channels == 3:
             img = img[:, :, ::-1].transpose(2, 0, 1)
+        elif self.channels > 3:
+            img = img[..., [2, 1, 0, *range(3, self.channels)]].transpose(2, 0, 1)
         else:
             img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=self.np_dtype)
