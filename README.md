@@ -67,13 +67,39 @@ Two annotation formats are supported: **YOLO** (default) and **COCO JSON**.
 
 ``` bash
 data/dataset/
-├── images/    # all images: .jpg, .png, etc.
+├── images/    # all images: .jpg, .png, .tiff, etc.
 └── labels/    # all labels: one .txt per image (same filename stem)
 ```
 
 **Detection labels**: `class_id xc yc w h` (normalized)
 
 **Segmentation labels**: `class_id x1 y1 x2 y2 ... xN yN` (normalized polygon coordinates)
+
+#### Multi-channel inputs (RGB + thermal / depth / NIR / …)
+
+Set `train.in_channels: N` (default 3) to train on stacks beyond plain RGB —
+e.g. RGB + thermal (`N=4`), RGB + depth (`N=4`), 5-band multispectral (`N=5`).
+
+Layout is the same; just drop the stacks as multi-channel **TIFFs**:
+
+``` bash
+data/dataset/
+├── images/    # 4-channel .tiff (uint8 or uint16), one per sample
+└── labels/    # YOLO .txt (same as 3-channel case)
+```
+
+Loader rules (see [src/dl/dataset.py](src/dl/dataset.py)):
+
+- `cv2.imread(IMREAD_UNCHANGED)` reads channels as-stored — no BGR swap, no implicit reorder.
+- A file whose channel count doesn't match `train.in_channels` raises immediately.
+- Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [src/d_fine/utils.py](src/d_fine/utils.py)), so fine-tuning from COCO still works.
+
+Channel-order convention: write the RGB triplet in the first three planes
+(channels `0..2`) so they line up with the pretrained RGB stem; extra
+modalities go in channels `3..N-1`. Example for RGB + thermal: stack as
+`[R, G, B, T]` (not `[B, G, R, T]`).
+
+Example: [src/etl/m3fd_to_yolo.py](src/etl/m3fd_to_yolo.py) converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal detection benchmark (PASCAL VOC XML + paired `Vis/`/`Ir/` PNGs) into this exact layout.
 
 #### COCO JSON format
 
