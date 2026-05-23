@@ -1,0 +1,8 @@
+{
+  "mAP_50_min": 0.95,
+  "mAP_50_95_min": 0.7,
+  "n_images": 2,
+  "n_detections": 19,
+  "conf_thresh": 0.5,
+  "max_long_side": 1024
+}
