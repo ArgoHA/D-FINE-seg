@@ -2,6 +2,7 @@ import collections
 import gc
 import math
 import time
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from shutil import rmtree
@@ -13,6 +14,7 @@ import torch
 import wandb
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
+from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 from torch.amp import GradScaler, autocast
 from torch.nn import SyncBatchNorm
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -590,6 +592,21 @@ class Trainer:
             self.optimizer.zero_grad()
             return True
 
+        def force_grad_sync() -> None:
+            """Manually average param grads across DDP ranks. Used as a fallback
+            when an accumulation window's final micro-step was skipped (non-finite
+            loss) so DDP's own all-reduce never fired and earlier no_sync'd grads
+            would otherwise stay un-synced across ranks."""
+            # Coalesce into one collective: flatten all grads into a single buffer,
+            # one all_reduce(AVG), then copy results back.
+            grads = [p.grad for p in self.model.parameters() if p.grad is not None]
+            if not grads:
+                return
+            flat = _flatten_dense_tensors(grads)
+            torch.distributed.all_reduce(flat, op=torch.distributed.ReduceOp.AVG)
+            for g, synced in zip(grads, _unflatten_dense_tensors(flat, grads)):
+                g.copy_(synced)
+
         for epoch in range(1, self.epochs + 1):
             if self.distributed and self.train_sampler is not None:
                 self.train_sampler.set_epoch(epoch)
@@ -599,6 +616,7 @@ class Trainer:
             self.loss_fn.train()
             losses = []
             had_backward_in_window = False
+            had_synced_backward_in_window = False
 
             data_iter = self.train_loader
             if self.is_main:
@@ -641,12 +659,21 @@ class Trainer:
                     torch.distributed.all_reduce(loss_finite_t, op=torch.distributed.ReduceOp.MIN)
                 loss_finite = bool(loss_finite_t.item())
 
+                is_accum_boundary = (batch_idx + 1) % self.b_accum_steps == 0
+                # Suppress DDP's per-backward all-reduce on non-final micro-steps;
+                # the boundary backward syncs all accumulated grads in one shot.
+                use_no_sync = self.distributed and self.b_accum_steps > 1 and not is_accum_boundary
+                sync_cm = self.model.no_sync() if use_no_sync else nullcontext()
+
                 if loss_finite:
-                    if self.amp_enabled:
-                        self.scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+                    with sync_cm:
+                        if self.amp_enabled:
+                            self.scaler.scale(loss).backward()
+                        else:
+                            loss.backward()
                     had_backward_in_window = True
+                    if not use_no_sync:
+                        had_synced_backward_in_window = True
                     losses.append(loss.item())
                 elif self.is_main and cur_iter > nan_warn_warmup_iters:
                     logger.warning(
@@ -654,8 +681,10 @@ class Trainer:
                         f"batch {batch_idx}): non-finite loss"
                     )
 
-                if (batch_idx + 1) % self.b_accum_steps == 0:
+                if is_accum_boundary:
                     if had_backward_in_window:
+                        if self.distributed and not had_synced_backward_in_window:
+                            force_grad_sync()
                         stepped = optimizer_step(step_scheduler=True)
                         skip_counter = 0 if stepped else skip_counter + 1
                     else:
@@ -664,6 +693,7 @@ class Trainer:
                             self.scheduler.step()
                         skip_counter += 1
                     had_backward_in_window = False
+                    had_synced_backward_in_window = False
 
                     if skip_counter >= max_consecutive_skips:
                         reload_last_checkpoint()
@@ -685,8 +715,11 @@ class Trainer:
 
             # Final update for any leftover gradients from an incomplete accumulation step
             if (batch_idx + 1) % self.b_accum_steps != 0 and had_backward_in_window:
+                if self.distributed and not had_synced_backward_in_window:
+                    force_grad_sync()
                 optimizer_step(step_scheduler=False)
                 had_backward_in_window = False
+                had_synced_backward_in_window = False
 
             if self.use_wandb and self.is_main:
                 wandb.log({"lr": lr, "epoch": epoch})
