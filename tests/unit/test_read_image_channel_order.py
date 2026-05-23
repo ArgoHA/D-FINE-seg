@@ -88,6 +88,18 @@ def test_3ch_tiff_returns_rgb(tmp_path):
     assert img[0, 0].tolist() == [200, 50, 80]
 
 
+def test_grayscale_replicated_to_3ch(tmp_path):
+    """Default IMREAD_COLOR replicates grayscale to BGR; reader returns 3-ch RGB."""
+    p = tmp_path / "gray.png"
+    gray = np.full((4, 4), 137, dtype=np.uint8)
+    cv2.imwrite(str(p), gray)
+    ds = _build(in_channels=3)
+
+    img = ds._read_image(p)
+    assert img.shape == (4, 4, 3)
+    assert img[0, 0].tolist() == [137, 137, 137]
+
+
 def test_returns_none_on_missing(tmp_path):
     ds = _build(in_channels=3)
     assert ds._read_image(tmp_path / "nope.jpg") is None
