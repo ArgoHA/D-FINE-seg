@@ -1387,6 +1387,7 @@ def auto_batch_size(
             enable_mask_head,
             str(device),
             img_size=cfg.train.img_size,
+            in_channels=cfg.train.in_channels,
             pretrained_model_path=cfg.train.pretrained_model_path,
         )
         loss_fn = build_loss(
