@@ -82,7 +82,9 @@ def test_model(
 
     # Warmup iterations
     first_batch = next(iter(test_loader))
-    warmup_img = cv2.imread(str(data_path / "images" / first_batch[2][0]))
+    warmup_img = cv2.imread(str(data_path / "images" / first_batch[2][0]), cv2.IMREAD_UNCHANGED)
+    if warmup_img.ndim == 2:
+        warmup_img = warmup_img[..., None]
     for _ in range(10):
         _ = model(warmup_img)
     if torch.cuda.is_available():
@@ -90,7 +92,9 @@ def test_model(
 
     for _, targets, img_paths in tqdm(test_loader, total=len(test_loader)):
         for img_path, target in zip(img_paths, targets):
-            img = cv2.imread(str(data_path / "images" / img_path))
+            img = cv2.imread(str(data_path / "images" / img_path), cv2.IMREAD_UNCHANGED)
+            if img.ndim == 2:
+                img = img[..., None]
 
             # laod GT
             gt_boxes = process_boxes(
@@ -219,6 +223,7 @@ def main(cfg: DictConfig):
             keep_ratio=cfg.train.keep_ratio,
             enable_mask_head=cfg.task == "segment",
             apply_nms=nms,
+            channels=cfg.train.in_channels,
         )
 
     if IS_MACOS:
