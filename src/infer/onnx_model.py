@@ -26,7 +26,6 @@ class ONNX_model:
         self.n_outputs = n_outputs
         self.rect = rect
         self.keep_ratio = keep_ratio
-        self.channels = 3
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
         self.np_dtype = np.float32
@@ -57,8 +56,9 @@ class ONNX_model:
         print(f"ONNX model loaded: {self.model_path} on {self.device}")
 
     def _read_model_metadata(self):
-        """Auto-read input_size and detect mask presence from the ONNX model."""
+        """Auto-read input_size, channel count, and detect mask presence from the ONNX model."""
         inp = self.model.get_inputs()[0]
+        self.channels = int(inp.shape[1])
         self.input_size = (inp.shape[2], inp.shape[3])  # (H, W)
         self.has_masks = len(self.model.get_outputs()) > 3
 
@@ -127,7 +127,7 @@ class ONNX_model:
         new_shape = [int(round(dim * scale)) for dim in shape]
         return [max(stride, int(np.ceil(dim / stride) * stride)) for dim in new_shape]
 
-    def _preprocess(self, img: NDArray, stride: int = 32) -> torch.tensor:
+    def _preprocess(self, img: NDArray, stride: int = 32, bgr: bool = True) -> torch.tensor:
         if not self.keep_ratio:  # simple resize
             img = cv2.resize(
                 img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_LINEAR
@@ -142,17 +142,21 @@ class ONNX_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, then HWC to CHW
+        # 3ch BGR (cv2.imread) needs a swap; 3ch .npy is RGB already; >3ch is RGB+extras.
+        if self.channels == 3 and bgr:
+            img = img[:, :, ::-1].transpose(2, 0, 1)
+        else:
+            img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=self.np_dtype)
         img /= 255.0
         return img
 
-    def _prepare_inputs(self, inputs):
+    def _prepare_inputs(self, inputs, bgr: bool = True):
         original_sizes = []
         processed_sizes = []
 
         if isinstance(inputs, np.ndarray) and inputs.ndim == 3:  # single image
-            processed_inputs = self._preprocess(inputs)[None]
+            processed_inputs = self._preprocess(inputs, bgr=bgr)[None]
             original_sizes.append((inputs.shape[0], inputs.shape[1]))
             processed_sizes.append((processed_inputs[0].shape[1], processed_inputs[0].shape[2]))
 
@@ -162,7 +166,7 @@ class ONNX_model:
                 dtype=self.np_dtype,
             )
             for idx, image in enumerate(inputs):
-                processed_inputs[idx] = self._preprocess(image)
+                processed_inputs[idx] = self._preprocess(image, bgr=bgr)
                 original_sizes.append((image.shape[0], image.shape[1]))
                 processed_sizes.append(
                     (processed_inputs[idx].shape[1], processed_inputs[idx].shape[2])
@@ -227,9 +231,13 @@ class ONNX_model:
             results.append(out)
         return results
 
-    def __call__(self, inputs: NDArray[np.uint8]) -> List[Dict[str, torch.Tensor]]:
+    def __call__(
+        self, inputs: NDArray[np.uint8], bgr: bool = True
+    ) -> List[Dict[str, torch.Tensor]]:
         """
-        Input image as ndarray (BGR, HWC) or BHWC
+        Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
+        3-channel inputs already in RGB order (e.g., ``.npy`` read via
+        ``read_image_hwc``); ignored for >3 channels.
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: torch.Tensor of shape (N,), dtype int64
@@ -237,7 +245,7 @@ class ONNX_model:
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
         """
-        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
+        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
         return self._postprocess(preds, processed_sizes, original_sizes)
 
@@ -283,7 +291,7 @@ class ONNX_model:
 def letterbox(
     im,
     new_shape=(640, 640),
-    color=(114, 114, 114),
+    color=None,
     auto=True,
     scale_fill=False,
     scaleup=True,
@@ -293,6 +301,9 @@ def letterbox(
     shape = im.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
+    if color is None:
+        c = im.shape[2] if im.ndim == 3 else 1
+        color = tuple([114] * c)
 
     # Scale ratio (new / old)
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])

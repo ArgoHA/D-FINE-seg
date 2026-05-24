@@ -73,6 +73,8 @@ Label format:
 - **detect**: `class_id xc yc w h` (normalized, cxcywh)
 - **segment**: `class_id x1 y1 x2 y2 … xN yN` (normalized polygon)
 
+Supported input types: 3-channel `.jpg`/`.png` (BGR, `cv2.imread`), 3-channel `.npy` (RGB, `np.load`), 4-channel `.npy` (RGB+extras, e.g. RGB+thermal). Inference wrappers' `__call__` takes a `bgr: bool = True` flag — repo callers pass `bgr=False` for `.npy` reads.
+
 Generate splits:
 
 ```bash
@@ -173,6 +175,8 @@ Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_
 
 For interactive threshold tweaking, the Gradio UI in [demo/](demo/) exposes a threshold slider.
 
+Important to note: inference wrappers under /infer are standalone scripts that are usually taken with the model file and used in users' applications, outside of this repo.
+
 ## 9. Benchmarking
 
 ```bash
@@ -266,6 +270,8 @@ uv run python -m tests.generate_fixtures
    - `train.mosaic_augs.mosaic_scale: [0.5, 1.4]` if dataset is object-sparse
 9. **DDP rank-0 writes everything.** Don't assume per-rank directories; logs, checkpoints, and WandB calls are gated to rank 0.
 10. **`model.pt` is best, `last.pt` is for recovery only.** Always use `model.pt` for inference, export, and bench.
+11. **Multi-channel images live in `.npy`, not TIFF.** `cv2.imread(IMREAD_UNCHANGED)` is not byte-faithful for 4-channel TIFFs — it treats channel 4 as alpha, swaps the first three per the photometric tag, and pre-multiplies values, so any TIFF from a non-cv2 writer is silently mangled. `.npy` is byte-faithful and ~25× faster to read.
+12. **Stem freeze auto-bypassed for inflated stems.** `freeze_at >= 0` in [src/d_fine/configs.py](src/d_fine/configs.py) only freezes the stem when `train.in_channels == 3`; for `in_channels > 3` the freeze is skipped so the inflated extra-channel weights can train.
 
 ## 13. Quick reference
 
@@ -288,5 +294,7 @@ uv run python -m tests.generate_fixtures
 | Regenerate accuracy baseline | `uv run python -m tests.generate_fixtures` |
 
 ## 14. Code style
+
+- **Be consice** - write as little code as possible to achieve the goal.
 
 - **Keep comments short — core info only.** Prefer a single terse line. Don't restate what the code already says or narrate rationale at length; capture just the non-obvious fact. Match the existing comment density of the surrounding file.

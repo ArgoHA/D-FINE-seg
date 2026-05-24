@@ -58,8 +58,19 @@ class DFINE(nn.Module):
 
 
 def build_model(
-    model_name, num_classes, enable_mask_head, device, img_size=None, pretrained_model_path=None
+    model_name,
+    num_classes,
+    enable_mask_head,
+    device,
+    img_size=None,
+    in_channels: int = 3,
+    pretrained_model_path=None,
 ):
+    if int(in_channels) not in (3, 4):
+        raise ValueError(
+            f"train.in_channels must be 3 (RGB) or 4 (RGB+one extra modality); got {in_channels}. "
+            "Stacks with >4 channels are not supported (cv2 Scalar / Albumentations cap)."
+        )
     model_cfg = deepcopy(models[model_name])
 
     model_cfg["HybridEncoder"]["eval_spatial_size"] = img_size
@@ -77,7 +88,7 @@ def build_model(
         stage2_ch = HGNetv2.arch_configs[backbone_name]["stage_config"]["stage2"][2]
         model_cfg["DFINETransformer"]["mask_low_level_ch"] = stage2_ch
 
-    backbone = HGNetv2(**model_cfg["HGNetv2"])
+    backbone = HGNetv2(in_channels=in_channels, **model_cfg["HGNetv2"])
     encoder = HybridEncoder(**model_cfg["HybridEncoder"])
     decoder = DFINETransformer(num_classes=num_classes, **model_cfg["DFINETransformer"])
 

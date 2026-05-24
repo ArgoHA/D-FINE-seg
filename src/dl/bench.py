@@ -15,7 +15,7 @@ from tabulate import tabulate
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dl.dataset import CustomDataset, Loader
+from src.dl.dataset import CustomDataset, Loader, read_image_hwc
 from src.dl.utils import (
     get_latest_experiment_name,
     poly_abs_to_mask,
@@ -82,15 +82,18 @@ def test_model(
 
     # Warmup iterations
     first_batch = next(iter(test_loader))
-    warmup_img = cv2.imread(str(data_path / "images" / first_batch[2][0]))
+    warmup_path = first_batch[2][0]
+    warmup_img = read_image_hwc(data_path / "images" / warmup_path)
+    warmup_is_npy = Path(warmup_path).suffix.lower() == ".npy"
     for _ in range(10):
-        _ = model(warmup_img)
+        _ = model(warmup_img, bgr=not warmup_is_npy)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
     for _, targets, img_paths in tqdm(test_loader, total=len(test_loader)):
         for img_path, target in zip(img_paths, targets):
-            img = cv2.imread(str(data_path / "images" / img_path))
+            img = read_image_hwc(data_path / "images" / img_path)
+            is_npy = Path(img_path).suffix.lower() == ".npy"
 
             # laod GT
             gt_boxes = process_boxes(
@@ -133,7 +136,7 @@ def test_model(
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             t0 = time.perf_counter()
-            model_preds = model(img)
+            model_preds = model(img, bgr=not is_npy)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             latency.append((time.perf_counter() - t0) * 1000)
@@ -189,7 +192,14 @@ def main(cfg: DictConfig):
     nms = True
 
     # upd this to skip some formats even if they exist
-    formats_to_bench = ["torch", "onnx", "openvino", "tensorrt", "coreml", "litert"]
+    formats_to_bench = [
+        "torch",
+        "tensorrt",
+        "onnx",
+        "openvino",
+        "coreml",
+        "litert",
+    ]
 
     ov_half = cfg.export.half
     if IS_MACOS:
@@ -212,6 +222,7 @@ def main(cfg: DictConfig):
             keep_ratio=cfg.train.keep_ratio,
             enable_mask_head=cfg.task == "segment",
             apply_nms=nms,
+            channels=cfg.train.in_channels,
         )
 
     if IS_MACOS:

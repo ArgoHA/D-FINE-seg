@@ -48,3 +48,11 @@ Same behaviour on TACO dataset for both detectin and segmentation models.
 Several improvements in the TensorRT inference class. Although it doesn't support dynamic input size, it is very well optimized for the static input. With S size model latency went from 3.1ms to 2.1ms without changes in the accuracy.
 
 Minor improvement - now pretrained weigts automatically download from HuggingFace
+
+## 2026-05-24 - Multi-channel input support (RGB + thermal / depth / NIR / ...)
+
+- New `train.in_channels` config (default 3). Set to `4` to train on RGB + one extra modality (thermal / depth / NIR). Supported range is 3 or 4 — higher counts hit cv2 Scalar / Albumentations limits and are rejected at config load.
+- Multi-channel images are stored as `.npy` (HWC uint8) — byte-faithful via `np.load`, unlike multi-channel TIFF which `cv2.imread` silently mangles. Channel convention: RGB in planes 0..2, extras in 3..N-1.
+- HGNetv2 stem conv is rewired for `in_channels=4`. Pretrained 3-channel weights are reused: stem is inflated to 4 channels by tiling the RGB filter mean, so COCO-pretrained fine-tuning still works out of the box.
+- All inference backends (torch, onnx, openvino, tensorrt, coreml, litert) auto-detect channel count from the exported model and preprocess accordingly.
+- `src/etl/m3fd_to_yolo.py` converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal benchmark (VOC XML + Vis/Ir PNGs) into the new layout as a reference example.

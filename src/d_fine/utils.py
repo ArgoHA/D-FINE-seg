@@ -167,6 +167,53 @@ def extract_pretrained_state_dict(state: Dict[str, torch.Tensor]):
     return state
 
 
+STEM_CONV_KEY = "backbone.stem.stem1.conv.weight"
+
+
+def inflate_stem_weight(pretrained_w: torch.Tensor, target_in_ch: int) -> torch.Tensor:
+    """Expand a 3-channel stem conv weight to ``target_in_ch`` channels.
+
+    First 3 channels copied verbatim; extras initialized to the mean of the
+    pretrained RGB filters (the standard inflation trick for RGB->RGB+X).
+    """
+    out, in_ch, kh, kw = pretrained_w.shape
+    if in_ch != 3 or target_in_ch <= 3:
+        raise ValueError(
+            f"inflate_stem_weight expects pretrained in_ch=3 and target>3, "
+            f"got pretrained in_ch={in_ch}, target={target_in_ch}"
+        )
+    extra = target_in_ch - 3
+    mean_w = pretrained_w.mean(dim=1, keepdim=True).expand(-1, extra, -1, -1)
+    return torch.cat([pretrained_w, mean_w], dim=1).contiguous()
+
+
+def maybe_inflate_stem(
+    model_state: Dict[str, torch.Tensor],
+    pretrain_state: Dict[str, torch.Tensor],
+) -> None:
+    """If the stem shape differs only on input channels (pretrained=3, model>3),
+    replace the pretrained tensor in-place with the inflated version."""
+    if STEM_CONV_KEY not in model_state or STEM_CONV_KEY not in pretrain_state:
+        return
+    target_shape = model_state[STEM_CONV_KEY].shape
+    src = pretrain_state[STEM_CONV_KEY]
+    if src.shape == target_shape:
+        return
+    if (
+        src.dim() == 4
+        and src.shape[0] == target_shape[0]
+        and src.shape[2:] == target_shape[2:]
+        and src.shape[1] == 3
+        and target_shape[1] > 3
+    ):
+        pretrain_state[STEM_CONV_KEY] = inflate_stem_weight(src, target_shape[1])
+        if is_main_process():
+            logger.info(
+                f"Inflated pretrained stem weight from 3 to {target_shape[1]} input channels "
+                f"(extra channels initialized to RGB mean)."
+            )
+
+
 def load_tuning_state(model, path: str):
     """Load model for tuning and adjust mismatched head parameters"""
     if path.startswith("http"):
@@ -175,6 +222,7 @@ def load_tuning_state(model, path: str):
         state = torch.load(path, map_location="cpu", weights_only=True)
 
     pretrain_state_dict = extract_pretrained_state_dict(state)
+    maybe_inflate_stem(model.state_dict(), pretrain_state_dict)
 
     # Adjust head parameters between datasets
     try:
