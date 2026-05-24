@@ -8,6 +8,7 @@ from loguru import logger
 from omegaconf import DictConfig
 from tqdm import tqdm
 
+from src.dl.dataset import read_image_hwc
 from src.dl.utils import Visualizer, abs_xyxy_to_norm_xywh, get_latest_experiment_name
 from src.infer.byte_track import ByteTrack, Detection
 from src.infer.torch_model import Torch_model
@@ -17,13 +18,16 @@ VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 
 def figure_input_type(folder_path: Path):
     video_types = ["mp4", "avi", "mov", "mkv"]
-    img_types = ["jpg", "png", "jpeg"]
+    # .tif/.tiff intentionally excluded: cv2.imread mangles 4-channel TIFFs
+    # (alpha pre-multiplication + photometric-tag swap). Convert to .npy first
+    # (see src/etl/preprocess.py for a PIL-based TIFF->JPG path for 3-channel).
+    img_types = ["jpg", "png", "jpeg", "npy"]
 
     for f in folder_path.iterdir():
-        if f.suffix[1:] in video_types:
+        if f.suffix[1:].lower() in video_types:
             data_type = "video"
             break
-        elif f.suffix[1:] in img_types:
+        elif f.suffix[1:].lower() in img_types:
             data_type = "image"
             break
     logger.info(
@@ -94,12 +98,13 @@ def run_images(
     imag_paths = [img.name for img in folder_path.iterdir() if not str(img).startswith(".")]
     labels = set()
     for img_path in tqdm(imag_paths):
-        img = cv2.imread(str(folder_path / img_path))
+        img = read_image_hwc(folder_path / img_path)
         if img is None:
             logger.warning(f"Skipping unreadable image: {img_path}")
             continue
         or_img = img.copy()
-        raw_res = torch_model(img)
+        is_npy = Path(img_path).suffix.lower() == ".npy"
+        raw_res = torch_model(img, bgr=not is_npy)
 
         # Convert torch tensors to numpy for saving/visualization
         res = {
@@ -111,8 +116,16 @@ def run_images(
             res["masks"] = raw_res[batch]["masks"].cpu()
             res["polys"] = torch_model.mask2poly(res["masks"], img.shape)
 
+        # visualization / crops only support 3-channel; slice for N>3.
+        # cv2 saves in BGR; .npy stacks are RGB(+extras) by convention.
+        vis_img = img[:, :, :3] if img.shape[2] > 3 else img
+        crop_img = or_img[:, :, :3] if or_img.shape[2] > 3 else or_img
+        if is_npy:
+            vis_img = np.ascontiguousarray(vis_img[..., ::-1])
+            crop_img = np.ascontiguousarray(crop_img[..., ::-1])
+
         visualize(
-            img=img,
+            img=vis_img,
             boxes=res["boxes"],
             labels=res["labels"],
             scores=res["scores"],
@@ -130,7 +143,7 @@ def run_images(
         )
 
         if to_crop:
-            crops(or_img, res, paddings, output_path, Path(img_path).stem)
+            crops(crop_img, res, paddings, output_path, Path(img_path).stem)
 
     with open(output_path / "labels.txt", "w") as f:
         for class_id in labels:
@@ -332,7 +345,13 @@ def main(cfg: DictConfig):
         conf_thresh=cfg.train.conf_thresh,
         rect=cfg.export.dynamic_input,
         enable_mask_head=cfg.task == "segment",
+        channels=cfg.train.in_channels,
     )
+
+    if data_type == "video" and cfg.train.in_channels != 3:
+        raise ValueError(
+            f"Video inference only supports 3-channel input, got in_channels={cfg.train.in_channels}"
+        )
 
     output_path = Path(cfg.train.infer_path)
     if output_path.exists():

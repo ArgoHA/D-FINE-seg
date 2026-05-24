@@ -78,6 +78,27 @@ def test_cpu_forward_latency_smoke(model_n_detect_cpu):
     assert elapsed < 10.0, f"CPU forward took {elapsed:.2f}s, expected < 10s"
 
 
+def test_forward_shapes_cpu_4channel():
+    """N-channel input: stem rewires for in_channels=4 and forwards cleanly."""
+    model = build_model(
+        model_name="n",
+        num_classes=80,
+        enable_mask_head=False,
+        device="cpu",
+        img_size=[640, 640],
+        in_channels=4,
+    ).eval()
+    assert model.backbone.stem.stem1.conv.weight.shape[1] == 4
+    x = torch.randn(1, 4, 640, 640)
+    with torch.no_grad():
+        out = model(x)
+    bs, q, c = out["pred_logits"].shape
+    assert bs == 1 and c == 80
+    assert out["pred_boxes"].shape == (bs, q, 4)
+    assert torch.isfinite(out["pred_logits"]).all()
+    assert torch.isfinite(out["pred_boxes"]).all()
+
+
 @pytest.mark.gpu
 def test_forward_cuda_detect(cuda_available):
     if not cuda_available:
