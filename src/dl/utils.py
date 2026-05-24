@@ -337,9 +337,10 @@ def random_affine(img, targets, segments, target_size, degrees, translate, scale
     """
     M, scale = get_transform_matrix(img.shape[:2], target_size, degrees, scales, shear, translate)
 
-    # warp image
+    # warp image — borderValue must match channel count (cv2 Scalar capped at 4)
     if (M != np.eye(3)).any():
-        img = cv2.warpAffine(img, M[:2], dsize=target_size, borderValue=(114, 114, 114))
+        border = tuple([114] * img.shape[2]) if img.ndim == 3 else 114
+        img = cv2.warpAffine(img, M[:2], dsize=target_size, borderValue=border)
 
     n = len(targets)
     if n:

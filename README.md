@@ -75,10 +75,14 @@ data/dataset/
 
 **Segmentation labels**: `class_id x1 y1 x2 y2 ... xN yN` (normalized polygon coordinates)
 
+**Input types & channel order**: 3-channel `.jpg`/`.png` (BGR, read via `cv2.imread`), 3-channel `.npy` (RGB, read via `np.load`), or 4-channel `.npy` (RGB+extras, e.g. RGB+thermal).
+
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
 
-Set `train.in_channels: N` (default 3) to train on stacks beyond plain RGB —
-e.g. RGB + thermal (`N=4`), RGB + depth (`N=4`), 5-band multispectral (`N=5`).
+Set `train.in_channels: N` (default 3) to train on stacks beyond plain RGB.
+Supported range is `N=3` (RGB) or `N=4` (RGB + one extra modality, e.g. thermal,
+depth, NIR). Higher channel counts are not supported — cv2 / Albumentations
+ops cap at 4.
 
 Layout is the same; drop the stacks as **`.npy`** files (uint8 HWC arrays):
 
@@ -91,8 +95,9 @@ data/dataset/
 Loader rules (see [src/dl/dataset.py](src/dl/dataset.py)):
 
 - `np.load` is byte-faithful — channels come back exactly as you saved them.
-- A file whose channel count doesn't match `train.in_channels` raises immediately.
+- A file whose channel count doesn't match `train.in_channels` is skipped with a `loguru.warning` line (path + reason). Mosaic re-samples another index automatically.
 - Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [src/d_fine/utils.py](src/d_fine/utils.py)), so fine-tuning from COCO still works.
+- Stem freeze (`freeze_at` in [src/d_fine/configs.py](src/d_fine/configs.py)) is auto-bypassed when `in_channels > 3` so the inflated extra-channel weights can train; the size-configured `freeze_at` still applies for plain 3-channel RGB.
 
 Channel-order convention: write the RGB triplet in the first three planes
 (channels `0..2`) so they line up with the pretrained RGB stem; extra
