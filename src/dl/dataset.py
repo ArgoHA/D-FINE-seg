@@ -189,6 +189,11 @@ class CustomDataset(Dataset):
         self.coco_mode = coco_annotations is not None
         self._coco_entries = coco_annotations
         self.in_channels = int(cfg.train.in_channels)
+        if not (1 <= self.in_channels <= 4):
+            raise ValueError(
+                f"train.in_channels must be 1..4 (RGB or RGB+one extra modality); "
+                f"got {self.in_channels}."
+            )
         self.norm = ([0.0] * self.in_channels, [1.0] * self.in_channels)
         self.debug_img_processing = debug_img_processing
         self.mode = mode
@@ -369,9 +374,14 @@ class CustomDataset(Dataset):
 
         # Get image
         image_path = Path(self.split.iloc[idx].values[0])
+        full_path = self.root_path / "images" / f"{image_path}"
         try:
-            image = self._read_image(self.root_path / "images" / f"{image_path}")
-        except Exception:
+            image = self._read_image(full_path)
+        except ValueError as e:
+            logger.warning(f"Skipping {full_path}: {e}")
+            image = None
+        except Exception as e:
+            logger.warning(f"Skipping {full_path} (unreadable): {e}")
             image = None
         if image is None:
             return None
@@ -399,9 +409,14 @@ class CustomDataset(Dataset):
         """Load image and annotations from pre-parsed COCO entries."""
         entry = self._coco_entries[idx]
         image_path = Path(entry["file_name"])
+        full_path = self.root_path / "images" / str(image_path)
         try:
-            image = self._read_image(self.root_path / "images" / str(image_path))
-        except Exception:
+            image = self._read_image(full_path)
+        except ValueError as e:
+            logger.warning(f"Skipping {full_path}: {e}")
+            image = None
+        except Exception as e:
+            logger.warning(f"Skipping {full_path} (unreadable): {e}")
             image = None
         if image is None:
             return None

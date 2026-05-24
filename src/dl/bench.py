@@ -82,15 +82,18 @@ def test_model(
 
     # Warmup iterations
     first_batch = next(iter(test_loader))
-    warmup_img = read_image_hwc(data_path / "images" / first_batch[2][0])
+    warmup_path = first_batch[2][0]
+    warmup_img = read_image_hwc(data_path / "images" / warmup_path)
+    warmup_is_npy = Path(warmup_path).suffix.lower() == ".npy"
     for _ in range(10):
-        _ = model(warmup_img)
+        _ = model(warmup_img, bgr=not warmup_is_npy)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
     for _, targets, img_paths in tqdm(test_loader, total=len(test_loader)):
         for img_path, target in zip(img_paths, targets):
             img = read_image_hwc(data_path / "images" / img_path)
+            is_npy = Path(img_path).suffix.lower() == ".npy"
 
             # laod GT
             gt_boxes = process_boxes(
@@ -133,7 +136,7 @@ def test_model(
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             t0 = time.perf_counter()
-            model_preds = model(img)
+            model_preds = model(img, bgr=not is_npy)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             latency.append((time.perf_counter() - t0) * 1000)

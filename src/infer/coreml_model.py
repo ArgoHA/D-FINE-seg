@@ -138,7 +138,7 @@ class CoreML_model:
         new_shape = [int(round(dim * scale)) for dim in shape]
         return [max(stride, int(np.ceil(dim / stride) * stride)) for dim in new_shape]
 
-    def _preprocess(self, img: NDArray, stride: int = 32) -> NDArray:
+    def _preprocess(self, img: NDArray, stride: int = 32, bgr: bool = True) -> NDArray:
         """Resize, RGB, CHW"""
         if not self.keep_ratio:
             img = cv2.resize(
@@ -154,9 +154,8 @@ class CoreML_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        # 3ch sources are BGR from cv2.imread; >3ch sources are already RGB(+extras)
-        # from np.load (see read_image_hwc).
-        if self.channels == 3:
+        # 3ch BGR (cv2.imread) needs a swap; 3ch .npy is RGB already; >3ch is RGB+extras.
+        if self.channels == 3 and bgr:
             img = img[..., ::-1].transpose(2, 0, 1)
         else:
             img = img.transpose(2, 0, 1)
@@ -164,12 +163,12 @@ class CoreML_model:
         img /= 255.0
         return img
 
-    def _prepare_inputs(self, inputs):
+    def _prepare_inputs(self, inputs, bgr: bool = True):
         original_sizes = []
         processed_sizes = []
 
         if isinstance(inputs, np.ndarray) and inputs.ndim == 3:  # single image
-            processed_inputs = self._preprocess(inputs)[None]
+            processed_inputs = self._preprocess(inputs, bgr=bgr)[None]
             original_sizes.append((inputs.shape[0], inputs.shape[1]))
             processed_sizes.append((processed_inputs[0].shape[1], processed_inputs[0].shape[2]))
 
@@ -179,7 +178,7 @@ class CoreML_model:
                 dtype=self.np_dtype,
             )
             for idx, image in enumerate(inputs):
-                processed_inputs[idx] = self._preprocess(image)
+                processed_inputs[idx] = self._preprocess(image, bgr=bgr)
                 original_sizes.append((image.shape[0], image.shape[1]))
                 processed_sizes.append(
                     (processed_inputs[idx].shape[1], processed_inputs[idx].shape[2])
@@ -245,9 +244,13 @@ class CoreML_model:
             results.append(out)
         return results
 
-    def __call__(self, inputs: NDArray[np.uint8]) -> List[Dict[str, torch.Tensor]]:
+    def __call__(
+        self, inputs: NDArray[np.uint8], bgr: bool = True
+    ) -> List[Dict[str, torch.Tensor]]:
         """
-        Input image as ndarray (BGR, HWC) or BHWC
+        Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
+        3-channel inputs already in RGB order (e.g., ``.npy`` read via
+        ``read_image_hwc``); ignored for >3 channels.
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: torch.Tensor of shape (N,), dtype int64
@@ -255,7 +258,7 @@ class CoreML_model:
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
         """
-        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
+        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
         return self._postprocess(preds, processed_sizes, original_sizes)
 
