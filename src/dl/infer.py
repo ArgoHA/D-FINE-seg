@@ -8,6 +8,7 @@ from loguru import logger
 from omegaconf import DictConfig
 from tqdm import tqdm
 
+from src.dl.dataset import read_image_hwc
 from src.dl.utils import Visualizer, abs_xyxy_to_norm_xywh, get_latest_experiment_name
 from src.infer.byte_track import ByteTrack, Detection
 from src.infer.torch_model import Torch_model
@@ -17,7 +18,7 @@ VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 
 def figure_input_type(folder_path: Path):
     video_types = ["mp4", "avi", "mov", "mkv"]
-    img_types = ["jpg", "png", "jpeg", "tif", "tiff"]
+    img_types = ["jpg", "png", "jpeg", "tif", "tiff", "npy"]
 
     for f in folder_path.iterdir():
         if f.suffix[1:].lower() in video_types:
@@ -94,12 +95,10 @@ def run_images(
     imag_paths = [img.name for img in folder_path.iterdir() if not str(img).startswith(".")]
     labels = set()
     for img_path in tqdm(imag_paths):
-        img = cv2.imread(str(folder_path / img_path), cv2.IMREAD_UNCHANGED)
+        img = read_image_hwc(folder_path / img_path)
         if img is None:
             logger.warning(f"Skipping unreadable image: {img_path}")
             continue
-        if img.ndim == 2:
-            img = img[..., None]
         or_img = img.copy()
         raw_res = torch_model(img)
 
@@ -114,8 +113,12 @@ def run_images(
             res["polys"] = torch_model.mask2poly(res["masks"], img.shape)
 
         # visualization / crops only support 3-channel; slice for N>3.
+        # cv2 saves in BGR; .npy stacks are RGB(+extras) by convention.
         vis_img = img[:, :, :3] if img.shape[2] > 3 else img
         crop_img = or_img[:, :, :3] if or_img.shape[2] > 3 else or_img
+        if Path(img_path).suffix.lower() == ".npy":
+            vis_img = np.ascontiguousarray(vis_img[..., ::-1])
+            crop_img = np.ascontiguousarray(crop_img[..., ::-1])
 
         visualize(
             img=vis_img,

@@ -30,6 +30,31 @@ from src.dl.utils import (
 )
 
 
+def read_image_hwc(path) -> Optional[np.ndarray]:
+    """Load an image as an HWC uint8 array.
+
+    - ``.npy``: ``np.load`` (multi-channel data; project convention is RGB+extras).
+    - everything else: default ``cv2.imread`` (BGR uint8, 3 channels — grayscale
+      replicated, alpha dropped, uint16 quantized). Matches ``_read_image``'s
+      3-channel branch so inference call sites and the training reader share
+      the same source-of-truth.
+
+    Returns ``None`` if the file can't be decoded. Grayscale results from
+    ``.npy`` are promoted to HWC with a trailing axis so callers can rely on
+    ``shape[2]``.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".npy":
+        try:
+            img = np.load(str(path))
+        except (FileNotFoundError, ValueError, OSError):
+            return None
+        if img.ndim == 2:
+            img = img[..., None]
+        return img
+    return cv2.imread(str(path))
+
+
 def parse_yolo_label_file(path: Path):
     """
     Supports both pure detection lines (5 cols) and YOLO-Seg lines (>=7 cols).
@@ -314,30 +339,20 @@ class CustomDataset(Dataset):
     def _read_image(self, path) -> Optional[np.ndarray]:
         """Load an image as HWC with channels in RGB(+extras) order.
 
-        ``in_channels == 3``: default ``cv2.imread`` (BGR uint8, 3 channels) +
-        BGR->RGB swap. cv2 handles grayscale auto-replication and uint16->uint8
-        quantization for free; multi-channel files have trailing channels
-        dropped automatically by IMREAD_COLOR.
-
-        ``in_channels != 3``: ``IMREAD_UNCHANGED`` to preserve all channels;
-        the first 3 are swapped BGR->RGB (cv2 stores colour as BGR end-to-end),
-        extras (e.g. thermal) are preserved.
+        Delegates to ``read_image_hwc`` (cv2 default for non-.npy, np.load for
+        .npy) and applies the project conventions on top: cv2 sources need a
+        BGR->RGB swap; ``.npy`` sources are stored RGB(+extras) and need none.
+        ``.npy`` was chosen over multi-channel TIFF because
+        ``cv2.imread(IMREAD_UNCHANGED)`` mangles 4-channel TIFFs from non-cv2
+        producers (alpha pre-multiplication + photometric-tag swap).
 
         Returns ``None`` if the file cannot be decoded.
         Raises ``ValueError`` when the channel count doesn't match in_channels."""
-        if self.in_channels == 3:
-            image = cv2.imread(str(path))  # BGR uint8, HWC
-            if image is None:
-                return None
-            return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        image = read_image_hwc(path)
         if image is None:
             return None
-        if image.ndim == 2:
-            image = image[..., None]
-        if image.shape[2] >= 3:
-            image = image[..., [2, 1, 0, *range(3, image.shape[2])]]
+        if Path(path).suffix.lower() != ".npy":
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         if image.shape[2] != self.in_channels:
             raise ValueError(
                 f"Expected {self.in_channels} channels at {path}, got {image.shape[2]}"
