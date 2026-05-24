@@ -18,7 +18,10 @@ VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 
 def figure_input_type(folder_path: Path):
     video_types = ["mp4", "avi", "mov", "mkv"]
-    img_types = ["jpg", "png", "jpeg", "tif", "tiff", "npy"]
+    # .tif/.tiff intentionally excluded: cv2.imread mangles 4-channel TIFFs
+    # (alpha pre-multiplication + photometric-tag swap). Convert to .npy first
+    # (see src/etl/preprocess.py for a PIL-based TIFF->JPG path for 3-channel).
+    img_types = ["jpg", "png", "jpeg", "npy"]
 
     for f in folder_path.iterdir():
         if f.suffix[1:].lower() in video_types:
@@ -100,7 +103,8 @@ def run_images(
             logger.warning(f"Skipping unreadable image: {img_path}")
             continue
         or_img = img.copy()
-        raw_res = torch_model(img)
+        is_npy = Path(img_path).suffix.lower() == ".npy"
+        raw_res = torch_model(img, bgr=not is_npy)
 
         # Convert torch tensors to numpy for saving/visualization
         res = {
@@ -116,7 +120,7 @@ def run_images(
         # cv2 saves in BGR; .npy stacks are RGB(+extras) by convention.
         vis_img = img[:, :, :3] if img.shape[2] > 3 else img
         crop_img = or_img[:, :, :3] if or_img.shape[2] > 3 else or_img
-        if Path(img_path).suffix.lower() == ".npy":
+        if is_npy:
             vis_img = np.ascontiguousarray(vis_img[..., ::-1])
             crop_img = np.ascontiguousarray(crop_img[..., ::-1])
 
