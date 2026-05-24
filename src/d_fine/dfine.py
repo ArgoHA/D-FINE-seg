@@ -66,9 +66,9 @@ def build_model(
     in_channels: int = 3,
     pretrained_model_path=None,
 ):
-    if not (1 <= int(in_channels) <= 4):
+    if int(in_channels) not in (3, 4):
         raise ValueError(
-            f"train.in_channels must be 1..4 (RGB or RGB+one extra modality); got {in_channels}. "
+            f"train.in_channels must be 3 (RGB) or 4 (RGB+one extra modality); got {in_channels}. "
             "Stacks with >4 channels are not supported (cv2 Scalar / Albumentations cap)."
         )
     model_cfg = deepcopy(models[model_name])
