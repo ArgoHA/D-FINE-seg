@@ -189,9 +189,9 @@ class CustomDataset(Dataset):
         self.coco_mode = coco_annotations is not None
         self._coco_entries = coco_annotations
         self.in_channels = int(cfg.train.in_channels)
-        if not (1 <= self.in_channels <= 4):
+        if self.in_channels not in (3, 4):
             raise ValueError(
-                f"train.in_channels must be 1..4 (RGB or RGB+one extra modality); "
+                f"train.in_channels must be 3 (RGB) or 4 (RGB+one extra modality); "
                 f"got {self.in_channels}."
             )
         self.norm = ([0.0] * self.in_channels, [1.0] * self.in_channels)
