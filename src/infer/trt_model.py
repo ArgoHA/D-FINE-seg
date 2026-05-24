@@ -255,7 +255,9 @@ class TRT_model:
         return [max(stride, int(np.ceil(dim / stride) * stride)) for dim in new_shape]
 
     def _preprocess_to_pinned(self, img: NDArray) -> None:
-        """Resize + BGR->RGB swap on first 3 channels into the pinned HWC uint8 buffer."""
+        """Resize into the pinned HWC uint8 buffer. 3ch path also does BGR->RGB
+        (cv2 source); >3ch path leaves channels untouched (np.load source is
+        already RGB+extras — see read_image_hwc)."""
         H, W = self.input_size
         if not self.keep_ratio:
             resized = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
@@ -267,9 +269,6 @@ class TRT_model:
 
         if self.channels == 3:
             cv2.cvtColor(resized, cv2.COLOR_BGR2RGB, dst=self._cpu_pinned_hwc.numpy())
-        elif self.channels > 3:
-            swapped = resized[..., [2, 1, 0, *range(3, self.channels)]]
-            np.copyto(self._cpu_pinned_hwc.numpy(), swapped)
         else:
             np.copyto(self._cpu_pinned_hwc.numpy(), resized)
 
@@ -289,11 +288,10 @@ class TRT_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        # Caller supplies BGR(+extras) from cv2.imread; swap first 3 to RGB.
+        # 3ch sources are BGR from cv2.imread; >3ch sources are already RGB(+extras)
+        # from np.load (see read_image_hwc).
         if self.channels == 3:
             img = img[..., ::-1].transpose(2, 0, 1)
-        elif self.channels > 3:
-            img = img[..., [2, 1, 0, *range(3, self.channels)]].transpose(2, 0, 1)
         else:
             img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=self.np_dtype)
