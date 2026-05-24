@@ -15,7 +15,7 @@ from tabulate import tabulate
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dl.dataset import CustomDataset, Loader
+from src.dl.dataset import CustomDataset, Loader, read_image_hwc
 from src.dl.utils import (
     get_latest_experiment_name,
     poly_abs_to_mask,
@@ -82,9 +82,7 @@ def test_model(
 
     # Warmup iterations
     first_batch = next(iter(test_loader))
-    warmup_img = cv2.imread(str(data_path / "images" / first_batch[2][0]), cv2.IMREAD_UNCHANGED)
-    if warmup_img.ndim == 2:
-        warmup_img = warmup_img[..., None]
+    warmup_img = read_image_hwc(data_path / "images" / first_batch[2][0])
     for _ in range(10):
         _ = model(warmup_img)
     if torch.cuda.is_available():
@@ -92,9 +90,7 @@ def test_model(
 
     for _, targets, img_paths in tqdm(test_loader, total=len(test_loader)):
         for img_path, target in zip(img_paths, targets):
-            img = cv2.imread(str(data_path / "images" / img_path), cv2.IMREAD_UNCHANGED)
-            if img.ndim == 2:
-                img = img[..., None]
+            img = read_image_hwc(data_path / "images" / img_path)
 
             # laod GT
             gt_boxes = process_boxes(

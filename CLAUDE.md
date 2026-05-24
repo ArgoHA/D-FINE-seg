@@ -266,6 +266,7 @@ uv run python -m tests.generate_fixtures
    - `train.mosaic_augs.mosaic_scale: [0.5, 1.4]` if dataset is object-sparse
 9. **DDP rank-0 writes everything.** Don't assume per-rank directories; logs, checkpoints, and WandB calls are gated to rank 0.
 10. **`model.pt` is best, `last.pt` is for recovery only.** Always use `model.pt` for inference, export, and bench.
+11. **Multi-channel images live in `.npy`, not TIFF.** `cv2.imread(IMREAD_UNCHANGED)` is not byte-faithful for 4-channel TIFFs — it treats channel 4 as alpha, swaps the first three per the photometric tag, and pre-multiplies values, so any TIFF from a non-cv2 writer is silently mangled. `.npy` is byte-faithful and ~25× faster to read.
 
 ## 13. Quick reference
 

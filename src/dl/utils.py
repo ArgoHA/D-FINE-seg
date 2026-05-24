@@ -563,15 +563,22 @@ def visualize(
       - Preds: brown boxes + colored masks per class
     Expects pred dicts possibly containing "masks" (uint8)
     """
+    from src.dl.dataset import read_image_hwc  # local to avoid circular import
+
     path_to_save.mkdir(parents=True, exist_ok=True)
 
     draw_gt_masks = "masks" in gt[0]
     draw_pred_masks = "masks" in preds[0]
 
     for gt_dict, pred_dict, img_path in zip(gt, preds, img_paths):
-        img = cv2.imread(str(dataset_path / img_path))
+        img = read_image_hwc(dataset_path / img_path)
         if img is None:
             continue
+        # cv2 draws/writes in BGR; .npy stacks are RGB(+extras) by convention.
+        if img.shape[2] > 3:
+            img = img[..., :3]
+        if Path(img_path).suffix.lower() == ".npy":
+            img = np.ascontiguousarray(img[..., ::-1])
 
         # Draw GT masks (green-ish)
         if (
@@ -617,7 +624,8 @@ def visualize(
                 score=score,
             )
 
-        outpath = path_to_save / img_path.name
+        # cv2.imwrite picks the encoder from the extension — .npy isn't an image format.
+        outpath = path_to_save / f"{img_path.stem}.jpg"
         cv2.imwrite(str(outpath), img)
 
 

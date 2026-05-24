@@ -1,5 +1,5 @@
 """Convert the M3FD multi-modal detection dataset to this repo's YOLO + multi-channel
-TIFF layout.
+``.npy`` layout.
 
 M3FD ships as:
     M3FD.zip
@@ -8,10 +8,11 @@ M3FD ships as:
       Ir/*.png           thermal, stored as a grayscale-replicated 3-channel uint8 PNG
 
 We collapse the Ir channels (they are identical) to a single thermal plane and
-stack with the visible image to produce 4-channel TIFFs. Channel storage
-follows OpenCV's BGR convention end-to-end: [B, G, R, Thermal]. The dataset
-reader applies a BGR->RGB swap on the first 3 channels at load time, matching
-how PNG/JPEG are handled, so the model sees [R, G, B, Thermal].
+stack with the visible image to produce 4-channel uint8 arrays saved as ``.npy``.
+On-disk channel order is RGBT — ``np.load`` is byte-faithful, so the dataset
+reader can consume the file directly with no swap. (TIFF was rejected because
+``cv2.imread(IMREAD_UNCHANGED)`` mangles 4-channel TIFFs from non-cv2 producers:
+see ``scripts/test_tiff_channel_order.py``.)
 
 Usage:
     uv run python -m src.etl.m3fd_to_yolo \\
@@ -99,18 +100,15 @@ def _process_one(args) -> Tuple[str, str]:
     if vis.shape[:2] != (height, width):
         return stem, f"xml_size_mismatch xml=({height},{width}) img={vis.shape[:2]}"
 
-    # Keep vis in cv2's native BGR; collapse the replicated IR to one channel.
-    # Stored channel order is [B, G, R, T]; the dataset reader swaps to RGB on load.
-    if ir.ndim == 3:
-        thermal = ir[..., 0]
-    else:
-        thermal = ir
-    stacked = np.dstack([vis, thermal]).astype(np.uint8, copy=False)  # H,W,4
+    # Swap vis BGR -> RGB and collapse the replicated IR to one channel.
+    # On-disk order is [R, G, B, T]; np.load is byte-faithful so the reader needs no swap.
+    rgb = vis[..., ::-1]
+    thermal = ir[..., 0] if ir.ndim == 3 else ir
+    stacked = np.dstack([rgb, thermal]).astype(np.uint8, copy=False)  # H,W,4
 
-    out_img = dst_dir / "images" / f"{stem}.tiff"
+    out_img = dst_dir / "images" / f"{stem}.npy"
     out_lbl = dst_dir / "labels" / f"{stem}.txt"
-    # LZW keeps these ~50% smaller than raw without hurting load speed.
-    cv2.imwrite(str(out_img), stacked, [cv2.IMWRITE_TIFF_COMPRESSION, 5])
+    np.save(str(out_img), stacked)
 
     with open(out_lbl, "w") as f:
         for cls, xc, yc, w, h in boxes:
@@ -133,9 +131,7 @@ def _resolve_src(src: Path) -> Tuple[Path, Path]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    parser.add_argument(
-        "--src", type=Path, required=True, help="M3FD.zip or extracted root dir"
-    )
+    parser.add_argument("--src", type=Path, required=True, help="M3FD.zip or extracted root dir")
     parser.add_argument(
         "--dst", type=Path, required=True, help="Output dataset dir (gets images/ and labels/)"
     )
@@ -162,8 +158,13 @@ def main():
         workers = args.workers or None
         jobs = [(s, str(src_root), str(args.dst)) for s in stems]
 
-        counts = {"ok": 0, "missing": 0, "decode_fail": 0, "shape_mismatch": 0,
-                  "xml_size_mismatch": 0}
+        counts = {
+            "ok": 0,
+            "missing": 0,
+            "decode_fail": 0,
+            "shape_mismatch": 0,
+            "xml_size_mismatch": 0,
+        }
         with ProcessPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(_process_one, j) for j in jobs]
             for fut in tqdm(as_completed(futs), total=len(futs)):
