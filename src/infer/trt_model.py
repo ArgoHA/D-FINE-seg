@@ -27,7 +27,6 @@ class TRT_model:
         self.n_outputs = n_outputs
         self.rect = rect
         self.keep_ratio = keep_ratio
-        self.channels = 3
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
         self.np_dtype = np.float32
@@ -69,9 +68,10 @@ class TRT_model:
         self.context = self.engine.create_execution_context()
 
     def _read_engine_metadata(self):
-        """Auto-read input_size and detect mask presence from the engine."""
+        """Auto-read channels + input_size and detect mask presence from the engine."""
         inp_name = self.engine.get_tensor_name(0)
         inp_shape = tuple(self.engine.get_tensor_shape(inp_name))
+        self.channels = int(inp_shape[1])
         self.input_size = (inp_shape[2], inp_shape[3])  # (H, W)
 
         n_outputs = 0
@@ -254,8 +254,10 @@ class TRT_model:
         new_shape = [int(round(dim * scale)) for dim in shape]
         return [max(stride, int(np.ceil(dim / stride) * stride)) for dim in new_shape]
 
-    def _preprocess_to_pinned(self, img: NDArray) -> None:
-        """Resize + BGR->RGB into the persistent pinned HWC uint8 buffer."""
+    def _preprocess_to_pinned(self, img: NDArray, bgr: bool = True) -> None:
+        """Resize into the pinned HWC uint8 buffer. 3ch BGR path also does
+        BGR->RGB (cv2 source); 3ch RGB (.npy) and >3ch (np.load, RGB+extras)
+        skip the swap."""
         H, W = self.input_size
         if not self.keep_ratio:
             resized = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
@@ -265,9 +267,12 @@ class TRT_model:
         else:
             resized = letterbox(img, (H, W), stride=32, auto=False)[0]
 
-        cv2.cvtColor(resized, cv2.COLOR_BGR2RGB, dst=self._cpu_pinned_hwc.numpy())
+        if self.channels == 3 and bgr:
+            cv2.cvtColor(resized, cv2.COLOR_BGR2RGB, dst=self._cpu_pinned_hwc.numpy())
+        else:
+            np.copyto(self._cpu_pinned_hwc.numpy(), resized)
 
-    def _preprocess(self, img: NDArray, stride: int = 32) -> NDArray:
+    def _preprocess(self, img: NDArray, stride: int = 32, bgr: bool = True) -> NDArray:
         """CPU-only preprocess used by the batched fall-back path."""
         if not self.keep_ratio:  # simple resize
             img = cv2.resize(
@@ -283,17 +288,20 @@ class TRT_model:
                 img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
             )[0]
 
-        # BGR to RGB, HWC to CHW
-        img = img[..., ::-1].transpose(2, 0, 1)
+        # 3ch BGR (cv2.imread) needs a swap; 3ch .npy is RGB already; >3ch is RGB+extras.
+        if self.channels == 3 and bgr:
+            img = img[..., ::-1].transpose(2, 0, 1)
+        else:
+            img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=self.np_dtype)
         img /= 255.0
         return img
 
-    def _prepare_inputs(self, inputs):
+    def _prepare_inputs(self, inputs, bgr: bool = True):
         # Single image fast path: avoid np->torch->pin->H2D->fp32 round-trip.
         if isinstance(inputs, np.ndarray) and inputs.ndim == 3 and self.device == "cuda":
             H, W = self.input_size
-            self._preprocess_to_pinned(inputs)
+            self._preprocess_to_pinned(inputs, bgr=bgr)
             self._gpu_hwc.copy_(self._cpu_pinned_hwc, non_blocking=True)
             # HWC uint8 view -> CHW; copy_ does the cast to fp32 into the engine input.
             chw_view = self._gpu_hwc.permute(2, 0, 1)
@@ -306,7 +314,7 @@ class TRT_model:
         processed_sizes: List[Tuple[int, int]] = []
 
         if isinstance(inputs, np.ndarray) and inputs.ndim == 3:  # single image, CPU
-            processed_inputs = self._preprocess(inputs)[None]
+            processed_inputs = self._preprocess(inputs, bgr=bgr)[None]
             original_sizes.append((inputs.shape[0], inputs.shape[1]))
             processed_sizes.append((processed_inputs[0].shape[1], processed_inputs[0].shape[2]))
         elif isinstance(inputs, np.ndarray) and inputs.ndim == 4:  # batch of images
@@ -315,7 +323,7 @@ class TRT_model:
                 dtype=self.np_dtype,
             )
             for idx, image in enumerate(inputs):
-                processed_inputs[idx] = self._preprocess(image)
+                processed_inputs[idx] = self._preprocess(image, bgr=bgr)
                 original_sizes.append((image.shape[0], image.shape[1]))
                 processed_sizes.append(
                     (processed_inputs[idx].shape[1], processed_inputs[idx].shape[2])
@@ -433,9 +441,13 @@ class TRT_model:
             results.append(out)
         return results
 
-    def __call__(self, inputs: NDArray[np.uint8]) -> List[Dict[str, torch.Tensor]]:
+    def __call__(
+        self, inputs: NDArray[np.uint8], bgr: bool = True
+    ) -> List[Dict[str, torch.Tensor]]:
         """
-        Input image as ndarray (BGR, HWC) or BHWC
+        Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
+        3-channel inputs already in RGB order (e.g., ``.npy`` read via
+        ``read_image_hwc``); ignored for >3 channels.
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: torch.Tensor of shape (N,), dtype int64
@@ -447,7 +459,9 @@ class TRT_model:
         # extra default-stream synchronisations triggered by enqueueV3, then have
         # the default stream wait so subsequent .cpu() copies stay ordered.
         with torch.cuda.stream(self._stream):
-            processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs)
+            processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(
+                inputs, bgr=bgr
+            )
             preds = self._predict(processed_inputs, actual_batch=len(processed_sizes))
             results = self._postprocess(preds, processed_sizes, original_sizes)
         torch.cuda.default_stream(self.device).wait_stream(self._stream)
@@ -495,7 +509,7 @@ class TRT_model:
 def letterbox(
     im,
     new_shape=(640, 640),
-    color=(114, 114, 114),
+    color=None,
     auto=True,
     scale_fill=False,
     scaleup=True,
@@ -505,6 +519,9 @@ def letterbox(
     shape = im.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
+    if color is None:
+        c = im.shape[2] if im.ndim == 3 else 1
+        color = tuple([114] * c)
 
     # Scale ratio (new / old)
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])

@@ -184,6 +184,7 @@ class Trainer:
             enable_mask_head,
             str(self.device),
             img_size=cfg.train.img_size,
+            in_channels=cfg.train.in_channels,
             pretrained_model_path=cfg.train.pretrained_model_path,
         )
         if self.distributed:
@@ -816,6 +817,7 @@ def main(cfg: DictConfig) -> None:
                 cfg.task == "segment",
                 cfg.train.device,
                 img_size=cfg.train.img_size,
+                in_channels=cfg.train.in_channels,
             )
             model.load_state_dict(
                 torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True)
