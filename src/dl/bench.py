@@ -195,10 +195,10 @@ def main(cfg: DictConfig):
     formats_to_bench = [
         "torch",
         "tensorrt",
-        # "onnx",
-        # "openvino",
-        # "coreml",
-        # "litert",
+        "onnx",
+        "openvino",
+        "coreml",
+        "litert",
     ]
 
     ov_half = cfg.export.half
