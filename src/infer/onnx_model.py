@@ -21,6 +21,7 @@ class ONNX_model:
         device: str | None = None,
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
+        labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
     ):
         self.model_path = model_path
         self.n_outputs = n_outputs
@@ -33,6 +34,7 @@ class ONNX_model:
         self.device = device or "cpu"
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
+        self.labels_to_use = labels_to_use or []
 
         self._load_model()
         self._read_model_metadata()
@@ -202,6 +204,9 @@ class ONNX_model:
                 conf_keep = sb >= conf_t[lb]
             else:
                 conf_keep = sb >= self.conf_thresh
+            if self.labels_to_use:  # restrict to requested class ids
+                lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
+                conf_keep &= torch.isin(lb, lbl_set)
             keep_indices = torch.where(conf_keep)[0]
             sb, lb, bb = sb[conf_keep], lb[conf_keep], bb[conf_keep]
 

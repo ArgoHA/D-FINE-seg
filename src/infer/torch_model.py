@@ -23,6 +23,7 @@ class Torch_model:
         keep_ratio: bool = False,
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
+        labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
         enable_mask_head: bool = False,
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
@@ -37,6 +38,7 @@ class Torch_model:
         self.keep_ratio = keep_ratio
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
+        self.labels_to_use = labels_to_use or []
         self.enable_mask_head = enable_mask_head
         self.channels = channels
         self.debug_mode = False
@@ -198,6 +200,9 @@ class Torch_model:
             # Apply per-class confidence thresholds
             conf_threshs_tensor = torch.tensor(self.conf_threshs, device=sb.device)
             keep = sb >= conf_threshs_tensor[lb]
+            if self.labels_to_use:  # restrict to requested class ids
+                lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
+                keep &= torch.isin(lb, lbl_set)
 
             sb = sb[keep]
             lb = lb[keep]
