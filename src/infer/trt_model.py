@@ -21,6 +21,7 @@ class TRT_model:
         device: str = None,
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
+        labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
         use_cuda_graph: bool = True,
     ) -> None:
         self.model_path = model_path
@@ -32,6 +33,7 @@ class TRT_model:
         self.np_dtype = np.float32
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
+        self.labels_to_use = labels_to_use or []
         self.use_cuda_graph = use_cuda_graph
 
         assert not rect, "rect=True is not supported by the current TRT_model implementation"
@@ -412,6 +414,9 @@ class TRT_model:
             # Apply per-class confidence thresholds (cached tensor avoids per-call alloc)
             conf_t = self._conf_threshs_t.to(sb.device, non_blocking=True)
             conf_keep = sb >= conf_t[lb]
+            if self.labels_to_use:  # restrict to requested class ids
+                lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
+                conf_keep &= torch.isin(lb, lbl_set)
             keep_indices = torch.where(conf_keep)[0]
             sb, lb, bb = sb[conf_keep], lb[conf_keep], bb[conf_keep]
 
