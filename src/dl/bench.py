@@ -1,3 +1,4 @@
+import gc
 import platform
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from tqdm import tqdm
 
 from src.dl.dataset import CustomDataset, Loader, read_image_hwc
 from src.dl.utils import (
+    encode_sample_masks_to_rle,
     get_latest_experiment_name,
     poly_abs_to_mask,
     process_boxes,
@@ -165,6 +167,10 @@ def test_model(
                     path_to_save=output_path,
                     label_to_name=label_to_name,
                 )
+
+            # RLE-encode masks (no-op for detect) so whole-dataset accumulation stays small
+            encode_sample_masks_to_rle(gt_dict)
+            encode_sample_masks_to_rle(pred_dict)
 
     validator = Validator(
         all_gt,
@@ -324,16 +330,16 @@ def main(cfg: DictConfig):
             apply_nms=nms,
         )
 
-    litert_int8_path = models_path / "model_int8.tflite"
-    if litert_int8_path.exists() and "litert" in formats_to_bench:
-        litert_int8_model = LiteRT_model(
-            model_path=litert_int8_path,
-            n_outputs=len(cfg.train.label_to_name),
-            conf_thresh=conf_thresh,
-            rect=False,
-            keep_ratio=cfg.train.keep_ratio,
-            apply_nms=nms,
-        )
+    # litert_int8_path = models_path / "model_int8.tflite"
+    # if litert_int8_path.exists() and "litert" in formats_to_bench:
+    #     litert_int8_model = LiteRT_model(
+    #         model_path=litert_int8_path,
+    #         n_outputs=len(cfg.train.label_to_name),
+    #         conf_thresh=conf_thresh,
+    #         rect=False,
+    #         keep_ratio=cfg.train.keep_ratio,
+    #         apply_nms=nms,
+    #     )
 
     data_path = Path(cfg.train.data_path)
     val_loader, test_loader = BenchLoader(
@@ -367,8 +373,8 @@ def main(cfg: DictConfig):
         models["OpenVINO INT8"] = ov_int8_model
     if litert_path.exists() and "litert" in formats_to_bench:
         models["LiteRT"] = litert_model
-    if litert_int8_path.exists() and "litert" in formats_to_bench:
-        models["LiteRT INT8"] = litert_int8_model
+    # if litert_int8_path.exists() and "litert" in formats_to_bench:
+    #     models["LiteRT INT8"] = litert_int8_model
     if IS_MACOS:
         if coreml_path.exists() and "coreml" in formats_to_bench:
             models["CoreML"] = coreml_model
@@ -380,7 +386,8 @@ def main(cfg: DictConfig):
         if trt_int8_path.exists() and "tensorrt" in formats_to_bench:
             models["TensorRT INT8"] = trt_int8_model
 
-    for model_name, model in models.items():
+    for model_name in list(models.keys()):
+        model = models.pop(model_name)  # drop ref so backend frees after its run
         all_metrics[model_name] = test_model(
             loader_to_use,
             data_path,
@@ -397,6 +404,10 @@ def main(cfg: DictConfig):
             compute_maps=compute_maps,
             to_draw_gt=to_draw_gt,
         )
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     metrics = pd.DataFrame.from_dict(all_metrics, orient="index").round(3)
     metrics.to_csv(Path(cfg.train.path_to_save) / "bench_metrics.csv")
