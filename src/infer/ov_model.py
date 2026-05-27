@@ -59,13 +59,15 @@ class OV_model:
             if "GPU" in core.get_available_devices() and not self.rect:
                 self.device = "GPU"
 
-        # Read channel count + input_size from the compiled model
-        inp_shape = det_ov_model.inputs[0].shape  # [1, C, H, W]
-        self.channels = int(inp_shape[1])
-        self.input_size = (inp_shape[2], inp_shape[3])  # (H, W)
+        # Read channel count + input_size. partial_shape (not .shape) so a dynamic
+        # batch dim (max_batch_size > 1 exports) doesn't raise; C/H/W stay static.
+        inp_shape = det_ov_model.inputs[0].partial_shape  # [B, C, H, W]
+        self.channels = int(inp_shape[1].get_length())
+        self.input_size = (int(inp_shape[2].get_length()), int(inp_shape[3].get_length()))  # (H, W)
 
         if self.device != "CPU":
-            det_ov_model.reshape({"input": [1, self.channels, *self.input_size]})
+            batch = -1 if self.max_batch_size > 1 else 1
+            det_ov_model.reshape({"input": [batch, self.channels, *self.input_size]})
 
         inference_hint = "f16" if self.half else "f32"
         inference_mode = "CUMULATIVE_THROUGHPUT" if self.max_batch_size > 1 else "LATENCY"
@@ -79,7 +81,8 @@ class OV_model:
     def _read_model_metadata(self):
         """Detect mask presence and num classes from the compiled model."""
         self.has_masks = len(self.model.outputs) > 2  # logits, boxes, [masks]
-        self.n_outputs = self.model.outputs[0].shape[2]  # logits shape: [B, Q, C]
+        # partial_shape: output batch dim is dynamic for max_batch_size > 1 exports
+        self.n_outputs = int(self.model.outputs[0].partial_shape[2].get_length())  # [B, Q, C]
 
     def _test_pred(self):
         random_image = np.random.randint(0, 255, size=(1000, 1110, self.channels), dtype=np.uint8)
