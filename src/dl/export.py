@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 
 import hydra
@@ -194,6 +195,39 @@ def export_to_openvino(onnx_path: Path, x_test, dynamic_input: bool, max_batch_s
     logger.info("OpenVINO model exported")
 
 
+class _ExportGroupNorm(nn.Module):
+    """GroupNorm rewrite that survives CoreML conversion with a dynamic batch.
+
+    Stock coremltools bakes the batch dim into a constant reshape inside its
+    group_norm op, which fails once batch is symbolic (RangeDim). Folding
+    batch*groups into a single -1 dim and computing var as E[x^2]-E[x]^2 keeps
+    every reshape dynamic-safe and uses only ops CoreML implements.
+    """
+
+    def __init__(self, gn: nn.GroupNorm):
+        super().__init__()
+        self.g, self.eps, self.c = gn.num_groups, gn.eps, gn.num_channels
+        self.weight, self.bias = gn.weight, gn.bias
+
+    def forward(self, x):
+        h, w = x.shape[2], x.shape[3]
+        xg = x.reshape(-1, (self.c // self.g) * h * w)  # [B*g, C/g*H*W]
+        mean = xg.mean(1, keepdim=True)
+        var = (xg * xg).mean(1, keepdim=True) - mean * mean
+        xg = (xg - mean) / torch.sqrt(var + self.eps)
+        x = xg.reshape(-1, self.c, h, w)
+        return x * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
+
+
+def _swap_group_norm(module: nn.Module) -> None:
+    """Recursively replace nn.GroupNorm with the CoreML-safe variant, in place."""
+    for name, child in module.named_children():
+        if isinstance(child, nn.GroupNorm):
+            setattr(module, name, _ExportGroupNorm(child))
+        else:
+            _swap_group_norm(child)
+
+
 def export_to_coreml(
     model: nn.Module,
     model_path: Path,
@@ -215,6 +249,12 @@ def export_to_coreml(
     )
 
     compute_precision = ct.precision.FLOAT16 if half else ct.precision.FLOAT32
+
+    # Dynamic batch + the mask head's GroupNorm crash coremltools' converter;
+    # swap in a dynamic-safe GroupNorm on a copy so other exports stay untouched.
+    if max_batch_size > 1:
+        model = copy.deepcopy(model)
+        _swap_group_norm(model)
 
     traced = torch.jit.trace(model.cpu(), x_test.cpu(), strict=False)
 
@@ -423,9 +463,9 @@ def main(cfg: DictConfig):
     model.eval()
     raw_model.eval()
 
-    x_test = torch.randn(
-        cfg.export.max_batch_size, cfg.train.in_channels, *cfg.train.img_size
-    ).to(device)
+    x_test = torch.randn(cfg.export.max_batch_size, cfg.train.in_channels, *cfg.train.img_size).to(
+        device
+    )
     _ = model(x_test)
 
     # Openvino currently doesn't supprort some operations in postprocessor
@@ -454,7 +494,7 @@ def main(cfg: DictConfig):
         input_name=input_name,
         output_names=output_names,
     )
-    export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
+    # export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
 
     export_to_coreml(
         model, model_path, x_test, half=False, max_batch_size=cfg.export.max_batch_size
