@@ -54,16 +54,17 @@ class Validator:
         )
         self.torch_metric.warn_on_many_detections = False
 
-        # get raw preds for torchmetrics
-        self.torchmetrics_preds = copy.deepcopy(preds)
-
-        if len(self.torchmetrics_preds) > 0 and "all_boxes" in self.torchmetrics_preds[0]:
-            for torchmetrics_pred in self.torchmetrics_preds:
-                for key in ["boxes", "labels", "scores"]:
-                    torchmetrics_pred[key] = torchmetrics_pred[f"all_{key}"]
-                    del torchmetrics_pred[f"all_{key}"]
-
+        # get raw preds for torchmetrics (only needed when computing mAPs; the deepcopy
+        # duplicates every dense mask, so skip it otherwise to avoid an OOM spike)
         if self.compute_maps:
+            self.torchmetrics_preds = copy.deepcopy(preds)
+
+            if len(self.torchmetrics_preds) > 0 and "all_boxes" in self.torchmetrics_preds[0]:
+                for torchmetrics_pred in self.torchmetrics_preds:
+                    for key in ["boxes", "labels", "scores"]:
+                        torchmetrics_pred[key] = torchmetrics_pred[f"all_{key}"]
+                        del torchmetrics_pred[f"all_{key}"]
+
             self.torch_metric.update(self.torchmetrics_preds, gt)
 
         # Check if masks available (either dense or RLE-encoded)
