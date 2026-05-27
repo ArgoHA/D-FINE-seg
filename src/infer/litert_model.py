@@ -20,6 +20,7 @@ class LiteRT_model:
         keep_ratio: bool = False,
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
+        labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
     ):
         self.model_path = model_path
         self.n_outputs = n_outputs
@@ -30,6 +31,7 @@ class LiteRT_model:
         self.np_dtype = np.float32
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
+        self.labels_to_use = labels_to_use or []
 
         self._load_model()
         self._read_model_metadata()
@@ -227,6 +229,9 @@ class LiteRT_model:
 
             conf_threshs_tensor = torch.tensor(self.conf_threshs, device=sb.device)
             keep = sb >= conf_threshs_tensor[lb]
+            if self.labels_to_use:  # restrict to requested class ids
+                lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
+                keep &= torch.isin(lb, lbl_set)
 
             sb = sb[keep]
             lb = lb[keep]
