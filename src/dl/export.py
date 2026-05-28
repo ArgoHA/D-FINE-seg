@@ -10,6 +10,7 @@ from torch import nn
 
 from src.d_fine.configs import base_cfg
 from src.d_fine.dfine import build_model
+from src.d_fine.utils import ensure_pretrained, load_tuning_state
 from src.dl.utils import get_latest_experiment_name
 
 
@@ -122,7 +123,17 @@ def prepare_model(cfg, device):
         img_size=cfg.train.img_size,
         in_channels=cfg.train.in_channels,
     )
-    model.load_state_dict(torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True))
+    if cfg.export.from_pretrained:
+        # Export the COCO/obj2coco pretrained weights directly (no trained model.pt).
+        load_tuning_state(model, ensure_pretrained(cfg.train.pretrained_model_path))
+    else:
+        ckpt = Path(cfg.train.path_to_save) / "model.pt"
+        if not ckpt.exists():
+            raise FileNotFoundError(
+                f"{ckpt} not found. Train first, or set export.from_pretrained=True "
+                "to export pretrained weights directly."
+            )
+        model.load_state_dict(torch.load(ckpt, weights_only=True))
     model.eval()
     return model
 
@@ -494,7 +505,7 @@ def main(cfg: DictConfig):
         input_name=input_name,
         output_names=output_names,
     )
-    # export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
+    export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
 
     export_to_coreml(
         model, model_path, x_test, half=False, max_batch_size=cfg.export.max_batch_size
