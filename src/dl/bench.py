@@ -330,16 +330,16 @@ def main(cfg: DictConfig):
             apply_nms=nms,
         )
 
-    # litert_int8_path = models_path / "model_int8.tflite"
-    # if litert_int8_path.exists() and "litert" in formats_to_bench:
-    #     litert_int8_model = LiteRT_model(
-    #         model_path=litert_int8_path,
-    #         n_outputs=len(cfg.train.label_to_name),
-    #         conf_thresh=conf_thresh,
-    #         rect=False,
-    #         keep_ratio=cfg.train.keep_ratio,
-    #         apply_nms=nms,
-    #     )
+    litert_int8_path = models_path / "model_int8.tflite"
+    if litert_int8_path.exists() and "litert" in formats_to_bench:
+        litert_int8_model = LiteRT_model(
+            model_path=litert_int8_path,
+            n_outputs=len(cfg.train.label_to_name),
+            conf_thresh=conf_thresh,
+            rect=False,
+            keep_ratio=cfg.train.keep_ratio,
+            apply_nms=nms,
+        )
 
     data_path = Path(cfg.train.data_path)
     val_loader, test_loader = BenchLoader(
@@ -373,8 +373,8 @@ def main(cfg: DictConfig):
         models["OpenVINO INT8"] = ov_int8_model
     if litert_path.exists() and "litert" in formats_to_bench:
         models["LiteRT"] = litert_model
-    # if litert_int8_path.exists() and "litert" in formats_to_bench:
-    #     models["LiteRT INT8"] = litert_int8_model
+    if litert_int8_path.exists() and "litert" in formats_to_bench:
+        models["LiteRT INT8"] = litert_int8_model
     if IS_MACOS:
         if coreml_path.exists() and "coreml" in formats_to_bench:
             models["CoreML"] = coreml_model
