@@ -3,15 +3,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import Sam3Model, Sam3Processor
+
+from src.infer.sam3_model import SAM3_model
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 BOTTLE_CLASS_ID = 0
-MODEL_ID = "facebook/sam3"
 
 
 def box_to_yolo(box, img_w: int, img_h: int):
@@ -73,11 +72,7 @@ def draw_masks(image_rgb: np.ndarray, masks: np.ndarray, boxes: np.ndarray, scor
 
 def process_image(
     image_path: Path,
-    model,
-    processor,
-    prompt: str,
-    score_threshold: float,
-    device: str,
+    model: SAM3_model,
     output_dir: Path,
     vis_dir: Path | None = None,
 ):
@@ -85,19 +80,13 @@ def process_image(
 
     image = Image.open(image_path).convert("RGB")
     img_w, img_h = image.size
+    image_rgb = np.array(image)
 
-    inputs = processor(images=image, text=prompt, return_tensors="pt").to(device)
-    with torch.inference_mode(), torch.autocast(device_type=device, dtype=torch.bfloat16):
-        outputs = model(**inputs)
+    res = model(image_rgb, bgr=False)[0]
 
-    # post_process combines presence × per-object score, then applies `threshold`
-    results = processor.post_process_instance_segmentation(
-        outputs, threshold=score_threshold, target_sizes=[(img_h, img_w)]
-    )[0]
-
-    boxes = results["boxes"].cpu().float().numpy()  # (N, 4) xyxy in image px
-    scores = results["scores"].cpu().float().numpy()  # (N,)
-    masks = results["masks"].cpu().numpy().astype(bool) if vis_dir is not None else None
+    boxes = res["boxes"].numpy()
+    scores = res["scores"].numpy()
+    masks = res["masks"].numpy().astype(bool) if vis_dir is not None else None
 
     if len(boxes) == 0:
         return 0
@@ -110,7 +99,6 @@ def process_image(
     txt_path.write_text("\n".join(yolo_lines) + ("\n" if yolo_lines else ""))
 
     if vis_dir is not None:
-        image_rgb = np.array(image)
         vis = draw_masks(image_rgb, masks, boxes, scores)
         cv2.imwrite(str(vis_dir / (image_path.stem + ".jpg")), cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
 
@@ -135,21 +123,14 @@ def main():
     if not image_files:
         sys.exit(f"No images found in {image_dir}")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
     print(f"Images : {len(image_files)} found in {image_dir}")
     print(f"Labels : {output_dir}")
     if vis_dir is not None:
         print(f"Vis    : {vis_dir}")
     print(f"Prompt : '{prompt}'")
     print(f"Score threshold: {score_threshold}")
-    print(f"Device : {device}")
-    print(f"\nLoading {MODEL_ID}...")
 
-    processor = Sam3Processor.from_pretrained(MODEL_ID)
-    model = Sam3Model.from_pretrained(MODEL_ID, dtype=torch.bfloat16).to(device).eval()
-
-    print("Model loaded. Running inference...\n")
+    model = SAM3_model(prompt=prompt, conf_thresh=score_threshold, binarize_masks=False)
 
     total_detections = 0
     with tqdm(image_files, unit="img") as pbar:
@@ -158,10 +139,6 @@ def main():
             n = process_image(
                 image_path=image_path,
                 model=model,
-                processor=processor,
-                prompt=prompt,
-                score_threshold=score_threshold,
-                device=device,
                 output_dir=output_dir,
                 vis_dir=vis_dir,
             )
