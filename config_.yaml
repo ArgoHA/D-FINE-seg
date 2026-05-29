@@ -130,6 +130,7 @@ split:
 
 
 export: # TensorRT must be done on the inference device
+  from_pretrained: False # if True - exports pretrained weights, training is not needed
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
