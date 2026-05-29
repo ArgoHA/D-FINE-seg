@@ -1,17 +1,19 @@
 """
 D-FINE-seg Gradio Demo — Object Detection & Instance Segmentation
 
-Supports three backends (chosen automatically by file extension):
-  .pt      -> PyTorch   (CUDA / MPS / CPU)
-  .engine  -> TensorRT  (CUDA)
-  .xml     -> OpenVINO  (CPU / iGPU)
+Backends selectable in the UI:
+  D-FINE-seg — local checkpoint, format picked by file extension:
+    .pt      -> PyTorch   (CUDA / MPS / CPU)
+    .engine  -> TensorRT  (CUDA)
+    .xml     -> OpenVINO  (CPU / iGPU)
+  SAM3       — text-promptable instance segmentation (facebook/sam3, lazy-loaded)
 
 Tabs:
   1. Images - upload or webcam snapshot -> annotated result
   2. Video  - upload a video file -> annotated output
 
 Configure the variables below, then run:
-    python -m demo.demo
+python -m demo.demo
 """
 
 import subprocess
@@ -216,12 +218,70 @@ def load_model(
         raise ValueError(f"Unsupported format: {ext}. Use .pt, .engine, or .xml")
 
 
+# ─── SAM3 (text-promptable) backend ─────────────────────────────────────
+SAM3_MODEL_ID = "facebook/sam3"
+
+
+class SAM3_model:
+    """Text-promptable instance segmentation via SAM3, exposed with the same
+    call signature ( __call__(bgr) -> [dict] ) as the D-FINE-seg wrappers."""
+
+    def __init__(self, model_id: str = SAM3_MODEL_ID, conf_thresh: float = CONF_THRESH):
+        from transformers import Sam3Model, Sam3Processor
+
+        # SAM3 autocasts to bf16; restrict to cuda/cpu (mps bf16 is unreliable)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.processor = Sam3Processor.from_pretrained(model_id)
+        self.model = (
+            Sam3Model.from_pretrained(model_id, dtype=torch.bfloat16).to(self.device).eval()
+        )
+        self.conf_thresh = conf_thresh
+        self.prompt = "person"
+
+    def __call__(self, img: np.ndarray, bgr: bool = True) -> List[Dict[str, torch.Tensor]]:
+        from PIL import Image
+
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if bgr else img
+        h, w = rgb.shape[:2]
+        inputs = self.processor(
+            images=Image.fromarray(rgb), text=self.prompt, return_tensors="pt"
+        ).to(self.device)
+        with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+            outputs = self.model(**inputs)
+        res = self.processor.post_process_instance_segmentation(
+            outputs, threshold=self.conf_thresh, target_sizes=[(h, w)]
+        )[0]
+        boxes = res["boxes"].cpu().float()
+        return [
+            {
+                "labels": torch.zeros(len(boxes), dtype=torch.long),  # single prompt class
+                "boxes": boxes,
+                "scores": res["scores"].cpu().float(),
+                "masks": res["masks"].cpu(),
+            }
+        ]
+
+
+_sam_model: Optional[SAM3_model] = None
+
+
+def _get_sam_model() -> SAM3_model:
+    """Lazy-load SAM3 on first use (heavy download)."""
+    global _sam_model
+    if _sam_model is None:
+        print(f"Loading {SAM3_MODEL_ID} …")
+        _sam_model = SAM3_model()
+    return _sam_model
+
+
 # ─── Initialization ─────────────────────────────────────────────────────
+DEFAULT_BACKEND = "D-FINE-seg"
 device = get_device()
 model = load_model(
     MODEL_PATH, MODEL_NAME, CLASSES, IM_WIDTH, IM_HEIGHT, CONF_THRESH, ENABLE_MASK_HEAD
 )
 visualizer = Visualizer(n_classes=len(CLASSES), class_names=CLASSES)
+sam_visualizer = Visualizer(n_classes=1)  # single prompt class; name set per-run
 
 
 # ─── Inference helpers ───────────────────────────────────────────────────
@@ -234,31 +294,57 @@ def _set_model_conf_threshold(conf_thresh: float) -> None:
         model.conf_thresh = conf
 
 
-def _run_on_bgr(img_bgr: np.ndarray, minimize: bool = False) -> np.ndarray:
+def _select_backend(backend: str, prompt: str, conf_thresh: float):
+    """Return (model, visualizer) for the chosen backend, applying conf / prompt."""
+    if backend == "SAM3":
+        m = _get_sam_model()
+        m.prompt = (prompt or "object").strip()
+        m.conf_thresh = float(np.clip(conf_thresh, 0.0, 1.0))
+        sam_visualizer.class_names = {0: m.prompt}
+        return m, sam_visualizer
+    _set_model_conf_threshold(conf_thresh)
+    return model, visualizer
+
+
+def _run_on_bgr(img_bgr, model_obj, vis_obj, minimize: bool = False) -> np.ndarray:
     """Run model + visualizer on a single BGR frame. Returns annotated BGR."""
-    results = model(img_bgr)
-    return visualizer.draw(img_bgr, results[0], minimize=minimize)
+    results = model_obj(img_bgr)
+    return vis_obj.draw(img_bgr, results[0], minimize=minimize)
 
 
 # ─── Tab 1: Images (single upload or webcam snapshot) ───────────────────
-def predict_image(img: np.ndarray | None, conf_thresh: float = CONF_THRESH, minimize: bool = False):
+def predict_image(
+    img: np.ndarray | None,
+    backend: str = DEFAULT_BACKEND,
+    prompt: str = "person",
+    conf_thresh: float = CONF_THRESH,
+    minimize: bool = False,
+):
     """Accept a single RGB image, return annotated RGB."""
     if img is None:
         return None
-    _set_model_conf_threshold(conf_thresh)
+    model_obj, vis_obj = _select_backend(backend, prompt, conf_thresh)
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     t0 = time.perf_counter()
-    vis = _run_on_bgr(img_bgr, minimize=minimize)
+    vis = _run_on_bgr(img_bgr, model_obj, vis_obj, minimize=minimize)
     ms = (time.perf_counter() - t0) * 1000
-    print(f"[image] {ms:.1f} ms")
+    print(f"[image] {backend} {ms:.1f} ms")
     return cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
 
 
 # ─── Tab 2: Video ───────────────────────────────────────────────────────
-def predict_video(video_path: str | None, stride: int = 1, minimize: bool = False):
+def predict_video(
+    video_path: str | None,
+    backend: str = DEFAULT_BACKEND,
+    prompt: str = "person",
+    conf_thresh: float = CONF_THRESH,
+    stride: int = 1,
+    minimize: bool = False,
+):
     """Process every `stride`-th frame; copy annotations to skipped frames."""
     if video_path is None:
         return None
+    model_obj, vis_obj = _select_backend(backend, prompt, conf_thresh)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise gr.Error(f"Cannot open video: {video_path}")
@@ -281,10 +367,10 @@ def predict_video(video_path: str | None, stride: int = 1, minimize: bool = Fals
         if not ok:
             break
         if idx % stride == 0:
-            results = model(frame)
+            results = model_obj(frame)
             last_results = results[0]
         if last_results is not None:
-            frame = visualizer.draw(frame, last_results, minimize=minimize)
+            frame = vis_obj.draw(frame, last_results, minimize=minimize)
         writer.write(frame)
         idx += 1
         if idx % 100 == 0:
@@ -329,15 +415,21 @@ def predict_video(video_path: str | None, stride: int = 1, minimize: bool = Fals
 
 
 # ─── Build Gradio app ───────────────────────────────────────────────────
+def _toggle_prompt(backend: str):
+    """Show the text-prompt box only for SAM3."""
+    return gr.update(visible=(backend == "SAM3"))
+
+
 model_info = (
-    f"**Model:** `{Path(MODEL_PATH).name}` &ensp;|&ensp; "
+    f"**D-FINE model:** `{Path(MODEL_PATH).name}` &ensp;|&ensp; "
     f"**Device:** `{device}` &ensp;|&ensp; "
     f"**Classes:** {len(CLASSES)} &ensp;|&ensp; "
-    f"**Confidence:** {CONF_THRESH}"
+    f"**Confidence:** {CONF_THRESH} &ensp;|&ensp; "
+    f"**SAM3:** `{SAM3_MODEL_ID}` (text-promptable)"
 )
 
-with gr.Blocks(title="D-FINE-seg Demo") as demo:
-    gr.Markdown(f"# D-FINE-seg Demo\n{model_info}")
+with gr.Blocks(title="D-FINE-seg + SAM3 Demo") as demo:
+    gr.Markdown(f"# D-FINE-seg + SAM3 Demo\n{model_info}")
 
     with gr.Tabs():
         # ── Images: upload or webcam snapshot via bottom icons ───────
@@ -348,6 +440,14 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                         sources=["upload", "webcam"],
                         type="numpy",
                         label="Upload or Capture",
+                    )
+                    img_backend = gr.Radio(
+                        ["D-FINE-seg", "SAM3"], value=DEFAULT_BACKEND, label="Backend"
+                    )
+                    img_prompt = gr.Textbox(
+                        value="person",
+                        label="SAM3 text prompt",
+                        visible=False,
                     )
                     img_conf_thresh = gr.Slider(
                         minimum=0.0,
@@ -363,9 +463,10 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                     img_btn = gr.Button("Run", variant="primary")
                 with gr.Column():
                     img_out = gr.Image(type="numpy", label="Result", format="png")
+            img_backend.change(_toggle_prompt, inputs=img_backend, outputs=img_prompt)
             img_btn.click(
                 fn=predict_image,
-                inputs=[img_in, img_conf_thresh, img_minimize],
+                inputs=[img_in, img_backend, img_prompt, img_conf_thresh, img_minimize],
                 outputs=img_out,
             )
 
@@ -377,6 +478,21 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                         sources=["upload"],
                         label="Upload Video",
                         format="mp4",
+                    )
+                    vid_backend = gr.Radio(
+                        ["D-FINE-seg", "SAM3"], value=DEFAULT_BACKEND, label="Backend"
+                    )
+                    vid_prompt = gr.Textbox(
+                        value="person",
+                        label="SAM3 text prompt",
+                        visible=False,
+                    )
+                    vid_conf_thresh = gr.Slider(
+                        minimum=0.0,
+                        maximum=1.0,
+                        step=0.01,
+                        value=CONF_THRESH,
+                        label="Confidence threshold",
                     )
                     vid_stride = gr.Slider(
                         minimum=1,
@@ -392,13 +508,13 @@ with gr.Blocks(title="D-FINE-seg Demo") as demo:
                     vid_btn = gr.Button("Run", variant="primary")
                 with gr.Column():
                     vid_out = gr.Video(label="Annotated Video")
+            vid_backend.change(_toggle_prompt, inputs=vid_backend, outputs=vid_prompt)
             vid_btn.click(
                 fn=predict_video,
-                inputs=[vid_in, vid_stride, vid_minimize],
+                inputs=[vid_in, vid_backend, vid_prompt, vid_conf_thresh, vid_stride, vid_minimize],
                 outputs=vid_out,
             )
 
 
 if __name__ == "__main__":
-    # demo.launch(server_name="0.0.0.0")
-    demo.launch()
+    demo.launch(server_name="0.0.0.0")
