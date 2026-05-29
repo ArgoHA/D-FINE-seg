@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import tensorrt as trt
 import torch
+import torch.nn.functional as F  # noqa: N812
 from numpy.typing import NDArray
 from torchvision.ops import nms
 
@@ -471,6 +472,97 @@ class TRT_model:
             results = self._postprocess(preds, processed_sizes, original_sizes)
         torch.cuda.default_stream(self.device).wait_stream(self._stream)
         return results
+
+    def gpu_run(
+        self,
+        rgb_chw: "torch.Tensor | List[torch.Tensor]",
+        original_sizes: List[Tuple[int, int]] | None = None,
+        input_ready: torch.cuda.Event | None = None,
+    ) -> Tuple[List[Dict[str, torch.Tensor]], torch.cuda.Event]:
+        """GPU-resident entry point. Same output contract as ``__call__`` but the
+        caller hands over already-on-device RGB CHW uint8 tensors (no cv2,
+        no BGR swap, no pinned-host H2D round-trip).
+
+        Resize + cast + /255 run on the model's private stream directly into
+        the persistent engine input buffer; ``_predict`` then takes its fast
+        path (input buffer reused -> CUDA-graph replay on static engines, plain
+        async exec otherwise) and ``_postprocess`` runs on the same stream.
+
+        Args:
+            rgb_chw: one of —
+                - ``[3, H, W]`` uint8 RGB CUDA tensor (single image)
+                - ``[B, 3, H, W]`` uint8 RGB CUDA tensor (equal-size batch)
+                - list of ``[3, H_i, W_i]`` tensors (heterogeneous batch — each
+                  image is resized independently before being stacked)
+            original_sizes: per-element ``(H, W)`` used for postprocess (boxes
+                rescaled into this space, masks resized to it). Defaults to
+                each input's own resolution; pass smaller values to get
+                coarser masks without paying for a full-res upsample.
+            input_ready: optional CUDA event the caller recorded on its stream
+                after writing the inputs. ``gpu_run`` inserts a non-blocking
+                wait on the model stream so it can't read stale data.
+
+        Returns:
+            ``(results, done_event)``. ``results`` is the usual list of B
+            ``{labels, boxes, scores, optional masks}`` dicts. ``done_event``
+            is recorded on ``self._stream`` after postprocess — wait on it
+            from your own stream (``my_stream.wait_event(done_event)``)
+            before reading the result tensors. No CPU sync inside.
+
+        Constraints: CUDA-only; ``keep_ratio=False`` engines only (no letterbox
+        path); batch must fit the engine's max profile.
+        """
+        assert self.device == "cuda", "gpu_run requires a CUDA-resident model"
+        assert not self.keep_ratio, "gpu_run only supports keep_ratio=False engines (no letterbox)"
+
+        # Normalize to a list of [3, H_i, W_i] tensors so the resize step can
+        # handle a heterogeneous-size batch (different clips at different
+        # output resolutions converge to the same engine input here).
+        if isinstance(rgb_chw, torch.Tensor):
+            if rgb_chw.dim() == 3:
+                chw_list = [rgb_chw]
+            elif rgb_chw.dim() == 4:
+                chw_list = [rgb_chw[i] for i in range(rgb_chw.shape[0])]
+            else:
+                raise ValueError(f"rgb_chw tensor must be 3-D or 4-D, got {rgb_chw.dim()}-D")
+        else:
+            chw_list = list(rgb_chw)
+
+        B = len(chw_list)
+        assert 1 <= B <= self._max_batch, f"batch {B} not in [1, {self._max_batch}] (engine max)"
+        Hin, Win = self.input_size
+
+        if original_sizes is None:
+            original_sizes = [tuple(t.shape[-2:]) for t in chw_list]
+        processed_sizes = [(Hin, Win)] * B
+
+        with torch.cuda.stream(self._stream):
+            if input_ready is not None:
+                self._stream.wait_event(input_ready)
+            # Per-input resize on the model stream (F.interpolate needs float).
+            # Heterogeneous sizes => one interpolate call each; if all inputs
+            # already match (Hin, Win) we still pay the cast — fine in practice
+            # since the input cast happens regardless.
+            resized = [
+                F.interpolate(
+                    t.unsqueeze(0).float(),
+                    size=(Hin, Win),
+                    mode="bilinear",
+                    align_corners=False,
+                )[0]
+                for t in chw_list
+            ]
+            batch = torch.stack(resized, dim=0).div_(255.0)
+            # Drop into the persistent input buffer to take _predict's fast
+            # path (`img is self._input_tensor`). For B < _max_batch the tail
+            # rows are left stale and _slice_outputs trims results to [:B];
+            # dynamic engines additionally re-set the input shape per call.
+            self._input_tensor[:B].copy_(batch, non_blocking=True)
+            preds = self._predict(self._input_tensor, actual_batch=B)
+            results = self._postprocess(preds, processed_sizes, original_sizes)
+            done = torch.cuda.Event()
+            done.record(self._stream)
+        return results, done
 
     @staticmethod
     def mask2poly(masks: np.ndarray, img_shape: Tuple[int, int]) -> List[np.ndarray]:
