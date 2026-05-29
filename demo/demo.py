@@ -33,7 +33,7 @@ MODEL_NAME = "s"  # n / s / m / l / x  (only needed for .pt)
 CLASSES = {0: "class_1", 1: "class_2"}
 IM_WIDTH = 640  # only for .pt; auto-detected for .engine / .xml
 IM_HEIGHT = 640
-CONF_THRESH = 0.5
+DEFAULT_CONF_THRESH = 0.5  # initial slider value
 ENABLE_MASK_HEAD = False  # only for .pt; auto-detected for .engine / .xml
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -221,56 +221,17 @@ def load_model(
 # ─── SAM3 (text-promptable) backend ─────────────────────────────────────
 SAM3_MODEL_ID = "facebook/sam3"
 
-
-class SAM3_model:
-    """Text-promptable instance segmentation via SAM3, exposed with the same
-    call signature ( __call__(bgr) -> [dict] ) as the D-FINE-seg wrappers."""
-
-    def __init__(self, model_id: str = SAM3_MODEL_ID, conf_thresh: float = CONF_THRESH):
-        from transformers import Sam3Model, Sam3Processor
-
-        # SAM3 autocasts to bf16; restrict to cuda/cpu (mps bf16 is unreliable)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.processor = Sam3Processor.from_pretrained(model_id)
-        self.model = (
-            Sam3Model.from_pretrained(model_id, dtype=torch.bfloat16).to(self.device).eval()
-        )
-        self.conf_thresh = conf_thresh
-        self.prompt = "person"
-
-    def __call__(self, img: np.ndarray, bgr: bool = True) -> List[Dict[str, torch.Tensor]]:
-        from PIL import Image
-
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if bgr else img
-        h, w = rgb.shape[:2]
-        inputs = self.processor(
-            images=Image.fromarray(rgb), text=self.prompt, return_tensors="pt"
-        ).to(self.device)
-        with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
-            outputs = self.model(**inputs)
-        res = self.processor.post_process_instance_segmentation(
-            outputs, threshold=self.conf_thresh, target_sizes=[(h, w)]
-        )[0]
-        boxes = res["boxes"].cpu().float()
-        return [
-            {
-                "labels": torch.zeros(len(boxes), dtype=torch.long),  # single prompt class
-                "boxes": boxes,
-                "scores": res["scores"].cpu().float(),
-                "masks": res["masks"].cpu(),
-            }
-        ]
+_sam_model = None
 
 
-_sam_model: Optional[SAM3_model] = None
-
-
-def _get_sam_model() -> SAM3_model:
+def _get_sam_model():
     """Lazy-load SAM3 on first use (heavy download)."""
     global _sam_model
     if _sam_model is None:
+        from src.infer.sam3_model import SAM3_model
+
         print(f"Loading {SAM3_MODEL_ID} …")
-        _sam_model = SAM3_model()
+        _sam_model = SAM3_model(model_path=SAM3_MODEL_ID, conf_thresh=DEFAULT_CONF_THRESH)
     return _sam_model
 
 
@@ -278,7 +239,7 @@ def _get_sam_model() -> SAM3_model:
 DEFAULT_BACKEND = "D-FINE-seg"
 device = get_device()
 model = load_model(
-    MODEL_PATH, MODEL_NAME, CLASSES, IM_WIDTH, IM_HEIGHT, CONF_THRESH, ENABLE_MASK_HEAD
+    MODEL_PATH, MODEL_NAME, CLASSES, IM_WIDTH, IM_HEIGHT, DEFAULT_CONF_THRESH, ENABLE_MASK_HEAD
 )
 visualizer = Visualizer(n_classes=len(CLASSES), class_names=CLASSES)
 sam_visualizer = Visualizer(n_classes=1)  # single prompt class; name set per-run
@@ -317,7 +278,7 @@ def predict_image(
     img: np.ndarray | None,
     backend: str = DEFAULT_BACKEND,
     prompt: str = "person",
-    conf_thresh: float = CONF_THRESH,
+    conf_thresh: float = DEFAULT_CONF_THRESH,
     minimize: bool = False,
 ):
     """Accept a single RGB image, return annotated RGB."""
@@ -337,7 +298,7 @@ def predict_video(
     video_path: str | None,
     backend: str = DEFAULT_BACKEND,
     prompt: str = "person",
-    conf_thresh: float = CONF_THRESH,
+    conf_thresh: float = DEFAULT_CONF_THRESH,
     stride: int = 1,
     minimize: bool = False,
 ):
@@ -424,7 +385,6 @@ model_info = (
     f"**D-FINE model:** `{Path(MODEL_PATH).name}` &ensp;|&ensp; "
     f"**Device:** `{device}` &ensp;|&ensp; "
     f"**Classes:** {len(CLASSES)} &ensp;|&ensp; "
-    f"**Confidence:** {CONF_THRESH} &ensp;|&ensp; "
     f"**SAM3:** `{SAM3_MODEL_ID}` (text-promptable)"
 )
 
@@ -453,7 +413,7 @@ with gr.Blocks(title="D-FINE-seg + SAM3 Demo") as demo:
                         minimum=0.0,
                         maximum=1.0,
                         step=0.01,
-                        value=CONF_THRESH,
+                        value=DEFAULT_CONF_THRESH,
                         label="Confidence threshold",
                     )
                     img_minimize = gr.Checkbox(
@@ -491,7 +451,7 @@ with gr.Blocks(title="D-FINE-seg + SAM3 Demo") as demo:
                         minimum=0.0,
                         maximum=1.0,
                         step=0.01,
-                        value=CONF_THRESH,
+                        value=DEFAULT_CONF_THRESH,
                         label="Confidence threshold",
                     )
                     vid_stride = gr.Slider(
