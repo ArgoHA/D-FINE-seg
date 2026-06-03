@@ -25,7 +25,7 @@
 
 **D-FINE-seg** extends the [D-FINE](https://arxiv.org/abs/2410.13842) real-time transformer based object detector with instance segmentation. It adds a lightweight mask head, segmentation-aware training (box-cropped BCE and dice mask losses, auxiliary and denoising mask supervision), and mask-aware Hungarian matching. On the TACO and VisDrone datasets, D-FINE-seg improves F1-score over Ultralytics YOLO26 under a unified TensorRT FP16 end-to-end benchmarking protocol, while maintaining competitive latency.
 
-The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO, CoreML) to optimized multi-backend inference for both **object detection** and **instance segmentation** tasks.
+The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) to optimized multi-backend inference for both **object detection** and **instance segmentation** tasks.
 
 This is **not** a fork. The detection core is based on the [original D-FINE paper](https://github.com/Peterande/D-FINE); everything else — segmentation head, training pipeline, export, inference, augmentations — was reimplemented from scratch.
 
@@ -38,7 +38,7 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 - **Mask-aware denoising**: contrastive denoising training extended with mask supervision for faster convergence (adds no inference cost)
 - **Mask-aware matching**: Hungarian matcher augmented with Dice overlap cost and sigmoid focal mask cost alongside classification, L1, and GIoU costs
 - **5 model sizes** — Nano, Small, Medium, Large, Extra-Large — with HGNetv2 backbones
-- **Production-ready**: export to ONNX / TensorRT / OpenVINO / CoreML and optimized inference backends
+- **Production-ready**: export to ONNX / TensorRT / OpenVINO / CoreML / LiteRT and optimized inference backends
 
 <p align="center">
   <img src="assets/det_benchmark.png" width="48%">
@@ -146,7 +146,7 @@ train:
 ```bash
 make split           # create train/val CSV splits (test split if configured)
 make train           # train the model
-make export          # export to ONNX, TensorRT, OpenVINO, CoreML
+make export          # export to ONNX, TensorRT, OpenVINO, CoreML, LiteRT
 make bench           # benchmark all exported models on the val set
 
 make infer           # run on test folder, save visualizations + YOLO txt predictions
@@ -201,6 +201,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **TensorRT** | FP16 | Must be exported on the target GPU. **Static input shape only** |
 | **OpenVINO** | FP16, INT8 | Single export for FP32 or FP16 (pick during inference) and separate INT8 quantization script |
 | **CoreML** | FP16, INT8 | Cross-platform export, inference on macOS / iOS. FP32 and INT8 exported by default  |
+| **LiteRT** | INT8 | On-device TFLite (mobile / edge). FP32 and INT8 exported by default |
 
 > **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
@@ -208,7 +209,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 ### Backends
 
-Four inference backends in `src/infer/`:
+Six inference backends in `src/infer/`:
 
 | Backend | Format | Devices |
 |:--------|:-------|:--------|
@@ -217,6 +218,12 @@ Four inference backends in `src/infer/`:
 | **OpenVINO** | `.xml` | CPU, iGPU |
 | **ONNX Runtime** | `.onnx` | CUDA, CPU |
 | **CoreML** | `.mlpackage` | macOS (GPU), iOS |
+| **LiteRT** | `.tflite` | CPU, mobile / edge (Android) |
+
+Also provided:
+
+- `Bytetrack` - simple implementation of object tracker
+- `SAM3` - text-promptable zero-shot segmentation for auto-labeling
 
 ### Multi-Object Tracking
 
