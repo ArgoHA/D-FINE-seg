@@ -137,15 +137,6 @@ wheels = [
 ]
 
 [[package]]
-name = "aiofiles"
-version = "24.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0b/03/a88171e277e8caa88a4c77808c20ebb04ba74cc4681bf1e9416c862de237/aiofiles-24.1.0.tar.gz", hash = "sha256:22a075c9e5a3810f0c2e48f3008c94d68c65d763b9b03857924c99e57355166c", size = 30247, upload-time = "2024-06-24T11:02:03.584Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/45/30bb92d442636f570cb5651bc661f52b610e2eec3f891a5dc3a4c3667db0/aiofiles-24.1.0-py3-none-any.whl", hash = "sha256:b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5", size = 15896, upload-time = "2024-06-24T11:02:01.529Z" },
-]
-
-[[package]]
 name = "albucore"
 version = "0.0.24"
 source = { registry = "https://pypi.org/simple" }
@@ -615,7 +606,7 @@ requires-dist = [
     { name = "coremltools", specifier = "==9.0" },
     { name = "difpy", specifier = "==4.2.1" },
     { name = "faster-coco-eval", specifier = "==1.6.5" },
-    { name = "gradio", specifier = "==6.8.0" },
+    { name = "gradio", specifier = "==6.16.0" },
     { name = "huggingface-hub", specifier = "==1.13.0" },
     { name = "hydra-core", specifier = "==1.3.2" },
     { name = "litert-torch", specifier = "==0.8.0" },
@@ -731,15 +722,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ffmpy"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7d/d2/1c4c582d71bcc65c76fa69fab85de6257d50fdf6fd4a2317c53917e9a581/ffmpy-1.0.0.tar.gz", hash = "sha256:b12932e95435c8820f1cd041024402765f821971e4bae753b327fc02a6e12f8b", size = 5101, upload-time = "2025-11-11T06:24:23.856Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/55/56/dd3669eccebb6d8ac81e624542ebd53fe6f08e1b8f2f8d50aeb7e3b83f99/ffmpy-1.0.0-py3-none-any.whl", hash = "sha256:5640e5f0fd03fb6236d0e119b16ccf6522db1c826fdf35dcb87087b60fd7504f", size = 5614, upload-time = "2025-11-11T06:24:22.818Z" },
-]
-
-[[package]]
 name = "filelock"
 version = "3.29.0"
 source = { registry = "https://pypi.org/simple" }
@@ -851,17 +833,16 @@ wheels = [
 
 [[package]]
 name = "gradio"
-version = "6.8.0"
+version = "6.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiofiles", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "anyio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "audioop-lts", marker = "(python_full_version >= '3.13' and sys_platform == 'darwin') or (python_full_version >= '3.13' and sys_platform == 'linux')" },
     { name = "brotli", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "fastapi", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "ffmpy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "gradio-client", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "groovy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "hf-gradio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "httpx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "huggingface-hub", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "jinja2", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -884,14 +865,14 @@ dependencies = [
     { name = "typing-extensions", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "uvicorn", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/70/25/68322ca161fb0f49714ea721529140ad1d4cd28804cd933ca28f9fa50899/gradio-6.8.0.tar.gz", hash = "sha256:79154e7b77ff2deb4570e94eba9a900b7b9495121e24376c2f6cfa30fee1b92d", size = 40122652, upload-time = "2026-02-27T14:42:00.996Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/26/44044687cdd16d0d9d9137c8f9d445eb68391b14583c82a6c2d528da952c/gradio-6.16.0.tar.gz", hash = "sha256:a48d03ffb436644265e4386388ad8a50ec183c8e1fdd3bae0548f7f229c474da", size = 36441812, upload-time = "2026-06-03T19:07:12.973Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/3c/1568ee82f0e4308612aaf964168e93b7f2adb64c3e77b7877fd397e773bf/gradio-6.8.0-py3-none-any.whl", hash = "sha256:1ece9f3d075bec3da5a6e69c77fa03ddcf3b14af56a9ca843a499406c2b3afd6", size = 24162460, upload-time = "2026-02-27T14:41:57.656Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/12/ac98683fa45d84c2c96c14acdb040aa746209089ea045c766f380549ecec/gradio-6.16.0-py3-none-any.whl", hash = "sha256:a5de01bf17336bf421d52af4b5dbd9fdbd530762c485067748456ccb797700bb", size = 20097732, upload-time = "2026-06-03T19:07:09.904Z" },
 ]
 
 [[package]]
 name = "gradio-client"
-version = "2.2.0"
+version = "2.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fsspec", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -900,9 +881,9 @@ dependencies = [
     { name = "packaging", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/89/52722478fb42f650bacb198b525c7ce5818c95442b2872ef913dc1ab6b60/gradio_client-2.2.0.tar.gz", hash = "sha256:f25a98cd902b44ab77222f3bd752de67dd9dd9723ab8453383d78e5bc1c69497", size = 57378, upload-time = "2026-02-26T14:49:28.266Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/e6/6b6029f5fe2ad7f1211105d530e34d991014c2cae463f9223033031cfc4f/gradio_client-2.5.0.tar.gz", hash = "sha256:4cde99bad62149595c30c90876ca2e405e3a13687ecf895474f3412cb476673d", size = 59013, upload-time = "2026-04-20T23:16:21.518Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/49/86b919727b5d6574528d5d9e67c6455bb707a3654abc87d61d7f1d742395/gradio_client-2.2.0-py3-none-any.whl", hash = "sha256:090f72106b41ba17dcf1b437db54a7bba4c406244f8b01210d5bf24b2af6a85d", size = 58333, upload-time = "2026-02-26T14:49:26.832Z" },
+    { url = "https://files.pythonhosted.org/packages/78/81/0a861b8e1ff42960139c6cd4c7dd591292fa09ea1ae2d87677441cba4c00/gradio_client-2.5.0-py3-none-any.whl", hash = "sha256:d43e2179c29076292a76485ad7ed2e6eaa19d14ac58283bd7f5beabfe4ca958c", size = 59952, upload-time = "2026-04-20T23:16:20.186Z" },
 ]
 
 [[package]]
@@ -988,6 +969,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4f/31/f570fab1239b0d9441024b92b6ad03bb414ffa69101a985e4c83d37608bd/h5py-3.14.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ef9603a501a04fcd0ba28dd8f0995303d26a77a980a1f9474b3417543d4c6174", size = 2807335, upload-time = "2025-06-06T14:05:31.997Z" },
     { url = "https://files.pythonhosted.org/packages/0d/ce/3a21d87896bc7e3e9255e0ad5583ae31ae9e6b4b00e0bcb2a67e2b6acdbc/h5py-3.14.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e8cbaf6910fa3983c46172666b0b8da7b7bd90d764399ca983236f2400436eeb", size = 4700675, upload-time = "2025-06-06T14:05:37.38Z" },
     { url = "https://files.pythonhosted.org/packages/e7/ec/86f59025306dcc6deee5fda54d980d077075b8d9889aac80f158bd585f1b/h5py-3.14.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d90e6445ab7c146d7f7981b11895d70bc1dd91278a4f9f9028bc0c95e4a53f13", size = 4921632, upload-time = "2025-06-06T14:05:43.464Z" },
+]
+
+[[package]]
+name = "hf-gradio"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gradio-client", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "typer", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ce/86/c9694b7cfada5780e75769e60dc161a161f4dd7fc91b61db5e3a3338bef9/hf_gradio-0.4.1.tar.gz", hash = "sha256:a017d942618f0d495a58ee4563047fa04bef614c00e0cb789a9a6d0633cffa7b", size = 6560, upload-time = "2026-04-22T14:01:32.334Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/2d/afff2ee87e75d8eb85c92bb8cf0e15b05c23c2ebd8fd8dec781d8601ed7f/hf_gradio-0.4.1-py3-none-any.whl", hash = "sha256:76b8cb8be6abe62d74c1ad2d35b42f0629db89aa9e1a8d033cecfe7c856eeab3", size = 4482, upload-time = "2026-04-17T19:53:31.827Z" },
 ]
 
 [[package]]
@@ -2927,15 +2921,15 @@ wheels = [
 
 [[package]]
 name = "starlette"
-version = "0.52.1"
+version = "1.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "(python_full_version < '3.13' and sys_platform == 'darwin') or (python_full_version < '3.13' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/a3/84e821cc54b4ab50ae6dbc6ac3800a651b65ec35f045cc73785380654057/starlette-1.0.1.tar.gz", hash = "sha256:512399c5f1de7fac99c88572212ded9ddeddef2fb32afa82d724000e88b38f4f", size = 2659596, upload-time = "2026-05-21T21:58:58.433Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74", size = 74272, upload-time = "2026-01-18T13:34:09.188Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/e1/b2df4bc09a1e51ff664c1e17018a4274b42e5e9352e4a478ea540512dc88/starlette-1.0.1-py3-none-any.whl", hash = "sha256:7c0e69b2ee1c848bd54669d908500117a3ee13de603a21427e5c6fc1adf98dcd", size = 72802, upload-time = "2026-05-21T21:58:56.551Z" },
 ]
 
 [[package]]
