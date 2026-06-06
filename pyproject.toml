@@ -9,7 +9,7 @@ dependencies = [
     "coremltools==9.0",
     "difPy==4.2.1",
     "faster-coco-eval==1.6.5",
-    "gradio==6.8.0",
+    "gradio==6.16.0",
     "huggingface-hub==1.13.0",
     "hydra-core==1.3.2",
     "litert-torch==0.8.0",
