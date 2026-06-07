@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Model weights / artifacts (large, not versioned)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.xml
+*.bin
+*.mlpackage/
+*.tflite
+
+# Experiment / training outputs
+wandb/
+output/
+weight/
+
+# Research harness: keep ledger/notebook/ideas, ignore bulky per-run artifacts
+experiments/runs/
