@@ -1,2 +1,3 @@
 timestamp,name,branch,sha,base,seeds,split,map_mean,map_gain,map_margin,f1_mean,f1_gain,f1_margin,lat_torch_ms,lat_trt_ms,lat_ratio,params_M,promoted,comment
 2026-06-07T15:45:22,baseline,exp/baseline,09d0463,main_exp,3,test,0.2018,,,0.5433,,,13.5667,2.1,,10.302,True,control [baseline/control]
+2026-06-07T21:34:36,mal,exp/mal,349cb6b,main_exp,3,test,0.2033,0.0015,0.003,0.5393,-0.004,0.003,14.0333,2.1,1.0,10.302,False,replace VFL with DEIM Matchability-Aware Loss (gamma 1.5)
