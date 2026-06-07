@@ -9,9 +9,9 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
 - **Current best (`main_exp`):** baseline / control. Best *code* unchanged; methodology updated (see below).
 - **Best metrics (test):** mAP_50_95 = 0.2018 , f1 = 0.5433 (margins 0.003 / 0.003; from `baseline.json`).
   Baseline's val-optimal threshold is 0.5, so the f1 metric switch (below) left `baseline.json` unchanged.
-- **In progress:** idle.
-- **Next idea:** DEIM **Dense O2O** (heavy mosaic) — the other half of DEIM; MAL (its loss half) was
-  rejected standalone (below). Top of `ideas.md` Tier 1.
+- **In progress:** idle. (Autonomous batch 2026-06-07/08: running top-3 ideas.md back-to-back.)
+- **Next idea:** DEIM **Dense O2O** (`mosaic_prob` 0.8→1.0, detect-only) — `ideas.md` #2. Then Muon (#3).
+  CDN scaling (#1) was just **rejected** (below).
 - **Notes for the next agent:**
   - **Methodology change (sha `6220c4c`, baked into trunk):** the f1 guard now benches at the
     **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
@@ -45,6 +45,24 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-08 — cdn-denoising (scale contrastive denoising)   [rejected — no gain]
+- Paper / source: Contrastive DeNoising, DINO (arXiv:2203.03605), inherited by RT-DETR/D-FINE. ideas.md #1.
+- Hypothesis: dense VisDrone has large `max_gt_num`, so `num_group = num_denoising // max_gt_num`
+  (`arch/utils.py:380`) floors to 1 — we run the *minimum* denoising. Raising `num_denoising` 100→300
+  restores multiple noised-GT groups → denser, stable positives early when O2O is sparse. Train-only
+  (`dfine_decoder.py:971` gates on `self.training`) → byte-identical export, zero latency cost.
+- Change (files): `src/d_fine/configs.py:19` `num_denoising` 100→300 (1 line). exp/cdn-denoising sha `21970e4`.
+- Result (test, 3 seeds): mAP_50_95 0.2004±0.0003 (gain **−0.0014**, below 0.003 margin — a slight
+  *decrease*), f1@val-optimal 0.5403±0.0005 (gain −0.003, at margin edge), lat trt 2.1ms (ratio 1.0),
+  params 10.302M. 🔴 KEEP BEST.
+- Read: No win — mAP nudged *down*, not up, and variance is tiny (std 0.0003) so it's a real flat/slight-
+  negative, not noise. Likely the extra dn tokens raised per-step cost enough to cost a fraction of an
+  epoch under the 60-min cap, cancelling any denser-supervision benefit (the documented trade-off in
+  ideas.md). The groups→1 starvation theory may also just not bind here: VisDrone's `max_gt_num` is so
+  large that even 300 tokens still yields very few groups. Conclusion: CDN scaling alone is neutral-to-
+  slightly-negative under the walltime cap; not worth the extra train cost. Implication: pursue the
+  supervision-density gain through aug instead (Dense O2O, #2) rather than more dn tokens.
 
 ## 2026-06-07 — mal (DEIM Matchability-Aware Loss)   [rejected — fair tie]
 - Paper / source: DEIM, CVPR 2025 (arXiv:2412.04234). MAL = the loss half (Dense O2O is the other half,
