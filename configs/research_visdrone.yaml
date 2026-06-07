@@ -15,9 +15,13 @@ overrides:
   train.imagenet_backbone: true
   train.pretrained_model_path: null
 
-  # Walltime governs; epochs set high so it never caps first.
+  # Walltime governs which epoch we stop at, but epochs still sets the LR
+  # schedule's horizon. Keep at 100 (NOT 1000): at 1000 the warmup/decay is
+  # stretched so far that the ~20-25 epochs that actually run under the 60-min
+  # cap never leave early warmup -> LR too low -> starved convergence. 100 makes
+  # the schedule well-matched to the real training length. Do not change.
   train.max_walltime_min: 60
-  train.epochs: 1000
+  train.epochs: 100
 
   # Pinned (not auto -1): VisDrone batches are object-dense, so auto_batch_size's
   # VRAM probe under-estimates true peak and OOMs mid-run. Fixed = deterministic

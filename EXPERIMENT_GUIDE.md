@@ -31,6 +31,10 @@ change is a small, motivated, paper-grounded edit — proven to beat the current
 8. **Approval gate (interactive mode):** after research, present a short proposal and WAIT for the
    user to approve / edit / skip before implementing and burning GPU time. (See §7 for when this is
    relaxed.)
+9. **Fixed campaign constants — do not retune.** `train.epochs=100` and `harness.seeds` are held
+   constant across the whole campaign (epochs shapes the LR schedule, not run length — see §8).
+   Never change them to chase a result; if you ever must, re-baseline. Never raise `epochs` back to
+   1000.
 
 ## 2. Branching model
 - `main` — the user's real project. Never commit experiments here.
@@ -143,9 +147,15 @@ Two modes:
   ledger + notebook.
 
 ## 8. Gotchas
-- **Walltime governs, not epochs.** `train.epochs=1000`, `train.max_walltime_min=60`; training stops
-  mid-schedule. Mosaic-close and any epoch-fraction schedule never reach their end — consistent
-  across candidates, so fair, but every run is "early schedule." Keep it identical for all runs.
+- **Walltime governs *when we stop*, but `epochs` sets the LR-schedule horizon.** `train.epochs=100`
+  (fixed — **do not change**), `train.max_walltime_min=60`; training stops mid-schedule at ~epoch
+  20-25. `epochs` is **not** a "train this long" knob here — walltime ends the run — it only shapes
+  the warmup/decay curve. At `epochs=1000` the schedule is stretched so far that the real ~20-25
+  epochs never leave early warmup (LR too low → starved convergence); `100` matches the curve to the
+  real training length. Treat `train.epochs=100` as a campaign constant like the seeds: changing it
+  re-shapes every run's LR and invalidates the baseline margin — re-baseline if you ever do.
+  Mosaic-close and any epoch-fraction schedule still never reach their end — consistent across
+  candidates, so fair, but every run is "early schedule." Keep it identical for all runs.
 - **Accuracy split = test.** Both f1 (bench) and mAP_50_95 (train) are read from the test set; keep
   it that way so candidate and baseline are comparable.
 - **Determinism:** seeds are fixed in `harness.seeds`. Don't change them mid-campaign or the
