@@ -10,21 +10,6 @@ latency risk, complexity, expected effect, COCO transfer, segment safety (GUIDE 
 
 ## Tier 1 — fast-convergence / latency-neutral
 
-### 1. Scale contrastive denoising (`num_denoising`)  ← top pick: simplest, lowest-risk
-- **Paper:** Contrastive DeNoising, DINO (ICLR 2023, arXiv:2203.03605); inherited by RT-DETR/D-FINE.
-- **Change (1 key):** `configs.py:19` `num_denoising` `100`→`300`.
-- **Why:** groups = `num_denoising // max_gt_num` (`arch/utils.py:380`). Dense VisDrone → large
-  `max_gt_num` → floor `num_group=1`: we run the *minimum* denoising. Raising it restores multiple
-  noised-GT groups → denser, stable positives exactly when O2O is sparse early.
-- **Latency:** none — denoising is `self.training`-gated (`dfine_decoder.py:971`), split off before
-  export → graph byte-identical.
-- **Complexity:** ~1 line. **Trade-off:** more dn tokens = slightly slower train steps → marginally
-  fewer epochs under the cap; log it.
-- **Expected:** faster/steadier convergence; modest mAP up, f1 neutral-to-up.
-- **COCO:** ✅ general DETR mechanism. **Segment:** ✅ safe/helpful — dn mask loss runs only on the
-  final dn layer, normalized by group count (`dfine_criterion.py:752`), so more groups = more mask
-  supervision; only extra train cost (mask head over larger dn set).
-
 ### 2. DEIM Dense O2O (heavy mosaic)
 - **Paper:** DEIM, CVPR 2025 (arXiv:2412.04234). Mosaic/MixUp pack more objects/image → more O2O
   positives/step.
