@@ -29,3 +29,6 @@ experiments/runs/
 
 # transient harness run logs
 experiments/*.log
+
+# secrets — never commit
+.env
