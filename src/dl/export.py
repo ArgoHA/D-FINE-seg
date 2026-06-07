@@ -479,39 +479,48 @@ def main(cfg: DictConfig):
     )
     _ = model(x_test)
 
+    # null = all backends; a list (e.g. [tensorrt]) restricts what is built (research loop)
+    formats = cfg.export.get("formats", None)
+    want = (lambda f: True) if formats is None else (lambda f: f in formats)
+
     # Openvino currently doesn't supprort some operations in postprocessor
-    raw_output_names = ["logits", "boxes"]
-    if enable_mask_head:
-        raw_output_names.append("masks")
-    raw_onnx_path = export_to_onnx(
-        raw_model,
-        model_path,
-        x_test,
-        cfg.export.max_batch_size,
-        half=False,
-        dynamic_input=False,
-        input_name=input_name,
-        output_names=raw_output_names,
-    )
-    export_to_openvino(raw_onnx_path, x_test, cfg.export.dynamic_input, max_batch_size=1)
+    if want("openvino"):
+        raw_output_names = ["logits", "boxes"]
+        if enable_mask_head:
+            raw_output_names.append("masks")
+        raw_onnx_path = export_to_onnx(
+            raw_model,
+            model_path,
+            x_test,
+            cfg.export.max_batch_size,
+            half=False,
+            dynamic_input=False,
+            input_name=input_name,
+            output_names=raw_output_names,
+        )
+        export_to_openvino(raw_onnx_path, x_test, cfg.export.dynamic_input, max_batch_size=1)
 
-    full_onnx_path = export_to_onnx(
-        model,
-        model_path,
-        x_test,
-        cfg.export.max_batch_size,
-        half=False,
-        dynamic_input=False,
-        input_name=input_name,
-        output_names=output_names,
-    )
-    export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
+    if want("onnx") or want("tensorrt"):
+        full_onnx_path = export_to_onnx(
+            model,
+            model_path,
+            x_test,
+            cfg.export.max_batch_size,
+            half=False,
+            dynamic_input=False,
+            input_name=input_name,
+            output_names=output_names,
+        )
+        if want("tensorrt"):
+            export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
 
-    export_to_coreml(
-        model, model_path, x_test, half=False, max_batch_size=cfg.export.max_batch_size
-    )
+    if want("coreml"):
+        export_to_coreml(
+            model, model_path, x_test, half=False, max_batch_size=cfg.export.max_batch_size
+        )
 
-    export_to_litert(raw_model, model_path, x_test)
+    if want("litert"):
+        export_to_litert(raw_model, model_path, x_test)
 
     logger.info(f"Exports saved to: {model_path.parent}")
 

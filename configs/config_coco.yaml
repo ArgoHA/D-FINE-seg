@@ -1,18 +1,17 @@
-project_name: vis_drone # for wandb
+project_name: coco # for wandb
 exp_name: test # experiment name
 
 exp: ${exp_name}_${now_dir}
 
-model_name: s # model size (n, s, m, l, x)
-task: detect
+model_name: n # model size (n, s, m, l, x)
+task: segment
 
 train:
   ### Paths ###
-  root: /home/argo/Desktop/Projects/vis_drone # project root with dataset and outputs
+  root: /home/argo/Desktop/Projects/coco # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
-  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
-  imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights, random neck/head (use with pretrained_model_path=null)
-  coco_dataset: False # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
+  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt
+  coco_dataset: True # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
 
   data_path: ${train.root}/data/dataset # path to dataset
   path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script
@@ -26,17 +25,87 @@ train:
   ### Configs ###
   use_wandb: True
   device: cuda
-  label_to_name: # dataset's classes
-    0: pedestrian
-    1: people
-    2: bicycle
-    3: car
-    4: van
-    5: truck
-    6: tricycle
-    7: awning-tricycle
-    8: bus
-    9: motor
+  label_to_name: # COCO 80 classes
+    0: person
+    1: bicycle
+    2: car
+    3: motorcycle
+    4: airplane
+    5: bus
+    6: train
+    7: truck
+    8: boat
+    9: traffic light
+    10: fire hydrant
+    11: stop sign
+    12: parking meter
+    13: bench
+    14: bird
+    15: cat
+    16: dog
+    17: horse
+    18: sheep
+    19: cow
+    20: elephant
+    21: bear
+    22: zebra
+    23: giraffe
+    24: backpack
+    25: umbrella
+    26: handbag
+    27: tie
+    28: suitcase
+    29: frisbee
+    30: skis
+    31: snowboard
+    32: sports ball
+    33: kite
+    34: baseball bat
+    35: baseball glove
+    36: skateboard
+    37: surfboard
+    38: tennis racket
+    39: bottle
+    40: wine glass
+    41: cup
+    42: fork
+    43: knife
+    44: spoon
+    45: bowl
+    46: banana
+    47: apple
+    48: sandwich
+    49: orange
+    50: broccoli
+    51: carrot
+    52: hot dog
+    53: pizza
+    54: donut
+    55: cake
+    56: chair
+    57: couch
+    58: potted plant
+    59: bed
+    60: dining table
+    61: toilet
+    62: tv
+    63: laptop
+    64: mouse
+    65: remote
+    66: keyboard
+    67: cell phone
+    68: microwave
+    69: oven
+    70: toaster
+    71: sink
+    72: refrigerator
+    73: book
+    74: clock
+    75: vase
+    76: scissors
+    77: teddy bear
+    78: hair drier
+    79: toothbrush
 
   use_one_class: False
 
@@ -51,7 +120,6 @@ train:
   - iou
 
   img_size: [640, 640] # (h, w)
-  in_channels: 3 # 3 = RGB (default). >3 expects .npy stacks (RGB+extras) — see README
   keep_ratio: False # image aspect ratio, if True - image will be padded
   to_visualize_eval: True # save images with gt and preds
   debug_img_processing: True # save images after preprocessing
@@ -59,13 +127,12 @@ train:
   amp_enabled: True # use automatic mixed precision
   clip_max_norm: 0.1 # gradient clipping
 
-  batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
+  batch_size: 12 # physical, should fit on the device. In DDP used per GPU
   b_accum_steps: 1 # grad accumulation (n * bs)
-  epochs: 75
-  max_walltime_min: null # research: stop training after N minutes (best epoch kept); null = no cap
+  epochs: 10
   early_stopping: 0 # 0 - no early stopping
   ignore_background_epochs: 0 # background images are not used for N epochs in train set
-  num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
+  num_workers: 10 # In DDP used per GPU. Go lower if RAM is tight for segmentation
   mask_batch_size: 150 # number of images to process at once when computing mask metrics
 
   ### Validation ###
@@ -77,7 +144,7 @@ train:
   ema_momentum: 0.9998
 
   ### Optimizer and Scheduler ###
-  use_scheduler: True
+  use_scheduler: False
   base_lr: ${train.lrs.${model_name}.base_lr}
   backbone_lr: ${train.lrs.${model_name}.backbone_lr}
   cycler_pct_start: 0.1
@@ -86,11 +153,11 @@ train:
   label_smoothing: 0.0
 
   ### Augs ###
-  mosaic_augs: # not recommended for segmentation
-    mosaic_prob: 0.8 # set to 0 to disable
-    no_mosaic_epochs: 5
+  mosaic_augs:
+    mosaic_prob: 0.0
+    no_mosaic_epochs: 10
     mosaic_scale: [0.5, 1.5]
-    degrees: 0.0 # not recommended if bbox precision is critical
+    degrees: 1.0 # not recommended if bbox precision is critical
     translate: 0.2
     shear: 2.0
 
@@ -139,18 +206,10 @@ split:
 
 
 export: # TensorRT must be done on the inference device
-  from_pretrained: False # if True - exports pretrained weights, training is not needed
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
-  formats: null # null = build all backends; list (e.g. [tensorrt]) restricts what is built (research loop)
-  ov_int8_max_drop: 0.02
-  trt_int8_workspace_gb: 4
-  trt_int8_validate: True
-
-
-bench:
-  formats: [torch, onnx, openvino, tensorrt, coreml, litert] # which backends to bench if their artifact exists
+  ov_int8_max_drop: 0.01
 
 
 infer:

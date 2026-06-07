@@ -102,6 +102,7 @@ class Trainer:
         self.conf_thresh = cfg.train.conf_thresh
         self.iou_thresh = cfg.train.iou_thresh
         self.epochs = cfg.train.epochs
+        self.max_walltime_min = cfg.train.get("max_walltime_min", None)
         self.no_mosaic_epochs = cfg.train.mosaic_augs.no_mosaic_epochs
         self.ignore_background_epochs = cfg.train.ignore_background_epochs
         self.path_to_save = Path(cfg.train.path_to_save)
@@ -186,6 +187,7 @@ class Trainer:
             img_size=cfg.train.img_size,
             in_channels=cfg.train.in_channels,
             pretrained_model_path=cfg.train.pretrained_model_path,
+            pretrained_backbone=cfg.train.get("imagenet_backbone", False),
         )
         if self.distributed:
             if torch.cuda.is_available():
@@ -519,6 +521,7 @@ class Trainer:
         return best_metric
 
     def train(self) -> None:
+        self.t_start = time.time()
         best_metric = 0
         cur_iter = 0
         ema_iter = 0
@@ -771,12 +774,22 @@ class Trainer:
             one_epoch_time = time.time() - epoch_start_time
 
             local_stop = False
+            stop_reason = ""
             if (
                 self.is_main
                 and self.early_stopping
                 and self.early_stopping_steps >= self.early_stopping
             ):
                 local_stop = True
+                stop_reason = "Early stopping"
+            # research walltime cap: rank 0 decides, broadcast so all ranks break together
+            if (
+                self.is_main
+                and self.max_walltime_min
+                and (time.time() - self.t_start) / 60 >= self.max_walltime_min
+            ):
+                local_stop = True
+                stop_reason = f"Walltime cap {self.max_walltime_min} min reached at epoch {epoch}"
 
             if self.distributed:
                 stop_flag = bool(int(broadcast_scalar(int(local_stop), src=0)))
@@ -785,7 +798,7 @@ class Trainer:
 
             if stop_flag:
                 if self.is_main:
-                    logger.info("Early stopping")
+                    logger.info(stop_reason or "Stopping")
                 break
 
 

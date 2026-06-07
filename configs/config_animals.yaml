@@ -1,5 +1,5 @@
-project_name: vis_drone # for wandb
-exp_name: test # experiment name
+project_name: animals # for wandb
+exp_name: animals_1class_fix # experiment name
 
 exp: ${exp_name}_${now_dir}
 
@@ -8,10 +8,10 @@ task: detect
 
 train:
   ### Paths ###
-  root: /home/argo/Desktop/Projects/vis_drone # project root with dataset and outputs
+  root: /home/argo/Desktop/Projects/agnify/projects/animals/ # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
-  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
-  imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights, random neck/head (use with pretrained_model_path=null)
+  # pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
+  pretrained_model_path: /home/argo/Desktop/Projects/agnify/projects/animals/output/models/fix_nans_ugly_2026-04-20/model.pt
   coco_dataset: False # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
 
   data_path: ${train.root}/data/dataset # path to dataset
@@ -27,16 +27,16 @@ train:
   use_wandb: True
   device: cuda
   label_to_name: # dataset's classes
-    0: pedestrian
-    1: people
-    2: bicycle
-    3: car
-    4: van
-    5: truck
-    6: tricycle
-    7: awning-tricycle
-    8: bus
-    9: motor
+    0: animal
+    # 0: deer
+    # 1: canid
+    # 2: felid
+    # 3: bear
+    # 4: small_mammal
+    # 5: mesocarnivore
+    # 6: bird
+    # 7: horse
+    # 8: lizard
 
   use_one_class: False
 
@@ -51,7 +51,6 @@ train:
   - iou
 
   img_size: [640, 640] # (h, w)
-  in_channels: 3 # 3 = RGB (default). >3 expects .npy stacks (RGB+extras) — see README
   keep_ratio: False # image aspect ratio, if True - image will be padded
   to_visualize_eval: True # save images with gt and preds
   debug_img_processing: True # save images after preprocessing
@@ -59,10 +58,9 @@ train:
   amp_enabled: True # use automatic mixed precision
   clip_max_norm: 0.1 # gradient clipping
 
-  batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
+  batch_size: 22 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
   b_accum_steps: 1 # grad accumulation (n * bs)
-  epochs: 75
-  max_walltime_min: null # research: stop training after N minutes (best epoch kept); null = no cap
+  epochs: 30
   early_stopping: 0 # 0 - no early stopping
   ignore_background_epochs: 0 # background images are not used for N epochs in train set
   num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
@@ -139,18 +137,12 @@ split:
 
 
 export: # TensorRT must be done on the inference device
-  from_pretrained: False # if True - exports pretrained weights, training is not needed
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
-  formats: null # null = build all backends; list (e.g. [tensorrt]) restricts what is built (research loop)
   ov_int8_max_drop: 0.02
   trt_int8_workspace_gb: 4
   trt_int8_validate: True
-
-
-bench:
-  formats: [torch, onnx, openvino, tensorrt, coreml, litert] # which backends to bench if their artifact exists
 
 
 infer:

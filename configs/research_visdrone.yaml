@@ -1,0 +1,32 @@
+# Research preset for the autoresearch loop (VisDrone, detect).
+# Single source of truth for what every experiment run holds constant.
+# NOT a drop-in config.yaml: scripts/run_candidate.py reads this file, turns
+# `overrides` into Hydra dotlist args (key=value) and applies `harness` itself.
+# Edit here only — never duplicate these values into scripts.
+
+# Hydra overrides applied to every train/export/bench invocation.
+overrides:
+  model_name: s
+  task: detect
+  project_name: visdrone_research
+
+  # Fair init policy: ImageNet stage1 backbone (constant), random neck/head.
+  # No COCO-detection weights — they bias toward the original architecture.
+  train.imagenet_backbone: true
+  train.pretrained_model_path: null
+
+  # Walltime governs; epochs set high so it never caps first.
+  train.max_walltime_min: 60
+  train.epochs: 1000
+
+  train.use_wandb: false
+
+  # Build/bench only what we need: torch (from model.pt) + TensorRT.
+  # onnx is auto-built as the TRT dependency.
+  export.formats: [tensorrt]
+  bench.formats: [torch, tensorrt]
+
+# Read by scripts/run_candidate.py (not passed to Hydra).
+harness:
+  seeds: [42, 123, 7]   # promotion = mean over these seeds (see EXPERIMENT_GUIDE §seeds-vs-determinism)
+  eval_split: test      # split used for the decision: f1 (bench) + mAP_50_95 (train) both on test
