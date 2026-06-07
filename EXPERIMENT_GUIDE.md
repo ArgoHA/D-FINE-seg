@@ -118,6 +118,14 @@ Then update `lab_notebook.md`: the **Current state** block AND a dated entry (wh
 didn't — required for rejections too). Commit ledger + notebook (+ baseline.json if changed) on
 `main_exp` (on rejection) or on the `exp/<name>` branch (so a promotion carries them).
 
+**Then notify the user** (run after `promote.py`, so the ledger holds the verdict):
+```bash
+uv run python scripts/notify.py --name <name>     # sends verdict + metrics to Telegram
+```
+Do this on **every** terminal outcome — promote, reject, *and* a failed/aborted run (use
+`--message "baseline OOM'd, investigating"` for the failure case). Creds come from `.env`
+(`TG_TOKEN` / `TG_CHAT_ID`, git-ignored); missing creds only warn, never block the run.
+
 **G. Promote if green.** Only if the verdict is 🟢:
 ```bash
 git branch -f main_exp HEAD
@@ -144,7 +152,8 @@ Two modes:
   time, and loop steps B→G sequentially, committing after each. Keep going until the idea backlog is
   exhausted or the user returns. Still obey every hard rule (one change, frozen files, `make test`,
   latency budget, simplicity). Record every experiment so the morning review is just reading the
-  ledger + notebook.
+  ledger + notebook. **Send the Telegram notification (§5.F) after every experiment** so the user can
+  follow progress remotely without watching the box.
 
 ## 8. Gotchas
 - **Walltime governs *when we stop*, but `epochs` sets the LR-schedule horizon.** `train.epochs=100`
