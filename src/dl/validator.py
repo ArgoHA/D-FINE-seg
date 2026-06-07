@@ -42,7 +42,9 @@ class Validator:
         self.preds = preds
         self.conf_thresh = conf_thresh
         self.iou_thresh = iou_thresh
-        self.thresholds = np.arange(0.2, 1.0, 0.05)
+        # floor below conf_thresh so the f1 sweep can find a real optimum (preds for the
+        # sweep come from the unfiltered all_* arrays, see save_plots)
+        self.thresholds = np.arange(0.05, 1.0, 0.05)
         self.label_to_name = label_to_name
         self.conf_matrix = None
         self.mask_batch_size = mask_batch_size
@@ -569,7 +571,7 @@ class Validator:
 
         return metrics_per_class, conf_matrix, class_to_idx
 
-    def save_plots(self, path_to_save) -> None:
+    def save_plots(self, path_to_save) -> float:
         path_to_save = Path(path_to_save)
         path_to_save.mkdir(parents=True, exist_ok=True)
 
@@ -605,23 +607,24 @@ class Validator:
         thresholds = self.thresholds
         precisions, recalls, f1_scores = [], [], []
 
-        # Store the original predictions to reset after each threshold
-        # Use self.preds instead of self.torchmetrics_preds since we compute box-based metrics
-        for threshold in thresholds:
-            preds_copy = copy.deepcopy(self.preds)
-            if not preds_copy:
-                return
-            # Remove masks as we're computing box-based metrics only
-            for pred in preds_copy:
-                if "masks" in pred:
-                    del pred["masks"]
-                if "masks_rle" in pred:
-                    del pred["masks_rle"]
-                if "mask_probs" in pred:
-                    del pred["mask_probs"]
+        if not self.preds:
+            return None
 
-            # Filter predictions based on the current threshold
-            filtered_preds = filter_preds(preds_copy, threshold, mask_source="masks")
+        # Sweep over the UNFILTERED preds (all_* arrays, the same mAP uses): self.preds["scores"]
+        # are already filtered at conf_thresh, so sweeping them can never go below it.
+        base_preds = []
+        for p in self.preds:
+            if "all_scores" in p:
+                base_preds.append(
+                    {"scores": p["all_scores"], "boxes": p["all_boxes"], "labels": p["all_labels"]}
+                )
+            else:  # bench-style preds have no all_*; fall back to the (already-thresholded) scores
+                base_preds.append(
+                    {"scores": p["scores"], "boxes": p["boxes"], "labels": p["labels"]}
+                )
+
+        for threshold in thresholds:
+            filtered_preds = filter_preds(copy.deepcopy(base_preds), threshold, mask_source="masks")
             # Compute metrics with the filtered predictions (using boxes only)
             metrics = self._compute_main_metrics(filtered_preds, ignore_masks=True)
             precisions.append(metrics["precision"])
@@ -658,6 +661,8 @@ class Validator:
         logger.info(
             f"Best Threshold for object detection: {round(best_threshold, 2)} with F1 Score: {round(best_f1, 3)}"
         )
+        self.optimal_thresh = round(float(best_threshold), 2)
+        return self.optimal_thresh
 
 
 def to_uint8_bool(arr):
