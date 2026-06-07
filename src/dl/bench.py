@@ -210,15 +210,10 @@ def main(cfg: DictConfig):
     to_draw_gt = True
     nms = True
 
-    # upd this to skip some formats even if they exist
-    formats_to_bench = [
-        "torch",
-        "tensorrt",
-        "onnx",
-        "openvino",
-        "coreml",
-        "litert",
-    ]
+    # upd this to skip some formats even if they exist; overridable via bench.formats (research loop)
+    formats_to_bench = cfg.get("bench", {}).get(
+        "formats", ["torch", "tensorrt", "onnx", "openvino", "coreml", "litert"]
+    )
 
     ov_half = cfg.export.half
     if IS_MACOS:

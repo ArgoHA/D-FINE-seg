@@ -11,6 +11,7 @@ train:
   root: /path # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
   pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
+  imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
   coco_dataset: False # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
 
   data_path: ${train.root}/data/dataset # path to dataset
@@ -54,6 +55,7 @@ train:
   batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
   b_accum_steps: 1 # grad accumulation (n * bs)
   epochs: 55
+  max_walltime_min: null # research: stop training after N minutes (best epoch kept); null = no cap
   early_stopping: 0 # 0 - no early stopping
   ignore_background_epochs: 0 # background images are not used for N epochs in train set
   num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
@@ -134,7 +136,12 @@ export: # TensorRT must be done on the inference device
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
+  formats: null # null = build all backends; list (e.g. [tensorrt]) restricts what is built
   ov_int8_max_drop: 0.01
+
+
+bench:
+  formats: [torch, onnx, openvino, tensorrt, coreml, litert] # which backends to bench
 
 
 infer:
