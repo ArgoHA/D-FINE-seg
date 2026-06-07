@@ -19,6 +19,11 @@ overrides:
   train.max_walltime_min: 60
   train.epochs: 1000
 
+  # Pinned (not auto -1): VisDrone batches are object-dense, so auto_batch_size's
+  # VRAM probe under-estimates true peak and OOMs mid-run. Fixed = deterministic
+  # across seeds + headroom for dense-batch spikes on a 16 GB card.
+  train.batch_size: 8
+
   train.use_wandb: false
 
   # Build/bench only what we need: torch (from model.pt) + TensorRT.
