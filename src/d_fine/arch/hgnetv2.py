@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .common import FrozenBatchNorm2d
+from ..dist_utils import get_rank, synchronize
 
 # Constants for initialization
 kaiming_normal_ = nn.init.kaiming_normal_
@@ -501,7 +502,7 @@ class HGNetv2(nn.Module):
                     print(f"Loaded stage1 {name} HGNetV2 from local file.")
                 else:
                     # If the file doesn't exist locally, download from the URL
-                    if torch.distributed.get_rank() == 0:
+                    if get_rank() == 0:
                         print(
                             GREEN
                             + "If the pretrained HGNetV2 can't be downloaded automatically. Please check your network connection."
@@ -521,9 +522,9 @@ class HGNetv2(nn.Module):
                         state = torch.hub.load_state_dict_from_url(
                             download_url, map_location="cpu", model_dir=local_model_dir
                         )
-                        torch.distributed.barrier()
+                        synchronize()
                     else:
-                        torch.distributed.barrier()
+                        synchronize()
                         state = torch.load(local_model_dir)
 
                     print(f"Loaded stage1 {name} HGNetV2 from URL.")
@@ -531,7 +532,7 @@ class HGNetv2(nn.Module):
                 self.load_state_dict(state)
 
             except (Exception, KeyboardInterrupt) as e:
-                if torch.distributed.get_rank() == 0:
+                if get_rank() == 0:
                     print(f"{str(e)}")
                     logging.error(
                         RED + "CRITICAL WARNING: Failed to load pretrained HGNetV2 model" + RESET
