@@ -35,6 +35,11 @@ change is a small, motivated, paper-grounded edit — proven to beat the current
    constant across the whole campaign (epochs shapes the LR schedule, not run length — see §8).
    Never change them to chase a result; if you ever must, re-baseline. Never raise `epochs` back to
    1000.
+10. **Don't harm the `segment` variant.** The campaign trains `detect`, but any change that lands as
+    model code or a shared-config default also runs on `segment`. A change that helps detect must not
+    regress segmentation. If a change is unsafe for masks (e.g. heavy mosaic — CLAUDE.md gotcha #6)
+    or touches the mask head, gate it on `task` / keep it a detect-only override in
+    `research_visdrone.yaml`, and note the segment impact in the notebook.
 
 ## 2. Branching model
 - `main` — the user's real project. Never commit experiments here.
