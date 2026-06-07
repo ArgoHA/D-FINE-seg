@@ -102,6 +102,7 @@ class Trainer:
         self.conf_thresh = cfg.train.conf_thresh
         self.iou_thresh = cfg.train.iou_thresh
         self.epochs = cfg.train.epochs
+        self.max_walltime_min = cfg.train.get("max_walltime_min", None)
         self.no_mosaic_epochs = cfg.train.mosaic_augs.no_mosaic_epochs
         self.ignore_background_epochs = cfg.train.ignore_background_epochs
         self.path_to_save = Path(cfg.train.path_to_save)
@@ -186,6 +187,7 @@ class Trainer:
             img_size=cfg.train.img_size,
             in_channels=cfg.train.in_channels,
             pretrained_model_path=cfg.train.pretrained_model_path,
+            pretrained_backbone=cfg.train.get("imagenet_backbone", False),
         )
         if self.distributed:
             if torch.cuda.is_available():
@@ -478,7 +480,11 @@ class Trainer:
             if path_to_save:  # val and test
                 optimal_thresh = validator.save_plots(path_to_save / "plots" / mode)
                 # store the f1-optimal conf threshold so bench can run at it (val row is used)
-                if metrics is not None and optimal_thresh is not None and "extended_metrics" in metrics:
+                if (
+                    metrics is not None
+                    and optimal_thresh is not None
+                    and "extended_metrics" in metrics
+                ):
                     metrics["extended_metrics"]["optimal_thresh"] = optimal_thresh
 
         # validator holds a deepcopy of preds; drop it before the caller moves on.
@@ -522,6 +528,7 @@ class Trainer:
         return best_metric
 
     def train(self) -> None:
+        self.t_start = time.time()
         best_metric = 0
         cur_iter = 0
         ema_iter = 0
@@ -774,12 +781,22 @@ class Trainer:
             one_epoch_time = time.time() - epoch_start_time
 
             local_stop = False
+            stop_reason = ""
             if (
                 self.is_main
                 and self.early_stopping
                 and self.early_stopping_steps >= self.early_stopping
             ):
                 local_stop = True
+                stop_reason = "Early stopping"
+            # research walltime cap: rank 0 decides, broadcast so all ranks break together
+            if (
+                self.is_main
+                and self.max_walltime_min
+                and (time.time() - self.t_start) / 60 >= self.max_walltime_min
+            ):
+                local_stop = True
+                stop_reason = f"Walltime cap {self.max_walltime_min} min reached at epoch {epoch}"
 
             if self.distributed:
                 stop_flag = bool(int(broadcast_scalar(int(local_stop), src=0)))
@@ -788,7 +805,7 @@ class Trainer:
 
             if stop_flag:
                 if self.is_main:
-                    logger.info("Early stopping")
+                    logger.info(stop_reason or "Stopping")
                 break
 
 
@@ -800,6 +817,7 @@ def main(cfg: DictConfig) -> None:
 
     trainer = Trainer(cfg)
 
+    oom_error = None
     try:
         t_start = time.time()
         trainer.train()
@@ -807,10 +825,14 @@ def main(cfg: DictConfig) -> None:
         if is_main_process():
             logger.warning("Interrupted by user")
     except Exception as e:
+        # A mid-train CUDA OOM must fail loudly, not silently export a half-trained
+        # model as a "result" — that would corrupt the research ledger.
+        if isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower():
+            oom_error = e
         if is_main_process():
             logger.error(e)
     finally:
-        if is_main_process():
+        if oom_error is None and is_main_process():
             logger.info("Evaluating best model...")
             cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
@@ -881,6 +903,11 @@ def main(cfg: DictConfig) -> None:
 
         if ddp_enabled:
             cleanup_distributed()
+
+    # Surface a swallowed training OOM as a non-zero exit so the harness records a
+    # real failure instead of a bogus low-accuracy run.
+    if oom_error is not None:
+        raise oom_error
 
 
 if __name__ == "__main__":

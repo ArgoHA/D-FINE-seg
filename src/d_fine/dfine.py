@@ -65,6 +65,7 @@ def build_model(
     img_size=None,
     in_channels: int = 3,
     pretrained_model_path=None,
+    pretrained_backbone=False,
 ):
     if int(in_channels) not in (3, 4):
         raise ValueError(
@@ -72,6 +73,8 @@ def build_model(
             "Stacks with >4 channels are not supported (cv2 Scalar / Albumentations cap)."
         )
     model_cfg = deepcopy(models[model_name])
+    # research: ImageNet stage1 backbone init (constant across experiments), random neck/head
+    model_cfg["HGNetv2"]["pretrained"] = pretrained_backbone
 
     model_cfg["HybridEncoder"]["eval_spatial_size"] = img_size
     model_cfg["DFINETransformer"]["eval_spatial_size"] = img_size
