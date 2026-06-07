@@ -7,10 +7,16 @@ pointers, not verified claims. Move an idea to `lab_notebook.md` once tried. Bia
 small/dense objects.
 
 ## Tier 1 — fast-convergence / latency-neutral (best fit for the walltime cap)
-- **DEIM (Dense O2O + Matchability-Aware Loss), CVPR 2025.** Directly targets slow DETR convergence
-  — ideal when training is time-capped. Training-only change to matching + classification loss;
-  inference graph unchanged → latency-neutral. Likely highest expected value. Touches the matcher +
-  `DFINECriterion`.
+- **DEIM Dense O2O (heavy mosaic), CVPR 2025.** Dense O2O packs more objects per training image (via
+  mosaic-style aug) → many more one-to-one positive matches per step → denser supervision, ideal under
+  the walltime cap. Inference graph unchanged → latency-neutral. Touches the dataloader/aug config
+  (`mosaic_augs` in the config) + possibly `train.py`. **NOTE: mind CLAUDE.md gotcha #6** (mosaic is
+  discouraged for *segment*; we're on detect so OK) and GUIDE §8 (mosaic-close schedule never reaches
+  its end under the cap — fine, consistent across runs).
+  - The **MAL** half of DEIM was tried alone (2026-06-07) and **rejected as a near-tie** — see lab
+    notebook. MAL is designed to handle the low-quality matches Dense O2O introduces, so it likely only
+    pays off *with* Dense O2O. After Dense O2O lands, consider re-testing **MAL + Dense O2O** together
+    (the loss code is on branch `exp/mal`).
 - **Muon optimizer (Jordan et al., 2024).** Orthogonalizes the momentum update for 2D weight
   matrices (Newton–Schulz), giving notably faster convergence per step in LLM/nanoGPT speedruns —
   exactly the lever that matters under a 60-min cap. Plausibly a strong fit here: the
