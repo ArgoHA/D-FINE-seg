@@ -1,0 +1,21 @@
+{
+  "name": "baseline",
+  "eval_split": "test",
+  "git": {
+    "branch": "exp/baseline",
+    "sha": "09d0463"
+  },
+  "means": {
+    "mAP_50_95": 0.2018,
+    "f1": 0.5433
+  },
+  "margin": {
+    "mAP_50_95": 0.003,
+    "f1": 0.003
+  },
+  "latency_ms": {
+    "trt": 2.1,
+    "torch": 13.5667
+  },
+  "params_M": 10.302
+}
