@@ -810,6 +810,7 @@ def main(cfg: DictConfig) -> None:
 
     trainer = Trainer(cfg)
 
+    oom_error = None
     try:
         t_start = time.time()
         trainer.train()
@@ -817,10 +818,14 @@ def main(cfg: DictConfig) -> None:
         if is_main_process():
             logger.warning("Interrupted by user")
     except Exception as e:
+        # A mid-train CUDA OOM must fail loudly, not silently export a half-trained
+        # model as a "result" — that would corrupt the research ledger.
+        if isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower():
+            oom_error = e
         if is_main_process():
             logger.error(e)
     finally:
-        if is_main_process():
+        if oom_error is None and is_main_process():
             logger.info("Evaluating best model...")
             cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
@@ -891,6 +896,11 @@ def main(cfg: DictConfig) -> None:
 
         if ddp_enabled:
             cleanup_distributed()
+
+    # Surface a swallowed training OOM as a non-zero exit so the harness records a
+    # real failure instead of a bogus low-accuracy run.
+    if oom_error is not None:
+        raise oom_error
 
 
 if __name__ == "__main__":
