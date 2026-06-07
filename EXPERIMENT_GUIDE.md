@@ -51,9 +51,12 @@ advance on `main_exp` every iteration — that is what lets a fresh agent resume
 ## 3. The decision (in `promote.py`)
 Two metrics, both on the held-out **test** set, mean over seeds:
 - **mAP_50_95** — from training `metrics.csv` (test row). **Primary.** Bench mAPs are meaningless
-  (bench runs at a fixed conf threshold), so mAP always comes from training.
+  (bench runs at a single conf threshold), so mAP always comes from training.
 - **f1** — from `bench_metrics.csv` (PyTorch row). **Guard.** This is the real deployment path
-  (letterbox + NMS), so f1 always comes from bench.
+  (letterbox + NMS), so f1 always comes from bench. Bench runs at the **val-optimal conf
+  threshold** (argmax-f1 on val, stored as `optimal_thresh` in `extended_metrics.csv`), not a fixed
+  0.5 — so the guard reflects each model's best operating point instead of penalizing models whose
+  optimal threshold shifted (e.g. score-suppressing losses like MAL).
 
 ```
 margin    = current best's across-seed std for that metric (floor 0.003)
