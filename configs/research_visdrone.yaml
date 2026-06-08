@@ -43,5 +43,6 @@ overrides:
 
 # Read by scripts/run_candidate.py (not passed to Hydra).
 harness:
-  seeds: [42, 123, 7]   # promotion = mean over these seeds (see EXPERIMENT_GUIDE §seeds-vs-determinism)
+  seeds: [42, 123]   # 2-seed screen (was 3); floor-0.003 margin governs, not seed-count std. If the
+                     # two seeds disagree by > margin, add a 3rd by hand. See EXPERIMENT_GUIDE §seeds.
   eval_split: test      # split used for the decision: f1 (bench) + mAP_50_95 (train) both on test
