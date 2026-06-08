@@ -17,6 +17,12 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
   optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
 - **Notes for the next agent:**
+  - **Methodology change (2026-06-08): 3 seeds → 2 (`harness.seeds=[42,123]`).** The screen is now
+    2×60-min runs. No re-baseline: per-seed std (~0.0005–0.001) ≪ the 0.003 margin floor, so the floor
+    governs promotion regardless of seed count; Muon's 3-seed baseline mean stays the bar. If a
+    candidate's 2 seeds disagree by > margin, add a 3rd by hand. **Full/COCO runs are manual** and only
+    an unbiased bar for *non-architecture* changes (COCO weights load identically) — for arch changes
+    use shared-init full runs or defer COCO to real adoption. See EXPERIMENT_GUIDE §6 + rule 9.
   - **Methodology change (sha `6220c4c`, baked into trunk):** the f1 guard now benches at the
     **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
     `extended_metrics.csv`), not a fixed 0.5. Reason: the validator's old "optimal threshold" sweep was

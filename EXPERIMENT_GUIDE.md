@@ -33,8 +33,11 @@ change is a small, motivated, paper-grounded edit — proven to beat the current
    relaxed.)
 9. **Fixed campaign constants — do not retune.** `train.epochs=100` and `harness.seeds` are held
    constant across the whole campaign (epochs shapes the LR schedule, not run length — see §8).
-   Never change them to chase a result; if you ever must, re-baseline. Never raise `epochs` back to
-   1000.
+   Never change them *to chase a result*; if you ever must, re-baseline. Never raise `epochs` back to
+   1000. **Seeds are now `[42, 123]` (2-seed screen, down from 3 as of 2026-06-08).** This did not
+   require a re-baseline: observed per-seed std (~0.0005–0.001) is far below the 0.003 margin floor, so
+   the floor — not the seed-count std — governs promotion, and Muon's 3-seed baseline mean stays valid.
+   If a candidate's 2 seeds disagree by more than the margin, add a 3rd by hand before deciding.
 10. **Don't harm the `segment` variant.** The campaign trains `detect`, but any change that lands as
     model code or a shared-config default also runs on `segment`. A change that helps detect must not
     regress segmentation. If a change is unsafe for masks (e.g. heavy mosaic — CLAUDE.md gotcha #6)
@@ -140,12 +143,26 @@ git branch -f main_exp HEAD
 ```
 Move the idea out of `ideas.md`. (`promote.py` already updated `baseline.json` to this candidate.)
 
-## 6. COCO confirmation — manual only
-VisDrone is the fast proxy; the real goal is COCO-transferable gains. There is **no automatic COCO
-testing** in the loop. Occasionally the current `main_exp` should be confirmed on a longer COCO run
-but the **user triggers that manually** when they want it. Prefer ideas with a general mechanism;
-flag VisDrone-specific tuning (e.g. small-object matcher hacks) as likely-non-transferring in the
-notebook so it's an obvious candidate for a manual COCO check.
+## 6. Full / COCO confirmation — manual, and only unbiased for non-arch changes
+VisDrone (ImageNet-init, 60-min) is the fast **screen**; the real decision to run a longer/full
+training is **manual** — the agent never auto-launches one. The promotion loop (§3) stays on the
+2-seed screen; a full run is a human-triggered production check, not part of the automatic verdict.
+
+**The COCO-init bias rule (read before proposing any full run).** A full run that inits from
+`dfine_<size>_coco.pt` (or any COCO-pretrained checkpoint) and compares against the COCO-pretrained
+reference (`det_s_2026-02-22`: test mAP_50_95 0.2316 / f1 0.5621) is **only unbiased when the
+candidate's architecture is byte-identical to that reference** — i.e. the change is optimizer /
+schedule / augmentation / loss-wiring (e.g. Muon). Then the same COCO weights load into the same
+graph and only the *training process* differs → fair.
+
+For **architecture changes** (new/modified layers) a COCO-init comparison is biased — the unchanged
+layers get a free COCO head-start while the novel layers start cold against a fully-warm reference.
+There is no cheap unbiased COCO number. The fair options are: (a) full **ImageNet-init** runs of
+*both* the new and current-best architectures (share the init; abandon the COCO reference as the bar,
+accept lower absolute numbers), or (b) actually COCO-pretrain the new architecture first — the
+expensive, correct step, done only once you commit to adopting it. In-loop, judge architecture ideas
+on the 2-seed screen and defer COCO validation to real adoption. Flag VisDrone-specific tuning (e.g.
+small-object matcher hacks) as likely-non-transferring in the notebook.
 
 ## 7. Modes & continuity across agents/sessions
 All state lives in committed files on `main_exp` (`ledger.csv`, `lab_notebook.md` incl. Current
