@@ -116,10 +116,18 @@ expected result. Wait for approve / edit / skip.
 **D. Implement.** `git checkout -b exp/<name> main_exp`. Make the single change. `make test` — must
 pass. Commit.
 
-**E. Run candidate** (≈3×60 min train + per-seed export/bench):
+**E. Run candidate** (≈2×60 min train + per-seed export/bench):
+Launch inside a **detached tmux session** (not bare `nohup`) so the user can watch epochs live by
+attaching, while the agent monitors via the log file:
 ```bash
-uv run python scripts/run_candidate.py --name <name> --comment "<what changed>"
+tmux new-session -d -s dfine_train \
+  'uv run python scripts/run_candidate.py --name <name> --comment "<what changed>" \
+   > experiments/runs/<name>.log 2>&1'
+# user: `tmux attach -t dfine_train` to watch, Ctrl-b d to detach.
+# agent: poll experiments/runs/<name>.log + train_log.txt; the run survives session detach.
 ```
+Use a fresh/unique session name (or kill the old one) if `dfine_train` already exists. Full/long
+manual runs (§6) follow the same tmux pattern.
 
 **F. Decide + log.**
 ```bash
