@@ -10,9 +10,13 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
 - **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
   Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
-- **In progress:** **full 75-epoch Muon confirmation run** (user-requested 2026-06-08) — COCO init +
-  75 epochs + no walltime cap + use_muon, vs reference `det_s_2026-02-22` (test mAP_50_95 0.2316 / f1 0.5621).
-  See `memory/project_muon_full_training.md`.
+- **In progress:** idle. ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
+  no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
+  (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
+  neutral (trt 2.1 / torch 13.3 ms).** Fair comparison (Muon = non-arch, COCO weights load identically).
+  Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
+  optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
+  seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
 - **Next idea:** Tier-2 (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
   supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
   optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
