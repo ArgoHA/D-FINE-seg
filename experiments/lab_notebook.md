@@ -10,7 +10,7 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
 - **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
   Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
-- **In progress:** 🔬 **QK-norm sub-investigation.** ✅ **QK-norm SOLVES the instability** — `qk-norm` @ peak 0.01 (`exp/qk-norm` f45f71f) ran **both seeds clean, zero NaN** (`muon-lr` NaN'd at ep16, same LR). But accuracy is flat: test mAP_50_95 **0.2043** vs Muon 0.2061 (−0.0018, within margin), f1 0.551, lat trt **1.85** (faster than 2.1). 🔴 rejected (2-change run: qk_norm + peak 0.01). **Now running `qk-norm-lr`:** QK-norm @ baseline peak 0.005 (muon_lr default) — the clean **1-change vs Muon** to test if QK-norm helps accuracy at the original LR.
+- **In progress:** idle. 🔬 **QK-norm sub-investigation COMPLETE → SHELVED (2026-06-08).** QK-norm (per-head QK-LayerNorm on enc/dec self-attn) **solves the training instability** (both seeds clean at peak 0.01 where `muon-lr` NaN'd; correct on torch/ONNX/OpenVINO/LiteRT, converts on CoreML) but is **accuracy-neutral** (peak 0.005 → 0.2076 / +0.0015; peak 0.01 → 0.2043) **and breaks the fp16 TensorRT export** — 0 detections, and *only* TRT (every other backend is fine = a TRT fp16-build bug for the decomposed-SDPA + per-head-LayerNorm pattern). fp32 TRT is correct but 3.1 ms (1.48× baseline) → fails the latency budget with no accuracy win; a surgical fp16 op-blocklist (LayerNorm+Softmax→fp32) did **not** restore it. Code on `exp/qk-norm*` (forensics). **Muon stays best.** **Methodology improved (committed `main_exp`):** the decision f1 now comes from the **TensorRT** bench row (guide §3 + `run_candidate.py`), so a broken export fails the guard automatically — it passed twice here under the old PyTorch-row guard.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
   (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
@@ -18,11 +18,11 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** decide from `qk-norm-lr` (QK-norm @ peak 0.005, 1-change vs Muon): beats 0.2061 → clean
-  promotable win; flat → QK-norm is a **stability/robustness** fix (offer for `main`/issue #64, default-off
-  flag), not a campaign accuracy win — keep Muon, resume queue (#2 Cautious). Orthogonal `main` hardening:
-  robustness net (clamp `pred_corners` + NaN-safe GIoU, issue #64). Prior options: Tier-2 (loss/assignment)
-  or re-test **MAL + Muon** (MAL was a standalone tie). Both
+- **Next idea:** resume the approved queue at **#2 Cautious optimizer** (ideas.md) — QK-norm shelved
+  (stability-only, accuracy-neutral, not cheaply TRT-deployable). If real-user training stability ever bites
+  (issue #64), QK-norm is a known torch-side fix and the robustness net (clamp `pred_corners` + NaN-safe GIoU)
+  is the orthogonal `main` hardening. Prior options: Tier-2 (loss/assignment) or re-test **MAL + Muon** (MAL
+  was a standalone tie). Both
   supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
   optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
 - **Notes for the next agent:**
@@ -64,6 +64,27 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-08 — qk-norm-lr (QK-norm @ baseline LR peak 0.005)   [rejected — accuracy-neutral; TRT export incompatible → SHELVED]
+- Source: clean 1-change-vs-Muon follow-up to qk-norm@0.01, isolating QK-norm's accuracy effect at the
+  baseline LR (peak 0.01 was stable but flat). User-directed.
+- Change (files): same QK-norm arch (exp/qk-norm f45f71f) at muon_lr default → peak 0.005. exp/qk-norm-lr f8d59e6.
+- Result (test, 2 seeds): mAP_50_95 0.2076±0.0016 (seeds .206/.2091, gain **+0.0015** vs 0.2061, within margin),
+  PyTorch f1 0.554 — but **TensorRT f1 0.0** (fp16 export broken). lat: fp16-TRT 1.9 ms (broken engine), fp32-TRT
+  3.1 ms (correct, 1.48×), torch ~13.5. params 10.303M. 🔴 KEEP BEST → SHELVED.
+- Read: **QK-norm is accuracy-neutral** at both LRs (+0.0015 here, −0.0018 at 0.01 → higher LR doesn't help),
+  so it's not a campaign win regardless of deployment. **TRT investigation (user-driven, all-format bench on
+  seed42):** the SDPA/QK-norm graph is correct on **torch, ONNX, OpenVINO, LiteRT** (all 0.554) and converts on
+  **CoreML** — **only the fp16 TensorRT engine collapses to 0 detections.** So it's a TRT fp16-build bug for the
+  decomposed-SDPA + per-head-LayerNorm pattern, not a model/ONNX/fp16-general fault. fp32 TRT confirms (0.553 @
+  3.1 ms) but fails the ≤1.05× latency budget with no accuracy win; a surgical op-blocklist (LayerNorm+Softmax→
+  fp32) did **not** restore the fp16 engine. Per simplicity + latency rules → **shelve** (code kept on exp branches).
+  **Payoff of the whole QK-norm arc:** (1) root-caused the DETR-family instability (unbounded box-corner logits +
+  attention-logit growth; YOLO avoids it via BN everywhere + bounded anchor-relative boxes + fixed assignment);
+  (2) QK-norm is a proven *torch-side* fix for the issue-#64 NaN class if ever needed; (3) **methodology fix** —
+  the f1 guard now reads the **TensorRT** bench row (it silently passed a 0-detection export twice on the old
+  PyTorch-row guard). **Lesson for next agents: for any change that alters the export graph (SDPA / new ops /
+  arch), verify trt_f1 ≈ torch_f1 — a healthy torch model can still produce a dead TRT engine.**
 
 ## 2026-06-08 — qk-norm (per-head QK-LayerNorm on enc/dec self-attn, @ peak 0.01)   [rejected — STABILITY SOLVED, accuracy flat]
 - Paper / source: QK-Norm (Dehghani et al. ViT-22B; Chameleon). The stability fix for the muon-lr NaN.
