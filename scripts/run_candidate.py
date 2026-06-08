@@ -3,7 +3,8 @@
 Run one research candidate end-to-end: train N seeds (walltime-capped), then
 export + bench EACH seed. Accuracy is measured on the held-out TEST set:
 
-  - f1          : from bench (PyTorch row) — the real deployment path (letterbox+NMS).
+  - f1          : from bench (TensorRT row; fallback PyTorch only if TRT not benched) — the real
+                  deployment artifact, so a broken/0 TRT export fails the guard (see EXPERIMENT_GUIDE §3).
   - mAP_50_95   : from training metrics.csv (test row) — bench mAPs are meaningless
                   because bench runs at a fixed conf threshold.
   - latency     : from bench (PyTorch + TensorRT rows), mean over seeds.
@@ -60,9 +61,17 @@ def read_map(run_dir, split="test"):
 
 
 def read_bench(run_dir):
-    """f1 (PyTorch row) + latency (PyTorch/TensorRT) from bench_metrics.csv (test set)."""
+    """f1 (TensorRT row, fallback PyTorch) + latency (PyTorch/TensorRT) from bench_metrics.csv (test)."""
     df = pd.read_csv(run_dir / "bench_metrics.csv", index_col=0)
-    f1 = float(df.loc["PyTorch", "f1"]) if "PyTorch" in df.index else None
+    # f1 from the TensorRT row — the deployment artifact. A present-but-~0 TRT row must surface so a
+    # broken/degraded export fails the guard (EXPERIMENT_GUIDE §3). Fall back to PyTorch only if TRT
+    # was not benched on this platform at all.
+    if "TensorRT" in df.index:
+        f1 = float(df.loc["TensorRT", "f1"])
+    elif "PyTorch" in df.index:
+        f1 = float(df.loc["PyTorch", "f1"])
+    else:
+        f1 = None
     lat = {}
     for label, key in (("PyTorch", "torch"), ("TensorRT", "tensorrt")):
         if label in df.index and "latency" in df.columns:
