@@ -10,7 +10,7 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
 - **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
   Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
-- **In progress:** 🔬 **QK-norm stability probe** (`exp/qk-norm`): `muon-lr` peak 0.01 **FAILED — NaN @ epoch 16** (unbounded box-corner logits → fp16 overflow → matcher GIoU assert; see entry + `ISSUE_64_FIX_PLAN.md`). Testing whether per-head QK-LayerNorm on enc/dec self-attn rescues the high-LR regime — 2 seeds @ peak 0.01.
+- **In progress:** 🔬 **QK-norm sub-investigation.** ✅ **QK-norm SOLVES the instability** — `qk-norm` @ peak 0.01 (`exp/qk-norm` f45f71f) ran **both seeds clean, zero NaN** (`muon-lr` NaN'd at ep16, same LR). But accuracy is flat: test mAP_50_95 **0.2043** vs Muon 0.2061 (−0.0018, within margin), f1 0.551, lat trt **1.85** (faster than 2.1). 🔴 rejected (2-change run: qk_norm + peak 0.01). **Now running `qk-norm-lr`:** QK-norm @ baseline peak 0.005 (muon_lr default) — the clean **1-change vs Muon** to test if QK-norm helps accuracy at the original LR.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
   (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
@@ -18,10 +18,11 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** decide from the QK-norm probe (trains stably @ peak 0.01? beats Muon 0.2061?); if it
-  stabilizes, disentangle qk-norm-alone vs +high-LR. Orthogonal `main` hardening: robustness net (clamp
-  `pred_corners` + NaN-safe GIoU, issue #64). Then resume queue (#2 Cautious). Prior options: Tier-2
-  (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
+- **Next idea:** decide from `qk-norm-lr` (QK-norm @ peak 0.005, 1-change vs Muon): beats 0.2061 → clean
+  promotable win; flat → QK-norm is a **stability/robustness** fix (offer for `main`/issue #64, default-off
+  flag), not a campaign accuracy win — keep Muon, resume queue (#2 Cautious). Orthogonal `main` hardening:
+  robustness net (clamp `pred_corners` + NaN-safe GIoU, issue #64). Prior options: Tier-2 (loss/assignment)
+  or re-test **MAL + Muon** (MAL was a standalone tie). Both
   supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
   optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
 - **Notes for the next agent:**
@@ -63,6 +64,28 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-08 — qk-norm (per-head QK-LayerNorm on enc/dec self-attn, @ peak 0.01)   [rejected — STABILITY SOLVED, accuracy flat]
+- Paper / source: QK-Norm (Dehghani et al. ViT-22B; Chameleon). The stability fix for the muon-lr NaN.
+- Hypothesis: bound the attention logits (the structural analogue of YOLO's BN) so the peak-0.01 regime
+  that NaN'd can train, and Muon's LR-transfer can pay off once the basin is stable.
+- Change (files): `QKNormSelfAttention` (arch/utils.py) — LayerNorm Q,K per head before the SDPA
+  dot-product, drop-in for nn.MultiheadAttention on enc + dec **self**-attn (cross-attn is deformable,
+  untouched). Gated by `build_model(qk_norm=...)` ← `config.yaml train.qk_norm` (default off, threaded to
+  all 5 build sites); self-describing (q_norm keys → Torch_model auto-detects, crosses frozen bench.py);
+  decoder denoising bool mask → SDPA additive −inf. exp/qk-norm f45f71f. This run = qk_norm + muon_lr=0.005
+  (peak 0.01) → **2 changes** vs Muon. make test 76/76 (+2 new: shapes/grad + mask-convention).
+- Result (test, 2 seeds): mAP_50_95 0.2043±0.0011 (seeds .2055/.2032, gain −0.0018 vs 0.2061, within
+  margin), f1 0.551±0.0 (gain −0.001), lat trt 1.85 ms (ratio 0.88, **faster**), params 10.303M. 🔴 KEEP BEST.
+- Read: **The stability question is answered — QK-norm fixes it.** Both seeds ran clean to the walltime
+  cap with zero NaN, where muon-lr (same peak 0.01, no QK-norm) NaN'd at ep16. Latency even improved (the
+  SDPA path beats nn.MultiheadAttention's fused kernel here). Mid-run val tracked *higher* than muon-lr's
+  pre-NaN val at matched epochs (ep15 0.239 vs 0.227) — so QK-norm helps the fit — but the final test mAP
+  lands at the Muon baseline: **at peak 0.01 the 2× LR, even stabilized, buys no net accuracy.** This is
+  the user's predicted branch (stable, higher-LR-flat). Confound: 2 changes (qk_norm + LR). Next:
+  `qk-norm-lr` = QK-norm @ baseline peak 0.005 (one change vs Muon) to isolate QK-norm's accuracy effect at
+  the original LR — the clean, promotable comparison. If flat there too, QK-norm is a robustness win for
+  real users (issue #64 — it removes the NaN-divergence failure class) rather than a VisDrone accuracy gain.
 
 ## 2026-06-08 — muon-lr (Muon peak-LR retune to 0.01)   [FAILED — NaN divergence]
 - Paper / source: Muon LR-transfer band ~0.01–0.02 (Moonlight, arXiv:2502.16982). ideas.md #1.
