@@ -6,12 +6,16 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
 
 ## Current state  (keep this block updated every iteration)
 - **Baseline established:** yes — control, 3 seeds, sha `09d0463`. Do **not** re-train it.
-- **Current best (`main_exp`):** baseline / control. Best *code* unchanged; methodology updated (see below).
-- **Best metrics (test):** mAP_50_95 = 0.2018 , f1 = 0.5433 (margins 0.003 / 0.003; from `baseline.json`).
-  Baseline's val-optimal threshold is 0.5, so the f1 metric switch (below) left `baseline.json` unchanged.
-- **In progress:** idle. (Autonomous batch 2026-06-07/08: running top-3 ideas.md back-to-back.)
-- **Next idea:** **Muon optimizer** (hybrid AdamW/Muon) — `ideas.md` #3. CDN (#1) and Dense O2O (#2)
-  were both **rejected** (below) — both regressed mAP under the walltime cap.
+- **Current best (`main_exp`):** 🟢 **Muon** (sha `06f448e`, promoted 2026-06-08). Enc/dec attn+MLP
+  matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
+- **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
+  Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
+- **In progress:** **full 75-epoch Muon confirmation run** (user-requested 2026-06-08) — COCO init +
+  75 epochs + no walltime cap + use_muon, vs reference `det_s_2026-02-22` (test mAP_50_95 0.2316 / f1 0.5621).
+  See `memory/project_muon_full_training.md`.
+- **Next idea:** Tier-2 (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
+  supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
+  optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
 - **Notes for the next agent:**
   - **Methodology change (sha `6220c4c`, baked into trunk):** the f1 guard now benches at the
     **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
@@ -45,6 +49,33 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-08 — muon (Muon optimizer for enc/dec 2D matrices)   [PROMOTED — first real win]
+- Paper / source: Muon (Jordan et al., 2024) — Newton-Schulz-orthogonalized momentum for 2D weight
+  matrices; ~faster convergence on speedruns. ideas.md #3.
+- Hypothesis: after CDN (#1) and Dense O2O (#2) both *regressed* mAP, the lesson was that the
+  walltime-cap bottleneck is per-step **optimization efficiency**, not supervision density. Muon
+  attacks exactly that — orthogonalized updates on the high-condition-number enc/dec attention/MLP
+  linears, where per-step gains compound most under ~22 epochs. Optimizer-only → zero inference latency.
+- Change (files): new `src/d_fine/muon.py` (`MuonWithAuxAdam`, single-device, one `.step()` so the
+  train loop is untouched); `dfine.py` `build_optimizer` gains a gated Muon path with an **allowlist**
+  (`self_attn`/`cross_attn`/`linear1`/`linear2`/`gateway.gate`, ndim==2) so det/mask heads, embeddings,
+  LQE, norms, biases can never leak in (verified: 25 matrices, 0 leaks); `train.py` passes the flag and
+  gives the Muon group its own OneCycleLR peak (`base_lr*10*2`); `config.yaml` default `use_muon: False`;
+  `research_visdrone.yaml` sets it true. exp/muon sha `06f448e`. Muon peak LR untuned (base_lr*10) —
+  stable in all 3 seeds (no NaN recovery), so not divergent; possibly not optimal either.
+- Result (test, 3 seeds): mAP_50_95 0.2061±0.0006 (gain **+0.0043**, > 0.003 margin, all seeds
+  .2068/.2061/.2053), f1@val-optimal 0.5520±0.0022 (gain **+0.0087**, guard improved), lat trt 2.1ms
+  (ratio 1.0), params 10.302M. 🟢 PROMOTE.
+- Read: First change to beat the control on the **primary** metric beyond noise, with the guard *also*
+  up and latency flat — and consistently across every seed (std 0.0006). Confirms the diagnosis from the
+  two rejections: the lever that matters under the cap is optimizer efficiency. **Simplicity check:** it
+  adds a ~90-line self-contained optimizer + a gated flag — non-trivial, but the win is clean, multi-seed,
+  zero-latency, and the mechanism is general (not VisDrone-specific) so it should transfer to COCO; the
+  added code is isolated and default-off. Net: complexity justified — promote. **Segment safety:** mask
+  head + mask_decoder stay on AdamW (allowlist excludes `mask`), so the segment path is unaffected; Muon
+  only touches the shared detection transformer. **Open:** Muon LR is a blind base_lr*10; a short sweep
+  could yield more. Next: user-requested full 75-epoch confirmation vs the COCO-init Feb reference.
 
 ## 2026-06-08 — dense-o2o (DEIM Dense O2O / full mosaic)   [rejected — mAP regressed]
 - Paper / source: DEIM, CVPR 2025 (arXiv:2412.04234). Dense O2O = pack more objects/image (full
