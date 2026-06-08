@@ -10,24 +10,6 @@ latency risk, complexity, expected effect, COCO transfer, segment safety (GUIDE 
 
 ## Tier 1 — fast-convergence / latency-neutral
 
-### 2. DEIM Dense O2O (heavy mosaic)
-- **Paper:** DEIM, CVPR 2025 (arXiv:2412.04234). Mosaic/MixUp pack more objects/image → more O2O
-  positives/step.
-- **Change (1 knob):** `research_visdrone.yaml` `train.mosaic_augs.mosaic_prob` 0.8→1.0 (don't also
-  touch the loss).
-- **Why:** attacks O2O sparsity, the main convergence bottleneck under the cap.
-- **Latency:** none (train-time aug).
-- **Complexity:** low. Mind GUIDE §8 (mosaic-close never finishes under cap — consistent, fine).
-- **Expected:** convergence speed-up; mAP up if denser supervision beats the harder distribution in
-  ~22 epochs.
-- **COCO:** ✅ validated on COCO with D-FINE. **Segment:** ⚠️ **harmful — the one real risk here.**
-  Mosaic degrades masks (gotcha #6). Keep it a **detect-only** override; never bake high `mosaic_prob`
-  into shared/segment defaults. Mechanism does not transfer to segment.
-- **MAL note:** MAL (loss half) was tried alone (2026-06-07) and **rejected as a near-tie** — it
-  manages the low-quality matches Dense O2O introduces, so it likely only pays *with* Dense O2O.
-  After this lands, consider re-testing **MAL + Dense O2O** (two changes; sequence Dense O2O first;
-  loss code on `exp/mal`).
-
 ### 3. Muon optimizer for 2D matrices (hybrid with AdamW)
 - **Paper:** Muon (Jordan et al., 2024) — Newton–Schulz-orthogonalized momentum for 2D weights;
   ~35% faster convergence on nanoGPT speedruns.
