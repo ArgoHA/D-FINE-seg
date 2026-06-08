@@ -117,17 +117,17 @@ expected result. Wait for approve / edit / skip.
 pass. Commit.
 
 **E. Run candidate** (≈2×60 min train + per-seed export/bench):
-Launch inside a **detached tmux session** (not bare `nohup`) so the user can watch epochs live by
-attaching, while the agent monitors via the log file:
+Launch in the **background** redirecting to the log; the agent monitors that log (and is woken on
+completion if it used its background-exec tool). No separate tmux session — this agent already runs
+inside the user's tmux on the server, so a second detached session adds no visibility: output is
+redirected to the log, so attaching shows a blank pane.
 ```bash
-tmux new-session -d -s dfine_train \
-  'uv run python scripts/run_candidate.py --name <name> --comment "<what changed>" \
-   > experiments/runs/<name>.log 2>&1'
-# user: `tmux attach -t dfine_train` to watch, Ctrl-b d to detach.
-# agent: poll experiments/runs/<name>.log + train_log.txt; the run survives session detach.
+nohup uv run python scripts/run_candidate.py --name <name> --comment "<what changed>" \
+  > experiments/runs/<name>.log 2>&1 &
+# user: `tail -f experiments/runs/<name>.log` to watch epochs live.
+# agent: poll experiments/runs/<name>.log + train_log.txt.
 ```
-Use a fresh/unique session name (or kill the old one) if `dfine_train` already exists. Full/long
-manual runs (§6) follow the same tmux pattern.
+Full/long manual runs (§6) follow the same background pattern.
 
 **F. Decide + log.**
 ```bash
