@@ -2,3 +2,4 @@ timestamp,name,branch,sha,base,seeds,split,map_mean,map_gain,map_margin,f1_mean,
 2026-06-07T15:45:22,baseline,exp/baseline,09d0463,main_exp,3,test,0.2018,,,0.5433,,,13.5667,2.1,,10.302,True,control [baseline/control]
 2026-06-07T21:34:36,mal,exp/mal,349cb6b,main_exp,3,test,0.2033,0.0015,0.003,0.5393,-0.004,0.003,14.0333,2.1,1.0,10.302,False,replace VFL with DEIM Matchability-Aware Loss (gamma 1.5)
 2026-06-08T01:51:14,cdn-denoising,exp/cdn-denoising,21970e4,main_exp,3,test,0.2004,-0.0014,0.003,0.5403,-0.003,0.003,13.8667,2.1,1.0,10.302,False,num_denoising 100->300
+2026-06-08T05:23:30,dense-o2o,exp/dense-o2o,198264e,main_exp,3,test,0.1946,-0.0072,0.003,0.545,0.0017,0.003,13.4333,2.1,1.0,10.302,False,"mosaic_prob 0.8->1.0 (DEIM Dense O2O, detect-only)"

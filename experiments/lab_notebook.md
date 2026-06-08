@@ -10,8 +10,8 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
 - **Best metrics (test):** mAP_50_95 = 0.2018 , f1 = 0.5433 (margins 0.003 / 0.003; from `baseline.json`).
   Baseline's val-optimal threshold is 0.5, so the f1 metric switch (below) left `baseline.json` unchanged.
 - **In progress:** idle. (Autonomous batch 2026-06-07/08: running top-3 ideas.md back-to-back.)
-- **Next idea:** DEIM **Dense O2O** (`mosaic_prob` 0.8→1.0, detect-only) — `ideas.md` #2. Then Muon (#3).
-  CDN scaling (#1) was just **rejected** (below).
+- **Next idea:** **Muon optimizer** (hybrid AdamW/Muon) — `ideas.md` #3. CDN (#1) and Dense O2O (#2)
+  were both **rejected** (below) — both regressed mAP under the walltime cap.
 - **Notes for the next agent:**
   - **Methodology change (sha `6220c4c`, baked into trunk):** the f1 guard now benches at the
     **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
@@ -46,7 +46,26 @@ Entry template:
 
 <!-- entries below -->
 
-## 2026-06-08 — cdn-denoising (scale contrastive denoising)   [rejected — no gain]
+## 2026-06-08 — dense-o2o (DEIM Dense O2O / full mosaic)   [rejected — mAP regressed]
+- Paper / source: DEIM, CVPR 2025 (arXiv:2412.04234). Dense O2O = pack more objects/image (full
+  mosaic) → more O2O positives/step. ideas.md #2. (MAL is the loss half, rejected standalone 2026-06-07.)
+- Hypothesis: full mosaic attacks O2O sparsity — the main convergence bottleneck under the 60-min cap —
+  so denser supervision should lift mAP in ~22 epochs. Train-time aug → zero latency.
+- Change (files): `configs/research_visdrone.yaml` `train.mosaic_augs.mosaic_prob` 0.8→1.0, as a
+  **detect-only** override (mosaic degrades masks, CLAUDE.md #6 / GUIDE rule 10 — never in segment
+  defaults). 1 line. exp/dense-o2o sha `198264e`. No OOM at batch_size=8 (peak VRAM ~95%, survived).
+- Result (test, 3 seeds): mAP_50_95 0.1946±0.0011 (gain **−0.0072**, well past 2× margin — a real
+  *regression*), f1@val-optimal 0.5450±0.0014 (gain +0.0017, within margin), lat trt 2.1ms (ratio 1.0),
+  params 10.302M. 🔴 KEEP BEST.
+- Read: mAP dropped clearly (−0.0072, std only 0.0011 → not noise) while f1 nudged *up* (+0.0017). The
+  split is the tell: heavier mosaic makes a harder training distribution whose schedule (mosaic-close
+  never reached under the cap, GUIDE §8) doesn't finish in ~22 epochs → localization/mAP suffers, but
+  the denser positives slightly improve the classification operating point (f1). Net: more supervision
+  density does *not* beat the harder distribution within the walltime budget here — same lesson as CDN
+  (#1), from the opposite lever. Implication: the convergence bottleneck under the cap is **not** O2O
+  positive-count; don't keep chasing supervision-density ideas (Group-DETR #4 likely same fate). The
+  MAL+Dense O2O pairing is also unlikely to pay now (its base, Dense O2O, hurts mAP standalone). Pivot
+  to the optimizer (Muon, #3): per-step *efficiency* rather than per-step *supervision*.
 - Paper / source: Contrastive DeNoising, DINO (arXiv:2203.03605), inherited by RT-DETR/D-FINE. ideas.md #1.
 - Hypothesis: dense VisDrone has large `max_gt_num`, so `num_group = num_denoising // max_gt_num`
   (`arch/utils.py:380`) floors to 1 — we run the *minimum* denoising. Raising `num_denoising` 100→300
