@@ -60,11 +60,19 @@ advance on `main_exp` every iteration — that is what lets a fresh agent resume
 Two metrics, both on the held-out **test** set, mean over seeds:
 - **mAP_50_95** — from training `metrics.csv` (test row). **Primary.** Bench mAPs are meaningless
   (bench runs at a single conf threshold), so mAP always comes from training.
-- **f1** — from `bench_metrics.csv` (PyTorch row). **Guard.** This is the real deployment path
-  (letterbox + NMS), so f1 always comes from bench. Bench runs at the **val-optimal conf
-  threshold** (argmax-f1 on val, stored as `optimal_thresh` in `extended_metrics.csv`), not a fixed
-  0.5 — so the guard reflects each model's best operating point instead of penalizing models whose
-  optimal threshold shifted (e.g. score-suppressing losses like MAL).
+- **f1** — from `bench_metrics.csv` (**TensorRT row**). **Guard.** This is the *actual deployment
+  artifact* (TensorRT engine + letterbox + NMS), so f1 comes from the **TRT** bench row, not the PyTorch
+  row. Using the TRT f1 makes the guard also catch a **broken or degraded export**: a change can train
+  fine in PyTorch yet produce a TRT engine that collapses — e.g. QK-norm's SDPA attention in fp16 gave
+  test f1 0.0 (0 detections) while PyTorch f1 was 0.55 (2026-06-08). The PyTorch-row f1 never sees that;
+  the TRT row does. **A TRT row that is present but ≈0 must FAIL the guard — that is the whole point;**
+  fall back to the PyTorch row only when TRT was not benched on the platform at all (e.g. no GPU). Bench
+  runs at the **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
+  `extended_metrics.csv`), not a fixed 0.5 — so the guard reflects each model's best operating point
+  instead of penalizing models whose optimal threshold shifted (e.g. score-suppressing losses like MAL).
+  **mAP_50_95 (primary) is unchanged: torch, from training `metrics.csv` (test row).** (Implementation:
+  `run_candidate.py` must write the **TensorRT** f1 into `candidate_result.json` for `promote.py` to read;
+  if it still emits the PyTorch-row f1, that harness code is the one place to update to match this rule.)
 
 ```
 margin    = current best's across-seed std for that metric (floor 0.003)
@@ -198,8 +206,8 @@ Two modes:
   re-shapes every run's LR and invalidates the baseline margin — re-baseline if you ever do.
   Mosaic-close and any epoch-fraction schedule still never reach their end — consistent across
   candidates, so fair, but every run is "early schedule." Keep it identical for all runs.
-- **Accuracy split = test.** Both f1 (bench) and mAP_50_95 (train) are read from the test set; keep
-  it that way so candidate and baseline are comparable.
+- **Accuracy split = test.** Both f1 (bench, **TensorRT row** — §3) and mAP_50_95 (train) are read from
+  the test set; keep it that way so candidate and baseline are comparable.
 - **Determinism:** seeds are fixed in `harness.seeds`. Don't change them mid-campaign or the
   baseline margin no longer applies — re-baseline if you do. (See the note below on why we use seeds
   rather than `cudnn_fixed`.)
