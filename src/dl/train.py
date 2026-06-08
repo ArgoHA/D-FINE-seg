@@ -216,6 +216,8 @@ class Trainer:
             enable_mask_head=enable_mask_head,
         )
 
+        use_muon = cfg.train.get("use_muon", False)
+        muon_lr = cfg.train.base_lr * 10  # Muon peak (pre-*2); enc/dec matrices tolerate higher LR
         self.optimizer = build_optimizer(
             self.model,
             lr=cfg.train.base_lr,
@@ -223,6 +225,8 @@ class Trainer:
             betas=cfg.train.betas,
             weight_decay=cfg.train.weight_decay,
             base_lr=cfg.train.base_lr,
+            use_muon=use_muon,
+            muon_lr=muon_lr,
         )
 
         self.scheduler = None
@@ -235,6 +239,8 @@ class Trainer:
                     cfg.train.base_lr * 2,
                     cfg.train.base_lr * 2,
                 ]
+            if use_muon:  # AdamW groups keep base*2; Muon group (appended last) gets its own peak
+                max_lr = [cfg.train.base_lr * 2] * 4 + [muon_lr * 2]
 
             self.scheduler = OneCycleLR(
                 self.optimizer,
