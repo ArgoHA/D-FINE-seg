@@ -10,14 +10,18 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
 - **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
   Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
-- **In progress:** idle. ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
+- **In progress:** 🔬 **QK-norm stability probe** (`exp/qk-norm`): `muon-lr` peak 0.01 **FAILED — NaN @ epoch 16** (unbounded box-corner logits → fp16 overflow → matcher GIoU assert; see entry + `ISSUE_64_FIX_PLAN.md`). Testing whether per-head QK-LayerNorm on enc/dec self-attn rescues the high-LR regime — 2 seeds @ peak 0.01.
+  ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
   (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
   neutral (trt 2.1 / torch 13.3 ms).** Fair comparison (Muon = non-arch, COCO weights load identically).
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** Tier-2 (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
+- **Next idea:** decide from the QK-norm probe (trains stably @ peak 0.01? beats Muon 0.2061?); if it
+  stabilizes, disentangle qk-norm-alone vs +high-LR. Orthogonal `main` hardening: robustness net (clamp
+  `pred_corners` + NaN-safe GIoU, issue #64). Then resume queue (#2 Cautious). Prior options: Tier-2
+  (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
   supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
   optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
 - **Notes for the next agent:**
@@ -59,6 +63,27 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-08 — muon-lr (Muon peak-LR retune to 0.01)   [FAILED — NaN divergence]
+- Paper / source: Muon LR-transfer band ~0.01–0.02 (Moonlight, arXiv:2502.16982). ideas.md #1.
+- Hypothesis: our Muon peak 0.005 sits below the robust band; doubling to peak 0.01 (`muon_lr=base_lr*20`)
+  should step the enc/dec matrices more efficiently under the ~22-epoch cap.
+- Change (files): exposed `train.muon_lr` (config.yaml null→base_lr*10; train.py read), research override
+  0.005 → OneCycle peak 0.01. exp/muon-lr sha 33fb120. `make test` 74/74.
+- Result: **seed42 diverged to NaN at epoch 16** (batch 88). Loss sat ~20 then *sudden* NaN boxes →
+  `generalized_box_iou` degeneracy assert (utils.py:41) → run aborted; salvaged pre-NaN ckpt test mAP
+  0.1862 < baseline 0.2061. seed123 was on the same path (killed at epoch 7 to free the GPU). 🔴 FAILED.
+- Read (root cause): the box-corner distribution logits `pred_corners` (dfine_decoder.py:510) are
+  **unbounded and accumulate residually across all 6 decoder layers**; only the attention `target` (:256)
+  and query-pos embed (:486) are clamped, not the corner head. 2× LR drifts them up until — under fp16 AMP
+  (ceiling 65504) — one logit → inf → softmax in `integral` → NaN box → matcher crash. Same class as
+  issue #64 (there 226 slow epochs; here 16 at 2× LR). Sudden-NaN-at-stable-loss = overflow, not gradual
+  divergence. **User: bf16 was tried before and didn't help** → not *only* the fp16 ceiling but genuine
+  attention-logit/residual growth → conservative LRs are load-bearing. Why YOLO doesn't: bounded
+  anchor-relative boxes (can't NaN), BN after every conv (hard-normalized, big-LR-tolerant), fixed
+  assignment (no Hungarian cost over predicted geometry). Implication → test **QK-norm** (per-head
+  QK-LayerNorm) to bound attention logits = give the transformer YOLO's BN; run at the same peak 0.01 to
+  see if it rescues the regime.
 
 ## 2026-06-08 — muon (Muon optimizer for enc/dec 2D matrices)   [PROMOTED — first real win]
 - Paper / source: Muon (Jordan et al., 2024) — Newton-Schulz-orthogonalized momentum for 2D weight
