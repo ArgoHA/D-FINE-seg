@@ -10,21 +10,6 @@ latency risk, complexity, expected effect, COCO transfer, segment safety (GUIDE 
 
 ## Tier 1 — fast-convergence / latency-neutral
 
-### 3. Muon optimizer for 2D matrices (hybrid with AdamW)
-- **Paper:** Muon (Jordan et al., 2024) — Newton–Schulz-orthogonalized momentum for 2D weights;
-  ~35% faster convergence on nanoGPT speedruns.
-- **Change:** in `build_optimizer` (`dfine.py:124`) route encoder/decoder 2D attention/MLP linears
-  to Muon, keep backbone/norms/biases/embeddings/**det head**/**mask head** on AdamW. Tune Muon LR
-  separately; don't touch the schedule.
-- **Why:** encoder/decoder is full of high-condition-number 2D linears (Muon's sweet spot); per-step
-  gains matter most under ~22 epochs.
-- **Latency:** none (optimizer only; also less optimizer memory).
-- **Complexity:** medium (dep + param split + extra LR). Exploratory; drop if marginal (simplicity).
-- **Expected:** high-upside, uncertain.
-- **COCO:** ✅ architecture-agnostic. **Segment:** ✅ safe **only if** the split excludes `mask_head`
-  (a 2D-Linear MLP, `dfine_decoder.py:668`) and `mask_decoder`; stay consistent with the existing
-  `enable_mask_head` grouping (`train.py:231`).
-
 ### 4. Group-DETR one-to-many auxiliary query groups (training-only)
 - **Paper:** Group DETR (arXiv:2207.13085). K query groups, O2O per group, cross-group attention
   masked; inference uses one group → architecture/latency unchanged.
