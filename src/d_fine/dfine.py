@@ -137,7 +137,9 @@ def _is_muon_param(name, param):
     )
 
 
-def build_optimizer(model, lr, backbone_lr, betas, weight_decay, base_lr, use_muon=False, muon_lr=None):
+def build_optimizer(
+    model, lr, backbone_lr, betas, weight_decay, base_lr, use_muon=False, muon_lr=None
+):
     backbone_exclude_norm = []
     backbone_norm = []
     encdec_norm_bias = []
@@ -190,8 +192,13 @@ def build_optimizer(model, lr, backbone_lr, betas, weight_decay, base_lr, use_mu
         g["betas"] = betas
         g.setdefault("weight_decay", weight_decay)
     muon_lr = muon_lr if muon_lr is not None else base_lr * 10
-    param_groups.append({
-        "params": muon, "use_muon": True, "lr": muon_lr, "initial_lr": muon_lr,
-        "weight_decay": weight_decay,
-    })
+    param_groups.append(
+        {
+            "params": muon,
+            "use_muon": True,
+            "lr": muon_lr,
+            "initial_lr": muon_lr,
+            "weight_decay": weight_decay,
+        }
+    )
     return MuonWithAuxAdam(param_groups)
