@@ -10,7 +10,7 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
 - **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
   Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
-- **In progress:** idle. 🔬 **QK-norm sub-investigation COMPLETE → SHELVED (2026-06-08).** QK-norm (per-head QK-LayerNorm on enc/dec self-attn) **solves the training instability** (both seeds clean at peak 0.01 where `muon-lr` NaN'd; correct on torch/ONNX/OpenVINO/LiteRT, converts on CoreML) but is **accuracy-neutral** (peak 0.005 → 0.2076 / +0.0015; peak 0.01 → 0.2043) **and breaks the fp16 TensorRT export** — 0 detections, and *only* TRT (every other backend is fine = a TRT fp16-build bug for the decomposed-SDPA + per-head-LayerNorm pattern). fp32 TRT is correct but 3.1 ms (1.48× baseline) → fails the latency budget with no accuracy win; a surgical fp16 op-blocklist (LayerNorm+Softmax→fp32) did **not** restore it. Code on `exp/qk-norm*` (forensics). **Muon stays best.** **Methodology improved (committed `main_exp`):** the decision f1 now comes from the **TensorRT** bench row (guide §3 + `run_candidate.py`), so a broken export fails the guard automatically — it passed twice here under the old PyTorch-row guard.
+- **In progress:** idle. 🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
   (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
@@ -19,10 +19,10 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
 - **Next idea:** resume the approved queue at **#2 Cautious optimizer** (ideas.md) — QK-norm shelved
-  (stability-only, accuracy-neutral, not cheaply TRT-deployable). If real-user training stability ever bites
-  (issue #64), QK-norm is a known torch-side fix and the robustness net (clamp `pred_corners` + NaN-safe GIoU)
-  is the orthogonal `main` hardening. Prior options: Tier-2 (loss/assignment) or re-test **MAL + Muon** (MAL
-  was a standalone tie). Both
+  (TRT-undeployable despite training merit; recipe in `experiments/qk_norm.md`). If real-user training
+  stability ever bites (issue #64), QK-norm is a known torch-side fix and the robustness net (clamp
+  `pred_corners` + NaN-safe GIoU) is the orthogonal `main` hardening. Prior options: Tier-2
+  (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
   supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
   optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
 - **Notes for the next agent:**
@@ -64,6 +64,29 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-10 — TRT fp16 root-cause + export hardening LANDED; qknorm_full75 confirmation; QK-norm stays shelved
+- Source: user-driven deep dive into the qk-norm TRT collapse + a full 75-ep qk-norm confirmation run.
+- **Part 1 — the fp16 0-detection collapse, root-caused & fixed.** Not SDPA math, not fp16 range, not
+  the kernel: a **TensorRT fusion bug around GridSample in fp16**. Same full-fp16 ONNX is correct in
+  onnxruntime; the full-fp16 TRT engine becomes correct the moment GridSample's edges are unfused.
+  Fix landed in `src/dl/export.py`: `half=True` → fp16 ONNX (`op_block_list=["GridSample"]`,
+  `keep_io_types`) parsed into a **STRONGLY_TYPED** engine. Validated (full test set): screen qk-norm
+  s42 0.0→0.552 / s123 0.0→0.549 @ 2.1 ms; **muon_full75 0.585 @ 2.1 ms = auto-FP16 parity** — and the
+  pin is load-bearing for *every* model: strong-typed full-fp16 silently drops muon to **0.559** (no
+  NaN!). TRT 11 removes auto-FP16 entirely → this is the only forward-compatible fp16 path. Upgrading
+  TRT does NOT remove the need (10.16/11.0 still broken; 10.16 fp16 NaNs even pinned).
+- **Part 2 — qknorm_full75** (COCO-init via fused-in_proj→q/k/v remap, Muon, 75 ep, seed42; exact
+  muon_full75 recipe + qk_norm): training **WIN** — test mAP_50_95 **0.2388 vs 0.2359 (+0.0029)**,
+  mAP_50 0.4104 vs 0.4063, ≥ muon at every decade epoch. But bench torch 0.582 vs **TRT 0.545**, and
+  forensics prove a **weights-dependent TRT compiler defect at ALL precisions** (fp32 0.552, scores
+  scatter ±0.5; ORT-fp32=ORT-fp16=torch on identical inputs; structurally identical ONNX vs the
+  correctly-compiled screen ckpt; standalone GridSample with captured inputs maxdiff 1e-5; TF32/opt-
+  level/onnxsim/explicit-attention/clamp/fp32-tails all ruled out; 10.16/11.0 fp32 = 0.529).
+- Verdict: **QK-norm shelved** — undeployable on the TRT stack despite training merit. Full recipe,
+  evidence and revisit conditions: `experiments/qk_norm.md`; working code on `exp/qk-norm-lr`
+  (arch f45f71f, remap a5445ab); artifacts in `experiments/runs/qknorm_full75/seed42`. **Muon remains
+  the deployable best.** Guard lesson re-confirmed: only the TRT-row f1 catches this class of failure.
 
 ## 2026-06-08 — qk-norm-lr (QK-norm @ baseline LR peak 0.005)   [rejected — accuracy-neutral; TRT export incompatible → SHELVED]
 - Source: clean 1-change-vs-Muon follow-up to qk-norm@0.01, isolating QK-norm's accuracy effect at the

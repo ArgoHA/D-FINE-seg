@@ -63,8 +63,10 @@ Two metrics, both on the held-out **test** set, mean over seeds:
 - **f1** — from `bench_metrics.csv` (**TensorRT row**). **Guard.** This is the *actual deployment
   artifact* (TensorRT engine + letterbox + NMS), so f1 comes from the **TRT** bench row, not the PyTorch
   row. Using the TRT f1 makes the guard also catch a **broken or degraded export**: a change can train
-  fine in PyTorch yet produce a TRT engine that collapses — e.g. QK-norm's SDPA attention in fp16 gave
-  test f1 0.0 (0 detections) while PyTorch f1 was 0.55 (2026-06-08). The PyTorch-row f1 never sees that;
+  fine in PyTorch yet produce a TRT engine that collapses — e.g. a TensorRT fp16 fusion bug around
+  GridSample gave the QK-norm model test f1 0.0 (0 detections) while PyTorch f1 was 0.55 (2026-06-08;
+  root-caused 2026-06-10 → GridSample-fp32 pin in export.py, see experiments/qk_norm.md). The
+  PyTorch-row f1 never sees that;
   the TRT row does. **A TRT row that is present but ≈0 must FAIL the guard — that is the whole point;**
   fall back to the PyTorch row only when TRT was not benched on the platform at all (e.g. no GPU). Bench
   runs at the **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
