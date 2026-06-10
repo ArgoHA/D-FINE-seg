@@ -11,7 +11,8 @@ train:
   root: /home/argo/Desktop/Projects/vis_drone # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
   pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
-  imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights, random neck/head (use with pretrained_model_path=null)
+
+  imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
   coco_dataset: False # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
 
   data_path: ${train.root}/data/dataset # path to dataset
@@ -144,14 +145,14 @@ export: # TensorRT must be done on the inference device
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
-  formats: null # null = build all backends; list (e.g. [tensorrt]) restricts what is built (research loop)
+  formats: null # null = build all backends; list (e.g. [tensorrt]) restricts what is built
   ov_int8_max_drop: 0.02
   trt_int8_workspace_gb: 4
   trt_int8_validate: True
 
 
 bench:
-  formats: [torch, onnx, openvino, tensorrt, coreml, litert] # which backends to bench if their artifact exists
+  formats: [torch, onnx, openvino, tensorrt, coreml, litert] # which backends to bench
 
 
 infer:
