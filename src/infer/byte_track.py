@@ -292,6 +292,27 @@ class ByteTrack:
             output.append((t.track_id, t.cls_id, (x1, y1, x2, y2), float(t.score)))
         return output
 
+    def lost_boxes(
+        self, extrapolate: bool = False
+    ) -> List[Tuple[int, Tuple[float, float, float, float]]]:
+        """xyxy boxes for tracks currently LOST but still within ``track_buffer``.
+
+        Lets a consumer carry a detection forward: keep acting on a person's last position
+        for the frames after the detector drops them but before the tracker gives up on the id.
+        Returns the frozen last-observed box by default; ``extrapolate=True`` returns the
+        constant-velocity prediction instead (follows a mover, but can drift).
+
+        Call right after ``update()`` — that is when unmatched tracks have just been marked LOST
+        and stale ones (``time_since_update > track_buffer``) already pruned.
+        """
+        out: List[Tuple[int, Tuple[float, float, float, float]]] = []
+        for t in self.tracks:
+            if t.state != TrackState.LOST:
+                continue
+            box = t.predicted_xyxy(self.drag) if extrapolate else _cxywh_to_xyxy(t.mean)
+            out.append((t.track_id, (float(box[0]), float(box[1]), float(box[2]), float(box[3]))))
+        return out
+
     def _associate(
         self,
         tracks: List[_Track],
