@@ -486,7 +486,11 @@ class Trainer:
             if path_to_save:  # val and test
                 optimal_thresh = validator.save_plots(path_to_save / "plots" / mode)
                 # store the f1-optimal conf threshold so bench can run at it (val row is used)
-                if metrics is not None and optimal_thresh is not None and "extended_metrics" in metrics:
+                if (
+                    metrics is not None
+                    and optimal_thresh is not None
+                    and "extended_metrics" in metrics
+                ):
                     metrics["extended_metrics"]["optimal_thresh"] = optimal_thresh
 
         # validator holds a deepcopy of preds; drop it before the caller moves on.
