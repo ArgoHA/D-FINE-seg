@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+.DS_Store
+
+configs/
+
+*.pt
+
+# Experiment / training outputs
+wandb/
+output/
+weight/
+
+# Research harness: keep ledger/notebook/ideas, ignore bulky per-run artifacts
+experiments/runs/
+
+# transient harness run logs
+experiments/*.log
+
+# secrets — never commit
+.env
+notes.md
+.vscode/launch.json
+.vscode/settings.json
+.vscode/sftp.json
