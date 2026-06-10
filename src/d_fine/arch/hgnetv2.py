@@ -12,8 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import FrozenBatchNorm2d
 from ..dist_utils import get_rank, synchronize
+from .common import FrozenBatchNorm2d
 
 # Constants for initialization
 kaiming_normal_ = nn.init.kaiming_normal_

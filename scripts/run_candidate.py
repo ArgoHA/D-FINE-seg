@@ -17,6 +17,7 @@ out the experiment branch before running this.
 Usage:
     uv run python scripts/run_candidate.py --name baseline --comment "control run"
 """
+
 import argparse
 import json
 import subprocess
@@ -88,7 +89,11 @@ def count_params(model_pt):
 def git_info():
     def g(*a):
         return subprocess.run(["git", *a], cwd=REPO, capture_output=True, text=True).stdout.strip()
-    return {"branch": g("rev-parse", "--abbrev-ref", "HEAD"), "sha": g("rev-parse", "--short", "HEAD")}
+
+    return {
+        "branch": g("rev-parse", "--abbrev-ref", "HEAD"),
+        "sha": g("rev-parse", "--short", "HEAD"),
+    }
 
 
 def mean_std(vals):
@@ -98,7 +103,7 @@ def mean_std(vals):
     n = len(vals)
     m = sum(vals) / n
     var = sum((x - m) ** 2 for x in vals) / n if n > 1 else 0.0
-    return round(m, 4), round(var ** 0.5, 4), n
+    return round(m, 4), round(var**0.5, 4), n
 
 
 def main():
@@ -123,10 +128,19 @@ def main():
     for seed in seeds:
         sd = run_root / f"seed{seed}"
         # train
-        run([
-            "uv", "run", "python", "-m", "src.dl.train", *base_args,
-            f"train.seed={seed}", f"train.path_to_save={sd}", f"exp_name={args.name}_s{seed}",
-        ])
+        run(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "src.dl.train",
+                *base_args,
+                f"train.seed={seed}",
+                f"train.path_to_save={sd}",
+                f"exp_name={args.name}_s{seed}",
+            ]
+        )
         # export + bench this seed
         run(["uv", "run", "python", "-m", "src.dl.export", *base_args, f"train.path_to_save={sd}"])
         run(["uv", "run", "python", "-m", "src.dl.bench", *base_args, f"train.path_to_save={sd}"])
@@ -161,9 +175,13 @@ def main():
     out.write_text(json.dumps(result, indent=2))
     a = result["agg"]
     print(f"\n✅ wrote {out}")
-    print(f"   {split}(mean/{len(seeds)} seeds): mAP_50_95={a['mAP_50_95']['mean']} "
-          f"(±{a['mAP_50_95']['std']})  f1={a['f1']['mean']} (±{a['f1']['std']})")
-    print(f"   latency_ms: torch={a['lat_torch']['mean']} trt={a['lat_trt']['mean']}  params_M={params_m}")
+    print(
+        f"   {split}(mean/{len(seeds)} seeds): mAP_50_95={a['mAP_50_95']['mean']} "
+        f"(±{a['mAP_50_95']['std']})  f1={a['f1']['mean']} (±{a['f1']['std']})"
+    )
+    print(
+        f"   latency_ms: torch={a['lat_torch']['mean']} trt={a['lat_trt']['mean']}  params_M={params_m}"
+    )
 
 
 if __name__ == "__main__":
