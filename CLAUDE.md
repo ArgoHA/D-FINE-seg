@@ -132,8 +132,8 @@ Under `${train.path_to_save}` (= `${train.root}/output/models/<exp>`):
 - Confusion matrices, per-class metric CSVs, F1-vs-threshold plots, and eval visualizations
 - `extended_metrics.csv` — per-class metrics plus an `optimal_thresh` column: the conf threshold
   that maximizes f1, found by a sweep over the *unfiltered* predictions during the final eval (val
-  and test rows each get their own). `make bench` reads the **val** row and benches at that
-  threshold (the prod operating point), instead of a fixed 0.5.
+  and test rows each get their own). Informational only — `make bench` benches at
+  `train.conf_thresh`, not this column (reverted 2026-06-10; see commit 963e845).
 
 ### 6.5 Logging
 
@@ -187,7 +187,7 @@ Important to note: inference wrappers under /infer are standalone scripts that a
 make bench        # == python -m src.dl.bench
 ```
 
-Runs the val/test set through each backend listed in `formats_to_bench` inside [src/dl/bench.py](src/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT. Bench runs at the **val-optimal conf threshold** read from `extended_metrics.csv` (not a fixed 0.5); it fails loudly if that file/column is missing (run training/eval first). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
+Runs the val/test set through each backend listed in `formats_to_bench` inside [src/dl/bench.py](src/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT. Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
 
 Related:
 - `python -m src.dl.test_batching` — sweeps batch sizes, writes `batched_infer.csv`
