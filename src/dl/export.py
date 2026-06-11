@@ -360,16 +360,6 @@ def export_to_litert(
     logger.info("LiteRT INT8 model exported")
 
 
-# Ops kept in fp32 inside the fp16 TensorRT engine. TRT mis-fuses across GridSample
-# (deformable cross-attn) in fp16: full-fp16 silently loses recall (muon_full75 f1
-# 0.585→0.559) and NaN'd the qk-norm graph, while the same full-fp16 ONNX is correct in
-# onnxruntime — the fp32 pin's casts break the bad fusion. Decoder-only op → ~zero
-# latency cost. Bug persists through TRT 11.0, which also drops auto-FP16 (strong typing
-# is the only fp16 path there); details in experiments/qk_norm.md. Retest before
-# removing when bumping the TRT pin.
-TRT_FP16_KEEP_FP32_OPS = ["GridSample"]
-
-
 def export_to_tensorrt(
     onnx_file_path: Path,
     half: bool,
@@ -380,34 +370,21 @@ def export_to_tensorrt(
 
     tr_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(tr_logger)
-    net_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-    if half:
-        # fp16 graph (GridSample kept fp32) + strong typing → TRT obeys these dtypes exactly.
-        from onnxconverter_common import float16
-
-        fp16_model = float16.convert_float_to_float16(
-            onnx.load(str(onnx_file_path)),
-            keep_io_types=True,
-            op_block_list=TRT_FP16_KEEP_FP32_OPS,
-        )
-        onnx_bytes = fp16_model.SerializeToString()
-        net_flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
-    else:
-        with open(onnx_file_path, "rb") as f:
-            onnx_bytes = f.read()
-
-    network = builder.create_network(net_flags)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
     parser = trt.OnnxParser(network, tr_logger)
-    if not parser.parse(onnx_bytes):
-        print("ERROR: Failed to parse the ONNX file.")
-        for error in range(parser.num_errors):
-            print(parser.get_error(error))
-        return
+
+    with open(onnx_file_path, "rb") as model:
+        if not parser.parse(model.read()):
+            print("ERROR: Failed to parse the ONNX file.")
+            for error in range(parser.num_errors):
+                print(parser.get_error(error))
+            return
 
     config = builder.create_builder_config()
     # Increase workspace memory to help with larger batch sizes
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)  # 2GB
-    # Strongly-typed networks carry their precision in the graph; the FP16 flag is rejected.
+    if half:
+        config.set_flag(trt.BuilderFlag.FP16)
 
     if max_batch_size > 1:
         profile = builder.create_optimization_profile()
