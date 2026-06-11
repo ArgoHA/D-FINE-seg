@@ -180,6 +180,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 | Feature | Description |
 |:--------|:------------|
+| **Muon optimizer** | Optional Newton–Schulz optimizer for encoder/decoder attention+MLP matrices |
 | **DDP** | Multi-GPU distributed training with SyncBatchNorm |
 | **AMP** | Automatic mixed precision (~40% less VRAM, ~15% faster) |
 | **EMA** | Exponential moving average of weights |
@@ -192,6 +193,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **WandB integration** | Automatic experiment tracking |
 | **Optimal threshold search** | Auto-finds best confidence threshold after training |
 | **Background warm-up** | Ignore background-only images for N initial epochs |
+| **Autoresearch harness** | Tooling to run agent in autoresearch format,  leaves under `experiments/`
 
 ## Export
 
@@ -402,7 +404,7 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 
 | Output | Location | Description |
 |:-------|:---------|:------------|
-| Models + logs | `output/models/{exp_name}_{date}/` | Weights, training metrics, confusion matrix, F1 vs threshold plots, per-class metrics, bench metrics |
+| Models + logs | `output/models/{exp_name}_{date}/` | Weights, training metrics, confusion matrix, F1 vs threshold plots, per-class metrics, bench metrics, calculated optimal threshold |
 | Debug images | `output/debug_images/` | Preprocessed training images (with augmentations) |
 | Eval predictions | `output/eval_preds/` | Val set predictions with GT (green) and preds (blue) |
 | Bench images | `output/bench_imgs/` | Predictions from all exported models |

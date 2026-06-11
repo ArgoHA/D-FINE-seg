@@ -152,7 +152,13 @@ export: # TensorRT must be done on the inference device
 
 
 bench:
-  formats: [torch, onnx, openvino, tensorrt, coreml, litert] # which backends to bench
+  formats: # which backends to bench
+    - torch
+    - tensorrt
+    - onnx
+    - openvino
+    - coreml
+    - litert
 
 
 infer:
