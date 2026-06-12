@@ -361,12 +361,12 @@ def export_to_litert(
 
 
 def export_to_tensorrt(
-    onnx_file_path: Path,
-    half: bool,
-    max_batch_size: int,
+    onnx_file_path: Path, half: bool, max_batch_size: int, opt_bs: int = 1
 ) -> None:
     import onnx
     import tensorrt as trt
+
+    opt_bs = min(opt_bs, max_batch_size)
 
     tr_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(tr_logger)
@@ -512,7 +512,12 @@ def main(cfg: DictConfig):
             output_names=output_names,
         )
         if want("tensorrt"):
-            export_to_tensorrt(full_onnx_path, cfg.export.half, cfg.export.max_batch_size)
+            export_to_tensorrt(
+                full_onnx_path,
+                cfg.export.half,
+                cfg.export.max_batch_size,
+                opt_bs=cfg.export.get("opt_batch_size", 1) or 1,
+            )
 
     if want("coreml"):
         export_to_coreml(
