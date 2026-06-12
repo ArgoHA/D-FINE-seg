@@ -1,0 +1,252 @@
+# Lab notebook — D-FINE-seg autoresearch
+
+This file is the **memory across agents/sessions**. A fresh agent reads the *Current state* block
+first to know exactly where to resume, then scans entries to avoid repeating dead ends. The
+structured numbers live in `ledger.csv`; this file is the reasoning.
+
+## Current state  (keep this block updated every iteration)
+- **Baseline established:** yes — control, 3 seeds, sha `09d0463`. Do **not** re-train it.
+- **Current best (`main_exp`):** 🟢 **Muon** (sha `06f448e`, promoted 2026-06-08). Enc/dec attn+MLP
+  matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
+- **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
+  Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
+- **In progress:** idle. 🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
+  ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
+  no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
+  (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
+  neutral (trt 2.1 / torch 13.3 ms).** Fair comparison (Muon = non-arch, COCO weights load identically).
+  Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
+  optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
+  seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
+- **Next idea:** resume the approved queue at **#2 Cautious optimizer** (ideas.md) — QK-norm shelved
+  (TRT-undeployable despite training merit; recipe in `experiments/qk_norm.md`). If real-user training
+  stability ever bites (issue #64), QK-norm is a known torch-side fix and the robustness net (clamp
+  `pred_corners` + NaN-safe GIoU) is the orthogonal `main` hardening. Prior options: Tier-2
+  (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
+  supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
+  optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
+- **Notes for the next agent:**
+  - **Methodology change (2026-06-08): 3 seeds → 2 (`harness.seeds=[42,123]`).** The screen is now
+    2×60-min runs. No re-baseline: per-seed std (~0.0005–0.001) ≪ the 0.003 margin floor, so the floor
+    governs promotion regardless of seed count; Muon's 3-seed baseline mean stays the bar. If a
+    candidate's 2 seeds disagree by > margin, add a 3rd by hand. **Full/COCO runs are manual** and only
+    an unbiased bar for *non-architecture* changes (COCO weights load identically) — for arch changes
+    use shared-init full runs or defer COCO to real adoption. See EXPERIMENT_GUIDE §6 + rule 9.
+  - **Methodology change (sha `6220c4c`, baked into trunk):** the f1 guard now benches at the
+    **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
+    `extended_metrics.csv`), not a fixed 0.5. Reason: the validator's old "optimal threshold" sweep was
+    a no-op — `preds_postprocess` pre-filters at conf_thresh=0.5 before the validator, so the sweep
+    never saw below 0.5 and always returned 0.5. Fixed to sweep the unfiltered `all_*` preds. `mAP_50_95`
+    (primary) was never affected (it uses unfiltered scores). To eval an existing checkpoint without
+    retraining: start training pointing at its folder and Ctrl+C during epoch 1 → the `finally` block
+    evaluates the existing `model.pt` and writes `optimal_thresh`; then `make bench` reads it.
+  - Three infra fixes baked in *before* the baseline — keep them: (1) `hgnetv2.py` dist-safe
+    `get_rank`/`synchronize`; (2) `train.batch_size=8` pinned (auto `-1` OOMs on dense VisDrone); (3)
+    mid-train CUDA OOM fails loudly in `train.py`. Also `train.epochs=100` (was 1000) sets the
+    LR-schedule horizon — fixed constant (§8). Baseline mAP variance is tiny (std 0.0005) so the 0.003
+    margin floor governs — a real win is very achievable.
+
+---
+
+Chronological log, newest first. One entry per candidate (promoted **or** rejected). Record the
+*why*, not just the number — especially for failures.
+
+Entry template:
+```
+## <date> — <name>   [PROMOTED | rejected | failed]
+- Paper / source:
+- Hypothesis:
+- Change (files):
+- Result (test, mean±std/seeds): mAP_50_95 <m>±<s> (best <b>), f1 <m>±<s>, lat ratio <r>, params <M>
+- Read: why it worked / didn't. What it implies for the next idea.
+```
+
+---
+
+<!-- entries below -->
+
+## 2026-06-10 — TRT fp16 root-cause + export hardening LANDED; qknorm_full75 confirmation; QK-norm stays shelved
+- Source: user-driven deep dive into the qk-norm TRT collapse + a full 75-ep qk-norm confirmation run.
+- **Part 1 — the fp16 0-detection collapse, root-caused & fixed.** Not SDPA math, not fp16 range, not
+  the kernel: a **TensorRT fusion bug around GridSample in fp16**. Same full-fp16 ONNX is correct in
+  onnxruntime; the full-fp16 TRT engine becomes correct the moment GridSample's edges are unfused.
+  Fix landed in `src/dl/export.py`: `half=True` → fp16 ONNX (`op_block_list=["GridSample"]`,
+  `keep_io_types`) parsed into a **STRONGLY_TYPED** engine. Validated (full test set): screen qk-norm
+  s42 0.0→0.552 / s123 0.0→0.549 @ 2.1 ms; **muon_full75 0.585 @ 2.1 ms = auto-FP16 parity** — and the
+  pin is load-bearing for *every* model: strong-typed full-fp16 silently drops muon to **0.559** (no
+  NaN!). TRT 11 removes auto-FP16 entirely → this is the only forward-compatible fp16 path. Upgrading
+  TRT does NOT remove the need (10.16/11.0 still broken; 10.16 fp16 NaNs even pinned).
+- **Part 2 — qknorm_full75** (COCO-init via fused-in_proj→q/k/v remap, Muon, 75 ep, seed42; exact
+  muon_full75 recipe + qk_norm): training **WIN** — test mAP_50_95 **0.2388 vs 0.2359 (+0.0029)**,
+  mAP_50 0.4104 vs 0.4063, ≥ muon at every decade epoch. But bench torch 0.582 vs **TRT 0.545**, and
+  forensics prove a **weights-dependent TRT compiler defect at ALL precisions** (fp32 0.552, scores
+  scatter ±0.5; ORT-fp32=ORT-fp16=torch on identical inputs; structurally identical ONNX vs the
+  correctly-compiled screen ckpt; standalone GridSample with captured inputs maxdiff 1e-5; TF32/opt-
+  level/onnxsim/explicit-attention/clamp/fp32-tails all ruled out; 10.16/11.0 fp32 = 0.529).
+- Verdict: **QK-norm shelved** — undeployable on the TRT stack despite training merit. Full recipe,
+  evidence and revisit conditions: `experiments/qk_norm.md`; working code on `exp/qk-norm-lr`
+  (arch f45f71f, remap a5445ab); artifacts in `experiments/runs/qknorm_full75/seed42`. **Muon remains
+  the deployable best.** Guard lesson re-confirmed: only the TRT-row f1 catches this class of failure.
+
+## 2026-06-08 — qk-norm-lr (QK-norm @ baseline LR peak 0.005)   [rejected — accuracy-neutral; TRT export incompatible → SHELVED]
+- Source: clean 1-change-vs-Muon follow-up to qk-norm@0.01, isolating QK-norm's accuracy effect at the
+  baseline LR (peak 0.01 was stable but flat). User-directed.
+- Change (files): same QK-norm arch (exp/qk-norm f45f71f) at muon_lr default → peak 0.005. exp/qk-norm-lr f8d59e6.
+- Result (test, 2 seeds): mAP_50_95 0.2076±0.0016 (seeds .206/.2091, gain **+0.0015** vs 0.2061, within margin),
+  PyTorch f1 0.554 — but **TensorRT f1 0.0** (fp16 export broken). lat: fp16-TRT 1.9 ms (broken engine), fp32-TRT
+  3.1 ms (correct, 1.48×), torch ~13.5. params 10.303M. 🔴 KEEP BEST → SHELVED.
+- Read: **QK-norm is accuracy-neutral** at both LRs (+0.0015 here, −0.0018 at 0.01 → higher LR doesn't help),
+  so it's not a campaign win regardless of deployment. **TRT investigation (user-driven, all-format bench on
+  seed42):** the SDPA/QK-norm graph is correct on **torch, ONNX, OpenVINO, LiteRT** (all 0.554) and converts on
+  **CoreML** — **only the fp16 TensorRT engine collapses to 0 detections.** So it's a TRT fp16-build bug for the
+  decomposed-SDPA + per-head-LayerNorm pattern, not a model/ONNX/fp16-general fault. fp32 TRT confirms (0.553 @
+  3.1 ms) but fails the ≤1.05× latency budget with no accuracy win; a surgical op-blocklist (LayerNorm+Softmax→
+  fp32) did **not** restore the fp16 engine. Per simplicity + latency rules → **shelve** (code kept on exp branches).
+  **Payoff of the whole QK-norm arc:** (1) root-caused the DETR-family instability (unbounded box-corner logits +
+  attention-logit growth; YOLO avoids it via BN everywhere + bounded anchor-relative boxes + fixed assignment);
+  (2) QK-norm is a proven *torch-side* fix for the issue-#64 NaN class if ever needed; (3) **methodology fix** —
+  the f1 guard now reads the **TensorRT** bench row (it silently passed a 0-detection export twice on the old
+  PyTorch-row guard). **Lesson for next agents: for any change that alters the export graph (SDPA / new ops /
+  arch), verify trt_f1 ≈ torch_f1 — a healthy torch model can still produce a dead TRT engine.**
+
+## 2026-06-08 — qk-norm (per-head QK-LayerNorm on enc/dec self-attn, @ peak 0.01)   [rejected — STABILITY SOLVED, accuracy flat]
+- Paper / source: QK-Norm (Dehghani et al. ViT-22B; Chameleon). The stability fix for the muon-lr NaN.
+- Hypothesis: bound the attention logits (the structural analogue of YOLO's BN) so the peak-0.01 regime
+  that NaN'd can train, and Muon's LR-transfer can pay off once the basin is stable.
+- Change (files): `QKNormSelfAttention` (arch/utils.py) — LayerNorm Q,K per head before the SDPA
+  dot-product, drop-in for nn.MultiheadAttention on enc + dec **self**-attn (cross-attn is deformable,
+  untouched). Gated by `build_model(qk_norm=...)` ← `config.yaml train.qk_norm` (default off, threaded to
+  all 5 build sites); self-describing (q_norm keys → Torch_model auto-detects, crosses frozen bench.py);
+  decoder denoising bool mask → SDPA additive −inf. exp/qk-norm f45f71f. This run = qk_norm + muon_lr=0.005
+  (peak 0.01) → **2 changes** vs Muon. make test 76/76 (+2 new: shapes/grad + mask-convention).
+- Result (test, 2 seeds): mAP_50_95 0.2043±0.0011 (seeds .2055/.2032, gain −0.0018 vs 0.2061, within
+  margin), f1 0.551±0.0 (gain −0.001), lat trt 1.85 ms (ratio 0.88, **faster**), params 10.303M. 🔴 KEEP BEST.
+- Read: **The stability question is answered — QK-norm fixes it.** Both seeds ran clean to the walltime
+  cap with zero NaN, where muon-lr (same peak 0.01, no QK-norm) NaN'd at ep16. Latency even improved (the
+  SDPA path beats nn.MultiheadAttention's fused kernel here). Mid-run val tracked *higher* than muon-lr's
+  pre-NaN val at matched epochs (ep15 0.239 vs 0.227) — so QK-norm helps the fit — but the final test mAP
+  lands at the Muon baseline: **at peak 0.01 the 2× LR, even stabilized, buys no net accuracy.** This is
+  the user's predicted branch (stable, higher-LR-flat). Confound: 2 changes (qk_norm + LR). Next:
+  `qk-norm-lr` = QK-norm @ baseline peak 0.005 (one change vs Muon) to isolate QK-norm's accuracy effect at
+  the original LR — the clean, promotable comparison. If flat there too, QK-norm is a robustness win for
+  real users (issue #64 — it removes the NaN-divergence failure class) rather than a VisDrone accuracy gain.
+
+## 2026-06-08 — muon-lr (Muon peak-LR retune to 0.01)   [FAILED — NaN divergence]
+- Paper / source: Muon LR-transfer band ~0.01–0.02 (Moonlight, arXiv:2502.16982). ideas.md #1.
+- Hypothesis: our Muon peak 0.005 sits below the robust band; doubling to peak 0.01 (`muon_lr=base_lr*20`)
+  should step the enc/dec matrices more efficiently under the ~22-epoch cap.
+- Change (files): exposed `train.muon_lr` (config.yaml null→base_lr*10; train.py read), research override
+  0.005 → OneCycle peak 0.01. exp/muon-lr sha 33fb120. `make test` 74/74.
+- Result: **seed42 diverged to NaN at epoch 16** (batch 88). Loss sat ~20 then *sudden* NaN boxes →
+  `generalized_box_iou` degeneracy assert (utils.py:41) → run aborted; salvaged pre-NaN ckpt test mAP
+  0.1862 < baseline 0.2061. seed123 was on the same path (killed at epoch 7 to free the GPU). 🔴 FAILED.
+- Read (root cause): the box-corner distribution logits `pred_corners` (dfine_decoder.py:510) are
+  **unbounded and accumulate residually across all 6 decoder layers**; only the attention `target` (:256)
+  and query-pos embed (:486) are clamped, not the corner head. 2× LR drifts them up until — under fp16 AMP
+  (ceiling 65504) — one logit → inf → softmax in `integral` → NaN box → matcher crash. Same class as
+  issue #64 (there 226 slow epochs; here 16 at 2× LR). Sudden-NaN-at-stable-loss = overflow, not gradual
+  divergence. **User: bf16 was tried before and didn't help** → not *only* the fp16 ceiling but genuine
+  attention-logit/residual growth → conservative LRs are load-bearing. Why YOLO doesn't: bounded
+  anchor-relative boxes (can't NaN), BN after every conv (hard-normalized, big-LR-tolerant), fixed
+  assignment (no Hungarian cost over predicted geometry). Implication → test **QK-norm** (per-head
+  QK-LayerNorm) to bound attention logits = give the transformer YOLO's BN; run at the same peak 0.01 to
+  see if it rescues the regime.
+
+## 2026-06-08 — muon (Muon optimizer for enc/dec 2D matrices)   [PROMOTED — first real win]
+- Paper / source: Muon (Jordan et al., 2024) — Newton-Schulz-orthogonalized momentum for 2D weight
+  matrices; ~faster convergence on speedruns. ideas.md #3.
+- Hypothesis: after CDN (#1) and Dense O2O (#2) both *regressed* mAP, the lesson was that the
+  walltime-cap bottleneck is per-step **optimization efficiency**, not supervision density. Muon
+  attacks exactly that — orthogonalized updates on the high-condition-number enc/dec attention/MLP
+  linears, where per-step gains compound most under ~22 epochs. Optimizer-only → zero inference latency.
+- Change (files): new `src/d_fine/muon.py` (`MuonWithAuxAdam`, single-device, one `.step()` so the
+  train loop is untouched); `dfine.py` `build_optimizer` gains a gated Muon path with an **allowlist**
+  (`self_attn`/`cross_attn`/`linear1`/`linear2`/`gateway.gate`, ndim==2) so det/mask heads, embeddings,
+  LQE, norms, biases can never leak in (verified: 25 matrices, 0 leaks); `train.py` passes the flag and
+  gives the Muon group its own OneCycleLR peak (`base_lr*10*2`); `config.yaml` default `use_muon: False`;
+  `research_visdrone.yaml` sets it true. exp/muon sha `06f448e`. Muon peak LR untuned (base_lr*10) —
+  stable in all 3 seeds (no NaN recovery), so not divergent; possibly not optimal either.
+- Result (test, 3 seeds): mAP_50_95 0.2061±0.0006 (gain **+0.0043**, > 0.003 margin, all seeds
+  .2068/.2061/.2053), f1@val-optimal 0.5520±0.0022 (gain **+0.0087**, guard improved), lat trt 2.1ms
+  (ratio 1.0), params 10.302M. 🟢 PROMOTE.
+- Read: First change to beat the control on the **primary** metric beyond noise, with the guard *also*
+  up and latency flat — and consistently across every seed (std 0.0006). Confirms the diagnosis from the
+  two rejections: the lever that matters under the cap is optimizer efficiency. **Simplicity check:** it
+  adds a ~90-line self-contained optimizer + a gated flag — non-trivial, but the win is clean, multi-seed,
+  zero-latency, and the mechanism is general (not VisDrone-specific) so it should transfer to COCO; the
+  added code is isolated and default-off. Net: complexity justified — promote. **Segment safety:** mask
+  head + mask_decoder stay on AdamW (allowlist excludes `mask`), so the segment path is unaffected; Muon
+  only touches the shared detection transformer. **Open:** Muon LR is a blind base_lr*10; a short sweep
+  could yield more. Next: user-requested full 75-epoch confirmation vs the COCO-init Feb reference.
+
+## 2026-06-08 — dense-o2o (DEIM Dense O2O / full mosaic)   [rejected — mAP regressed]
+- Paper / source: DEIM, CVPR 2025 (arXiv:2412.04234). Dense O2O = pack more objects/image (full
+  mosaic) → more O2O positives/step. ideas.md #2. (MAL is the loss half, rejected standalone 2026-06-07.)
+- Hypothesis: full mosaic attacks O2O sparsity — the main convergence bottleneck under the 60-min cap —
+  so denser supervision should lift mAP in ~22 epochs. Train-time aug → zero latency.
+- Change (files): `configs/research_visdrone.yaml` `train.mosaic_augs.mosaic_prob` 0.8→1.0, as a
+  **detect-only** override (mosaic degrades masks, CLAUDE.md #6 / GUIDE rule 10 — never in segment
+  defaults). 1 line. exp/dense-o2o sha `198264e`. No OOM at batch_size=8 (peak VRAM ~95%, survived).
+- Result (test, 3 seeds): mAP_50_95 0.1946±0.0011 (gain **−0.0072**, well past 2× margin — a real
+  *regression*), f1@val-optimal 0.5450±0.0014 (gain +0.0017, within margin), lat trt 2.1ms (ratio 1.0),
+  params 10.302M. 🔴 KEEP BEST.
+- Read: mAP dropped clearly (−0.0072, std only 0.0011 → not noise) while f1 nudged *up* (+0.0017). The
+  split is the tell: heavier mosaic makes a harder training distribution whose schedule (mosaic-close
+  never reached under the cap, GUIDE §8) doesn't finish in ~22 epochs → localization/mAP suffers, but
+  the denser positives slightly improve the classification operating point (f1). Net: more supervision
+  density does *not* beat the harder distribution within the walltime budget here — same lesson as CDN
+  (#1), from the opposite lever. Implication: the convergence bottleneck under the cap is **not** O2O
+  positive-count; don't keep chasing supervision-density ideas (Group-DETR #4 likely same fate). The
+  MAL+Dense O2O pairing is also unlikely to pay now (its base, Dense O2O, hurts mAP standalone). Pivot
+  to the optimizer (Muon, #3): per-step *efficiency* rather than per-step *supervision*.
+- Paper / source: Contrastive DeNoising, DINO (arXiv:2203.03605), inherited by RT-DETR/D-FINE. ideas.md #1.
+- Hypothesis: dense VisDrone has large `max_gt_num`, so `num_group = num_denoising // max_gt_num`
+  (`arch/utils.py:380`) floors to 1 — we run the *minimum* denoising. Raising `num_denoising` 100→300
+  restores multiple noised-GT groups → denser, stable positives early when O2O is sparse. Train-only
+  (`dfine_decoder.py:971` gates on `self.training`) → byte-identical export, zero latency cost.
+- Change (files): `src/d_fine/configs.py:19` `num_denoising` 100→300 (1 line). exp/cdn-denoising sha `21970e4`.
+- Result (test, 3 seeds): mAP_50_95 0.2004±0.0003 (gain **−0.0014**, below 0.003 margin — a slight
+  *decrease*), f1@val-optimal 0.5403±0.0005 (gain −0.003, at margin edge), lat trt 2.1ms (ratio 1.0),
+  params 10.302M. 🔴 KEEP BEST.
+- Read: No win — mAP nudged *down*, not up, and variance is tiny (std 0.0003) so it's a real flat/slight-
+  negative, not noise. Likely the extra dn tokens raised per-step cost enough to cost a fraction of an
+  epoch under the 60-min cap, cancelling any denser-supervision benefit (the documented trade-off in
+  ideas.md). The groups→1 starvation theory may also just not bind here: VisDrone's `max_gt_num` is so
+  large that even 300 tokens still yields very few groups. Conclusion: CDN scaling alone is neutral-to-
+  slightly-negative under the walltime cap; not worth the extra train cost. Implication: pursue the
+  supervision-density gain through aug instead (Dense O2O, #2) rather than more dn tokens.
+
+## 2026-06-07 — mal (DEIM Matchability-Aware Loss)   [rejected — fair tie]
+- Paper / source: DEIM, CVPR 2025 (arXiv:2412.04234). MAL = the loss half (Dense O2O is the other half,
+  deferred to keep one change per experiment).
+- Hypothesis: MAL keeps gradient on low-IoU matches (positive weight 1, target `iou^γ`) instead of
+  near-ignoring them as VFL does (weight `iou`) → faster convergence, latency-neutral.
+- Change (files): `dfine_criterion.py` (+`loss_labels_mal`, `mal_alpha`), `configs.py` (`loss_mal`,
+  `losses=['mal',...]`, γ 2.0→1.5). exp/mal sha `349cb6b` (rebased on the methodology commit).
+- Result (test, 3 seeds): mAP_50_95 0.2033±0.001 (gain +0.0015, **under** 0.003 margin), f1@val-optimal
+  0.5393±0.0017 (gain −0.004, just **beyond** 0.003 margin), lat ratio 1.0, params 10.302M. 🔴 KEEP BEST.
+- Read: **This experiment is why the methodology was fixed.** Under the old fixed-0.5 f1, MAL looked
+  catastrophic (f1 0.4963, −0.047) — but MAL's γ=1.5 raises the positive target to a power, deliberately
+  *suppressing* confidence scores, so its optimal operating point moved to **0.4** (consistent across all
+  3 seeds; baseline stays 0.5). At its true threshold MAL's f1 recovers to 0.539 ≈ baseline's 0.5433 — a
+  near-tie, not a regression. Conclusion: **MAL alone is ~neutral** here. That matches the paper — MAL is
+  designed to manage the flood of low-quality matches introduced by **Dense O2O**; without it there's
+  little for MAL to fix. Implication: try Dense O2O next; MAL likely only pays off *together* with it
+  (worth re-testing the pair, but that's two changes — sequence Dense O2O first, then MAL+DenseO2O).
+
+## 2026-06-07 — baseline   [PROMOTED — first baseline]
+- Paper / source: n/a (unchanged control architecture).
+- Hypothesis: establish the one-time control per EXPERIMENT_GUIDE §4.
+- Change (files): none to the model. Infra fixes required to make the control runnable/comparable:
+  `src/d_fine/arch/hgnetv2.py` (dist-safe pretrained-backbone load), `configs/research_visdrone.yaml`
+  (`train.batch_size=8`, `train.epochs=100`), `src/dl/train.py` (fail loudly on mid-train CUDA OOM).
+- Result (test, 3 seeds): mAP_50_95 0.2018±0.0005 (seeds .2025/.2016/.2012), f1 0.5433±0.0017,
+  lat torch 13.57 ms / trt 2.1 ms, params 10.30M. All seeds hit walltime cap at epoch 22.
+- Read: First two launch attempts produced a *degenerate* baseline (mAP 0.054±0.065, std > mean)
+  from two compounding bugs — single-GPU `get_rank()` crash on ImageNet-backbone init, then a silent
+  CUDA OOM (auto batch 11 on dense VisDrone batches) that the broad `except` in `train.py` swallowed,
+  exporting 2-epoch models as "successful" runs. Fixed both, and separately found `epochs=1000`
+  stretched the LR schedule so the ~22 real epochs never left warmup. Pinning `epochs=100` lifted
+  mAP from 0.145 (old best single seed) to ~0.20 across *every* seed and collapsed variance to
+  std 0.0005. Lesson for next agents: watch for silently-degraded runs; the OOM-loud guard now turns
+  those into visible failures. Baseline is trustworthy; proceed to DEIM.

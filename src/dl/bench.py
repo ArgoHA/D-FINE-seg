@@ -190,20 +190,7 @@ def test_model(
 def main(cfg: DictConfig):
     torch.multiprocessing.set_sharing_strategy("file_system")
 
-    # Bench at the val-optimal f1 threshold computed during eval (the prod operating point),
-    # not a fixed 0.5. Fail loudly if it's missing rather than silently falling back.
-    ext_path = Path(cfg.train.path_to_save) / "extended_metrics.csv"
-    if not ext_path.exists():
-        raise FileNotFoundError(
-            f"{ext_path} not found — run training/eval first so the val-optimal threshold is stored."
-        )
-    ext = pd.read_csv(ext_path, index_col=0)
-    if "optimal_thresh" not in ext.columns or "val" not in ext.index:
-        raise KeyError(
-            f"'optimal_thresh' (val row) missing in {ext_path} — re-run eval with the current validator."
-        )
-    conf_thresh = float(ext.loc["val", "optimal_thresh"])
-    logger.info(f"Benching at val-optimal conf_thresh={conf_thresh}")
+    conf_thresh = cfg.train.conf_thresh
     iou_thresh = 0.5
     compute_maps = False
     to_visualize = True

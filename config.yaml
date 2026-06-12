@@ -10,9 +10,10 @@ train:
   ### Paths ###
   root: /home/argo/Desktop/Projects/vis_drone # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
-  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # dfine_m_obj2coco.pt
+  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt
+
   imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
-  coco_dataset: False # set True when annotations are in COCO JSON format (train.json, val.json, test.json)
+  coco_dataset: False # set True when annotations are in COCO JSON format (train/val/test)
 
   data_path: ${train.root}/data/dataset # path to dataset
   path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script
@@ -78,6 +79,7 @@ train:
 
   ### Optimizer and Scheduler ###
   use_scheduler: True
+  use_muon: False # True -> route enc/dec attn+MLP matrices to Muon, rest stays AdamW
   base_lr: ${train.lrs.${model_name}.base_lr}
   backbone_lr: ${train.lrs.${model_name}.backbone_lr}
   cycler_pct_start: 0.1
@@ -150,7 +152,13 @@ export: # TensorRT must be done on the inference device
 
 
 bench:
-  formats: [torch, onnx, openvino, tensorrt, coreml, litert] # which backends to bench
+  formats: # which backends to bench
+    - torch
+    - tensorrt
+    - onnx
+    - openvino
+    - coreml
+    - litert
 
 
 infer:
