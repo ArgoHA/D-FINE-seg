@@ -12,6 +12,7 @@ from .arch.hgnetv2 import HGNetv2
 from .arch.hybrid_encoder import HybridEncoder
 from .configs import models
 from .matcher import HungarianMatcher
+from .muon import MuonWithAuxAdam
 from .utils import load_tuning_state
 
 __all__ = ["DFINE"]
@@ -121,11 +122,29 @@ def build_loss(model_name, num_classes, label_smoothing, enable_mask_head):
     return loss_fn
 
 
-def build_optimizer(model, lr, backbone_lr, betas, weight_decay, base_lr):
+# Encoder/decoder transformer attention/MLP weight matrices — Muon's target when
+# train.use_muon is on. Allowlist (not denylist) so det/mask heads, embeddings, LQE
+# and norms/biases can never leak in: those names lack these tokens.
+MUON_TOKENS = ("self_attn", "cross_attn", "linear1", "linear2", "gateway.gate")
+
+
+def _is_muon_param(name, param):
+    return (
+        param.ndim == 2
+        and ("encoder" in name or "decoder" in name)
+        and "mask" not in name
+        and any(t in name for t in MUON_TOKENS)
+    )
+
+
+def build_optimizer(
+    model, lr, backbone_lr, betas, weight_decay, base_lr, use_muon=False, muon_lr=None
+):
     backbone_exclude_norm = []
     backbone_norm = []
     encdec_norm_bias = []
     rest = []
+    muon = []
 
     for name, param in model.named_parameters():
         # Group 1 and 2: "backbone" in name
@@ -143,6 +162,10 @@ def build_optimizer(model, lr, backbone_lr, betas, weight_decay, base_lr):
         ):
             encdec_norm_bias.append(param)
 
+        # Muon group: enc/dec attention+MLP matrices (only when enabled)
+        elif use_muon and _is_muon_param(name, param):
+            muon.append(param)
+
         else:
             rest.append(param)
 
@@ -158,4 +181,24 @@ def build_optimizer(model, lr, backbone_lr, betas, weight_decay, base_lr):
 
     param_groups = [group1, group2, group3, group4]
 
-    return optim.AdamW(param_groups, lr=lr, betas=betas, weight_decay=weight_decay)
+    if not use_muon:
+        return optim.AdamW(param_groups, lr=lr, betas=betas, weight_decay=weight_decay)
+
+    # Muon path: same AdamW groups (use_muon=False, explicit betas/wd since the custom
+    # optimizer has no top-level defaults) + a Muon group appended LAST so the scheduler's
+    # per-group max_lr list can target it by index.
+    for g in param_groups:
+        g["use_muon"] = False
+        g["betas"] = betas
+        g.setdefault("weight_decay", weight_decay)
+    muon_lr = muon_lr if muon_lr is not None else base_lr * 10
+    param_groups.append(
+        {
+            "params": muon,
+            "use_muon": True,
+            "lr": muon_lr,
+            "initial_lr": muon_lr,
+            "weight_decay": weight_decay,
+        }
+    )
+    return MuonWithAuxAdam(param_groups)
