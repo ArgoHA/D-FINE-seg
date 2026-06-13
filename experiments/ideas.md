@@ -62,7 +62,16 @@ so the old queue item is withdrawn).
 
 ## Tier 1 — run in this order (after the horizon-30 re-baseline)
 
-### 1. Position-modulated classification cost in the matcher (Stable-DINO PMC)
+**Next up: #2 (Cautious AdamW).** #1 (PMC) was tried 2026-06-13 → 🔴 rejected (tie, +0.0003 mAP);
+full reasoning in `lab_notebook.md`. Section #1 kept below for reference; skip it.
+
+### 1. Position-modulated classification cost in the matcher (Stable-DINO PMC)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
+- **Result:** test mAP_50_95 0.2122±0.0014 vs 0.2119 (gain +0.0003 ≪ 0.003), f1 0.557 (+0.0005),
+  latency-neutral. The 12-e COCO +0.4 AP didn't transfer — D-FINE's cost already weights geometry
+  7:2 over class and CDN pre-empts the churn PMC targets. See lab notebook. Section kept below for
+  reference / follow-up ladder context.
+- **Paper:** "Detection Transformer with Stable Matching" (arXiv:2304.04742, ICCV'23): modulate the
+  class probability inside the matching cost by overlap, `p ← p·((GIoU+1)/2)^0.5` — removes the
 - **Paper:** "Detection Transformer with Stable Matching" (arXiv:2304.04742, ICCV'23): modulate the
   class probability inside the matching cost by overlap, `p ← p·((GIoU+1)/2)^0.5` — removes the
   "confident-but-misplaced query steals the GT" failure mode and the multi-path matching
@@ -273,7 +282,8 @@ so the old queue item is withdrawn).
 ### 12. Config-only probes (cheap landscape-mapping; one run each, lowest priority)
 - **Matcher cost rebalance:** `configs.py:45` `cost_class: 2 → 1` — a genuine literature gap (every
   DETR since Deformable ships 2:5:2 unexamined); motivated by the same churn analysis as idea 1.
-  Run only if idea 1 wins (raises this probe's prior) or as filler.
+  ⚠️ **Deprioritized 2026-06-13:** idea 1 (PMC, the other class-cost-shape change) was inert here, so
+  this probe's prior dropped — only worth a slot as last-resort filler now.
 - **DDF weight bracket:** `configs.py` `loss_ddf: 1.5 → 0.75` (and separately `→ 3.0`) — nobody has
   ever ablated it (D-FINE paper, DEIM, DEIMv2 all keep 1/0.15/1.5/5/2 verbatim).
 - **Transfer:** ⚠️ exploratory; a winning value still needs the §6 full-run sanity check before
@@ -319,6 +329,7 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
 
 | Idea | Verdict |
 |---|---|
+| Stable-DINO PMC (matcher class-cost ×((GIoU+1)/2)^0.5, was Tier-1 #1) | **Tried 2026-06-13 → tie** (test mAP 0.2122 vs 0.2119, +0.0003 ≪ margin; f1 +0.0005). 12-e COCO +0.4 AP didn't transfer: D-FINE already weights geometry 7:2 over class in the cost and CDN pre-empts the churn. Code on `exp/pmc` (`d392c80`), off-trunk. Lowers the prior on the `cost_class 2→1` config probe (§12). |
 | Walltime-triggered LR cooldown (was Tier-1 #1, 2026-06-13 draft) | **Removed by user decision 2026-06-13**: screen-regime-only — gated on `max_walltime_min`, literally inactive in full runs → no transfer. Real improvements must show in the standard setup. The legitimate core (screen ends near-peak-LR) was fixed as *methodology* instead: schedule horizon `epochs` 100→30 (guide rule 9/§8, re-baseline pending). |
 | Walltime-fraction mosaic close (was Tier-1 #2) | **Removed by user decision 2026-06-13**: full runs already close mosaic (epoch `epochs-5`); the screen not closing it is accepted as a campaign constant (now pinned deterministic via `no_mosaic_epochs: 0`). PreciseBN (#9) covers the BN-stats slice of the concern. |
 | MAL standalone re-test on Muon | Withdrawn — DEIM has **zero** standalone-MAL evidence (+0.3/0.4 is on top of Dense O2O); our tie stands. Idea 5 takes the classification slot. |
@@ -338,11 +349,12 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
 | Copy-paste augmentation (Kisantal 1902.07296; AD-Det +0.6 VisDrone) | Parked: zero published DETR-family copy-paste result (we'd be first), bbox-only rect-paste is a downgrade of the published mask-based variants, and it's the density lever again. DEIMv2's Copy-Blend is the closest precedent if ever revisited. |
 
 ## Notes / constraints
-- **Re-rank rationale (notebook rule):** the notebook's standing pointer was "resume at Cautious" —
-  the 2026-06-13 research pass put **PMC (#1)** ahead: the matcher cost is the one untouched
-  quality-side surface, with two independent +0.4 results at 12-e schedules and a ~6-line diff;
-  Cautious follows immediately at #2. Screen-regime ideas (cooldown, aug-close) were removed per
-  user decision the same day; the horizon-30 constant replaces them as methodology.
+- **Re-rank rationale (notebook rule):** the 2026-06-13 research pass put **PMC (#1)** ahead of
+  Cautious, but PMC was **tried → tie** (see notebook), so the pointer is back to the original plan:
+  **resume at Cautious (#2)**. Lesson reinforced: the lever that has *moved* this screen is per-step
+  optimization quality (Muon), not the matcher-cost surface — Tier-1 #2-#4 (optimizer-side) are the
+  higher-prior bets. Screen-regime ideas (cooldown, aug-close) were removed per user decision the
+  same day; the horizon-30 constant replaces them as methodology.
 - **Sequencing:** horizon-30 re-baseline DONE (`baseline_h30`, maxDets left unchanged per user).
   **Now running idea #1 (PMC).** Ideas 1–4 are mutually independent (safe to run in any order on the
   evolving trunk); 5 last in Tier 1 (lowest posterior). Tier-2 #7/#8 need a 1-epoch profile before
