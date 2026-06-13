@@ -1,13 +1,13 @@
 {
-  "name": "muon",
+  "name": "baseline_h30",
   "eval_split": "test",
   "git": {
-    "branch": "exp/muon",
-    "sha": "06f448e"
+    "branch": "exp/baseline-h30",
+    "sha": "239b67c"
   },
   "means": {
-    "mAP_50_95": 0.2061,
-    "f1": 0.552
+    "mAP_50_95": 0.2119,
+    "f1": 0.5565
   },
   "margin": {
     "mAP_50_95": 0.003,
@@ -15,7 +15,7 @@
   },
   "latency_ms": {
     "trt": 2.1,
-    "torch": 13.9333
+    "torch": 13.35
   },
   "params_M": 10.302
 }
