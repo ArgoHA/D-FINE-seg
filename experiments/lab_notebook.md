@@ -18,14 +18,27 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** resume the approved queue at **#2 Cautious optimizer** (ideas.md) — QK-norm shelved
-  (TRT-undeployable despite training merit; recipe in `experiments/qk_norm.md`). If real-user training
-  stability ever bites (issue #64), QK-norm is a known torch-side fix and the robustness net (clamp
-  `pred_corners` + NaN-safe GIoU) is the orthogonal `main` hardening. Prior options: Tier-2
-  (loss/assignment) or re-test **MAL + Muon** (MAL was a standalone tie). Both
-  supervision-density ideas (CDN #1, Dense O2O #2) were **rejected** — the cap bottleneck is per-step
-  optimization, not positive count, which is why Muon (per-step efficiency) is the one that landed.
+- **Next idea:** FIRST run the **horizon-30 re-baseline** (epochs 100→30 methodology change,
+  2026-06-13 — see Notes below; decide the maxDets validator fix at the same time so one re-baseline
+  covers both), THEN resume the rewritten queue at **ideas.md Tier-1 #1: Stable-DINO PMC** (matcher
+  cost modulation). ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
+  7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
+  standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
+  `experiments/qk_norm.md`); if real-user stability ever bites (issue #64), QK-norm is the known
+  torch-side fix and the robustness net (clamp `pred_corners` + NaN-safe GIoU) is the orthogonal
+  `main` hardening. Standing conclusion unchanged: the cap bottleneck is per-step optimization
+  quality, not positive count (CDN, Dense O2O rejected; Muon landed).
 - **Notes for the next agent:**
+  - **Methodology change (2026-06-13): schedule horizon `train.epochs` 100 → 30**, plus mosaic
+    close pinned off (`train.mosaic_augs.no_mosaic_epochs: 0`) for cross-seed determinism. 60 min ≈
+    21 epochs → runs now end ~65-80% through the anneal (~8-30% of peak LR) instead of at ~96% of
+    peak, so screen verdicts are measured near a converged run's end state (user decision; the
+    cooldown/aug-close *candidate* ideas were rejected as screen-regime-only — improvements must
+    show in the standard setup). **Horizon-30 re-baseline is PENDING** (guide rule 9) — run it
+    before any candidate; the old 0.2061/0.552 bar is horizon-100 history. Same day: guide §0
+    mission rewritten (improve D-FINE-seg generally; VisDrone is only the screen), ideas.md fully
+    rewritten with sources, and a possible validator maxDets=100 under-measurement flagged for user
+    sign-off (ideas.md §Methodology).
   - **Methodology change (2026-06-08): 3 seeds → 2 (`harness.seeds=[42,123]`).** The screen is now
     2×60-min runs. No re-baseline: per-seed std (~0.0005–0.001) ≪ the 0.003 margin floor, so the floor
     governs promotion regardless of seed count; Muon's 3-seed baseline mean stays the bar. If a
