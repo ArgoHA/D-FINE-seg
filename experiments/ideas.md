@@ -72,11 +72,12 @@ Verdicts (full reasoning per idea in `lab_notebook.md`):
 
 **Mechanistic conclusion:** the only lever that has moved this screen is **Muon (per-step optimization
 quality)**. Matcher-cost, optimizer-update-shaping, and classification-target families are all now
-probed and exhausted. **Next: Tier-2.** Skip #6(observability)/#6(b)(run-length-specific, doesn't
-transfer)/#7/#8 (screen-velocity-only methodology — not model candidates per mission §0). The next
-genuine general candidate on the LR/optimizer axis (where signal lives) is **#10 backbone-LR ratio
-raise** (config-only, lowest risk) — running now; then #11 Adan (higher ceiling, higher complexity)
-or #9 PreciseBN. Sections #1–#5 kept below for reference; all are done — do not re-run.
+probed and exhausted. **Tier-2 so far:** #10 backbone-LR ratio raise → 🔴 **tie** (2026-06-13: mAP
+−0.0001 / f1 +0.0010, no NaN). Skip #6(observability)/#6(b)(run-length-specific, doesn't transfer)/
+#7/#8 (screen-velocity-only methodology — not model candidates per mission §0). **Next genuine
+candidate: #11 Adan** (optimizer axis = where signal lives; published DETR+seg COCO win; but
+complexity-rule risk + LR retune), then #9 PreciseBN. Deferred real follow-up: Muon-WD λ=0.03 + §6
+full-run (#4). Sections #1–#5, #10 are done — do not re-run.
 
 ### 1. Position-modulated classification cost in the matcher (Stable-DINO PMC)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
 - **Result:** test mAP_50_95 0.2122±0.0014 vs 0.2119 (gain +0.0003 ≪ 0.003), f1 0.557 (+0.0005),
@@ -283,7 +284,10 @@ or #9 PreciseBN. Sections #1–#5 kept below for reference; all are done — do 
   D-FINE recipe's clean tail is only ~9% of training).
 - **Expected:** +0.001–0.004, possibly nil. **Complexity:** low. **Segment safety:** ✅.
 
-### 10. Backbone LR ratio raise (config-only)
+### 10. Backbone LR ratio raise (config-only)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
+> Result: test mAP 0.2118 (−0.0001), f1 0.5575 (+0.0010), no NaN. Ratio 0.24→0.48 is neutral at the
+> ~21-epoch screen — the cold-backbone hypothesis doesn't pay off under the cap. Follow-up ratio ~0.8
+> not pursued (tie → low prior). See lab notebook. Section kept for reference; skip it.
 - **Paper:** RT-DETRv2 (arXiv:2407.17140) scales backbone LR by capacity: its **lightest backbone
   runs at ratio 1.0** to the head LR (R18 → 1e-4 = head LR); ours runs HGNetv2-B0 at ratio 0.24
   (6e-5 / 2.5e-4), a heavy-backbone value, with ImageNet-only init and a big domain gap.
@@ -385,10 +389,9 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
   most of the easy gain on it.
 - **Sequencing (now in Tier-2):** Tier-1 exhausted. Skip #6(observability + run-length-specific
   momentum probe), #7, #8 (screen-velocity-only methodology — not model candidates per mission §0).
-  **Now running Tier-2 #10 (backbone-LR ratio raise, config-only)** — LR/optimizer axis, lowest risk,
-  targets a concrete suboptimality (HGNetv2-B0 at ratio 0.24 under ImageNet-init + big VisDrone domain
-  gap). Then #11 Adan (highest mechanistic prior on the optimizer axis, but complexity-rule risk +
-  LR retune) or #9 PreciseBN. Deferred real follow-up: Muon-WD λ=0.03 + §6 full-run (#4).
+  **Tier-2 #10 (backbone-LR ratio raise) → 🔴 tie** (2026-06-13). **Next: #11 Adan** (highest
+  mechanistic prior on the optimizer axis — the only live one — but complexity-rule risk + LR retune),
+  then #9 PreciseBN. Deferred real follow-up: Muon-WD λ=0.03 + §6 full-run (#4).
 - **Init policy unchanged:** ImageNet backbone only (guide rule 2). The obj2coco recommendation is
   product-side only.
 - **Segment-safety summary (rule 10):** 2, 3, 4, 6–10 task-agnostic or optimizer-side (verify masks
