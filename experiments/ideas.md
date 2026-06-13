@@ -25,6 +25,15 @@ Baseline to beat (current, horizon-30) = **Muon** (`baseline.json`, `baseline_h3
 Tier-1 ideas are train-only → expected latency ratio 1.0 and **zero TRT-export risk** (the qk-norm
 lesson: any change that touches the inference graph needs TRT-row validation — guide §3, `qk_norm.md`).
 
+**🆕 Tier 3 — architecture & backbone (deep-dive 2026-06-13, user-requested).** Now that the
+train-only levers are exhausted, the new direction is **model architecture / a new backbone**. A full
+literature pass (DEIM/DEIMv2, RT-DETRv2/v3/v4, RF-DETR, LW-DETR, the efficient-backbone zoo, small-object
+necks) is written up as **Tier 3** below. Read its meta-finding first — most arch upgrades are blocked by
+one of four gates and the candidates are narrow. **Unlike Tiers 1-2, every Tier-3 idea changes the
+inference graph** → the TRT-row f1≈torch check (guide §3) is mandatory, the COCO-init full-run is biased
+(judge on the ImageNet-init 2-seed screen, guide §6), and the approval gate (guide 1.8) is non-negotiable
+before burning GPU. Sequencing is **user-steered**, not auto-queued ahead of Tier-2.
+
 ## Diagnosis driving this queue
 
 Run shape (measured): ~809 steps/epoch (6,471 train imgs, bs 8) × ~21-22 epochs under the 60-min
@@ -323,6 +332,209 @@ full-run (#4). Sections #1–#5, #10 are done — do not re-run.
 
 ---
 
+## Tier 3 — architecture & backbone (deep-dive 2026-06-13, user-requested)
+
+**Meta-finding (read first — honest).** D-FINE-S sits at a *well-converged* design point. A deep pass
+over the whole real-time-DETR line returns a sobering conclusion: most "obvious" arch/backbone upgrades
+are blocked by one of **four gates** —
+1. **Latency budget** (≤1.05× TRT, or ≤1.20× w/ 2× margin). The encoder + deformable decoder are the
+   bulk of D-FINE-S's 2.1 ms; almost any added compute blows it.
+2. **The grid_sample TRT-fp16 footgun** (qk_norm scar). The highest-AP small-object necks
+   (DySample, FreqFusion) and the deformable decoder itself all live on this fragile op.
+3. **ImageNet-init fairness** (rule 2). The biggest published backbone wins — DEIMv2's DINOv3-distilled
+   ViT, RF-DETR's DINOv2 ViT — are *self-supervised/distilled, not ImageNet-classification* pretrained,
+   so they cannot be tested fairly in-campaign (and carry GPU-latency + license costs).
+4. **Already present.** DINO mixed-query-select (`learn_query_content`), look-forward-twice (FDR's
+   cumulative `pred_corners_undetach`), VFL-with-IoU targets, GFLv2-DGQP (= our LQE), reg_max=32
+   (paper-optimal) are all already in the code. Don't re-add them.
+
+Corroborating the wall: **RT-DETRv2 and v3 changed NOTHING in the encoder/neck** (v2 only tweaked decoder
+deformable-attn; v3's gain is train-only one-to-many — the density lever we've falsified 3×). **RT-DETRv4
+(Nov 2025) kept HGNetv2** and improved via foundation-model distillation — the family itself stopped
+touching this skeleton. So calibrate expectations: Tier 3 is mostly *"probe whether the converged point
+can be beaten,"* not a basket of likely wins. The candidates below are the few that clear all four gates.
+**All but one change the inference graph → TRT-row f1≈torch check mandatory; approval gate applies.** The
+exception is **A7 (knowledge distillation)** — train-only, graph-identical, zero TRT/latency risk, and the
+one Tier-3 item the RT-DETR family itself moved to (RT-DETRv4) → promoted to **top priority**.
+
+Sources read (verified from paper tables / repo source): D-FINE 2410.13842, RT-DETR 2304.08069 (Table 3
+ablation), RT-DETRv2 2407.17140, RT-DETRv3 2409.08475, RT-DETRv4 2510.25257, DEIM 2412.04234, DEIMv2
+2509.20787, RF-DETR 2511.09554, LW-DETR 2406.03459, FasterNet 2303.03667, LowFormer 2409.03460, PCN
+2502.01303, StarNet 2403.19967, SPD-Conv 2208.03641, Rank-DETR 2310.08854, YOLOv9/GELAN 2402.13616.
+
+**Ranked run queue (user-steered).** **A7 KD (train-only, top priority)** → A1 (small-object, best
+evidence) → A3 (cheap, low-risk) → A2 (the one fair backbone probe) → A4 (free-at-deploy, speculative) →
+A5 (robustness, not accuracy) → A6 (train-only filler). **Segment track (separate `task: segment` eval,
+later — NOT on the detect screen): A8 finer mask-head.** Read the paper, measure latency, run the TRT-row
+check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate research pass — user decision.)
+
+### A7. Knowledge distillation from a larger teacher (TRAIN-ONLY — TOP PRIORITY) — ⬜ next
+- **Paper/source:** RT-DETRv4 (arXiv:2510.25257, Nov 2025) — the family's own latest move: it improves the
+  *small* RT-DETR via **distillation from a vision-foundation-model teacher**, keeping HGNetv2. Generic DETR
+  KD = teacher soft-target logits (KL at temperature) + optional intermediate feature / decoder-output
+  matching. (The alternate-research pass cited "KD-DETR arXiv:2105.07446" — unverified, don't rely on that
+  ID; RT-DETRv4 is the solid, family-specific precedent.)
+- **Why it leads Tier 3:** **train-only → the student IS the deployed model, inference graph byte-identical
+  → latency 1.0, zero TRT-export risk.** It clears every Tier-3 gate (the only one that does), and KD is one
+  of the most reliable accuracy levers in detection. It is also exactly where the RT-DETR line went next.
+- **Change (files):** `train.py` — load a **frozen** teacher, run its forward in eval/no-grad each step;
+  `dfine_criterion.py` — add a logit-KD term (KL on class logits ÷ T) + optional feature/decoder-output L2
+  matching, weighted into the loss; `research_visdrone.yaml` — `train.kd_teacher: null`,
+  `train.kd_temperature`, `train.kd_weight`. ~50 LOC.
+- **⚠️ FAIRNESS (critical — do NOT shortcut):** the teacher MUST be **ImageNet-init** (rule 2).
+  **Distilling from `dfine_m_coco.pt`/`dfine_l_coco.pt` leaks COCO knowledge into the student — the exact
+  bias rule 2 forbids.** Fair recipe is 2-stage: (1) train a D-FINE-M/L **ImageNet-init** on VisDrone,
+  (2) distill into the ImageNet-init S. A COCO-teacher variant is a **product recipe** (like obj2coco), not
+  a clean screen candidate — flag it as such if run.
+- **⚠️ Walltime caveat (under the 60-min cap):** a teacher forward per step costs time → fewer student
+  steps (the failure mode that ate the one-to-many density ideas). M (~19M) over S (~10M) is a **modest**
+  teacher gap → expect the lower end; use **L** as teacher if the M→S gap is too small. Cheap version:
+  frozen teacher at fp16/no-grad. Caching teacher outputs is usually blocked by mosaic randomness — note it.
+  **Pilot the walltime before committing** (one short run logging step-time delta).
+- **Transfer:** ✅ general; RT-DETRv4 confirms the family direction. Published gains are full-schedule.
+  **Latency:** 1.0 (train-only). **TRT risk:** none (graph identical). **Complexity:** medium (teacher
+  load + loss wiring + producing a *fair* teacher is the real cost). **Segment safety:** ✅ KD applies to
+  mask predictions too. **Expected:** highest-EV Tier-3 item, gated by (a) a fair teacher and (b) the
+  walltime check — both must pass before trusting the screen number.
+
+### A1. SPD-Conv detail-preserving downsampling (small/dense; best small-object evidence) — ⬜ next
+- **Paper:** Sunkara & Luo, "No More Strided Convolutions or Pooling" (SPD-Conv, arXiv:2208.03641,
+  ECML-PKDD'22). Replace a *strided/pooled* downsample with **parameter-free space-to-depth** — slice the
+  map into 4 stride-2 sub-maps, concat → 4×C at H/2×W/2 — then a stride-1 conv. **COCO Table 4 (verified):**
+  YOLOv5-SPD-n 31.0 AP / **16.0 AP_S** vs 28.0 / 14.1; -s 40.0 / **23.5 AP_S** vs 37.4 / 21.1 → **~+2.6-3 AP,
+  +11-13% AP_S, biggest on the small models / small objects** — exactly our regime (55% of boxes <16 px).
+- **Change (files) — decide placement by measurement:**
+  - **(a) ImageNet-clean (try first):** replace the neck's `SCDown` depthwise-stride-2 downsample in the
+    PAN bottom-up path (`arch/hybrid_encoder.py` `downsample_convs`, used ~L391-408/482; `SCDown` in
+    `arch/common.py`) with space-to-depth + 1×1-to-restore-channels. Backbone ImageNet weights untouched →
+    fully fair under rule 2.
+  - **(b) Higher-upside:** replace HGNetv2's early stride-2 downsample(s) (`arch/hgnetv2.py` `HG_Stage`).
+    Preserves detail where it matters most (high-res early), but those conv weights then init random
+    (ImageNet load is `strict=False` → tolerated, like the neck/head). Flag as a partial-init arch change.
+- **Why:** strided downsampling *discards* the high-frequency detail tiny objects live on; space-to-depth
+  moves it into channels instead of dropping it. General mechanism, parameter-free, Slice+Concat = same op
+  class as YOLOv5 Focus.
+- **Transfer:** ✅ structural, schedule-independent (YOLO evidence is full-schedule). ⚠️ evidence is
+  *anchor-based YOLO, not DETR* — first DETR-family test, sign uncertain.
+- **Latency:** the 4× channel inflation feeds a wider conv → net likely ~neutral but **MUST measure ≤1.05×
+  before trusting.** **TRT risk:** low (Slice+Concat exports like Focus; no grid_sample) — but graph changes
+  → TRT-row f1 check mandatory. **Complexity:** low-medium; needs retrain (non-strict load handles shapes).
+- **Expected:** +AP_S if the YOLO numbers partially transfer; the most promising TRT-safe small-object arch
+  lever. **Segment safety:** ✅ (downsampling change; mask head untouched) — verify on promotion.
+
+### A2. FasterNet-T1/T2 backbone swap — the one GPU-honest "can we beat HGNetv2?" probe — ⬜
+- **Paper:** Chen et al., FasterNet / PConv (CVPR'23, arXiv:2303.03667). **PConv** = take ¼ of channels,
+  dense-conv only those, concat — cuts *memory traffic* (the real GPU bottleneck), not just FLOPs; pure
+  standard conv, **no depthwise/attention → TRT-trivial.** IN-1k: T1 76.2 (B0 is 77.3), T2 78.9; T1 ≈4648
+  fps V100 — faster-on-GPU than RepViT/EfficientViT/StarNet at equal accuracy.
+- **Why this and not the mobile zoo:** triple-confirmed (LowFormer 2409.03460, FasterNet, PCN 2502.01303)
+  that depthwise/attention "efficient" backbones (MobileNetV4, EfficientViT, RepViT, StarNet, GhostNetV3,
+  EfficientFormerV2) are mobile/edge-fast but **GPU/TRT-bandwidth-bound → slower than HGNetv2 at equal AP
+  despite lower FLOPs.** FasterNet is the *only* GPU-honest family with ImageNet `timm` weights + clean
+  multi-scale features.
+- **Change (files):** replace `HGNetv2` with a timm-backed backbone — `timm.create_model("fasternet_t1",
+  features_only=True, out_indices=(1,2,3), pretrained=True)` → strides 8/16/32, channels **[128,256,512]**;
+  set encoder `in_channels=[128,256,512]` in `configs.py` (HybridEncoder 1×1-projects to hidden_dim anyway).
+  Wire ImageNet load (timm `pretrained=True` bypasses `ensure_pretrained`'s HF path in `dfine.py`/`utils.py`).
+  Re-point the mask-head stride-8 tap (128-ch). ~half-day wiring.
+- **ImageNet-init:** ✅ timm `.in1k` weights — fair under rule 2 (T2 if you want acc at a latency cost).
+- **Transfer/Latency/TRT:** lands as a better/worse per-size default; expect **~flat AP at ≤ baseline
+  latency** (T1 slightly below B0 on IN-1k). TRT risk low (std conv); graph change → TRT-row check.
+- **Honest expected:** most likely **confirms HGNetv2-B0 is near-optimal** (RT-DETRv4 re-affirmed it in
+  Nov'25). Run it as the *definitive* "is the backbone the bottleneck?" answer — cheap, one experiment,
+  high information value either way. **Segment safety:** ✅ verify mask tap (128-ch stride-8).
+
+### A3. RMSNorm + SwiGLU decoder modernization (from DEIMv2) — ⬜
+- **Paper:** DEIMv2 "Real-Time Object Detection Meets DINOv3" (arXiv:2509.20787). Its "efficient decoder"
+  keeps D-FINE's MSDeformableAttention + FDR + LQE + CDN **verbatim** and only swaps decoder
+  **LayerNorm→RMSNorm** and the **ReLU-MLP FFN→SwiGLU**.
+- **Change (files):** `arch/dfine_decoder.py` `TransformerDecoderLayer` — `norm1`/`norm3` (L205/L222)
+  LayerNorm→RMSNorm; `forward_ffn` (L233-234) → SwiGLU (`linear1` → 2×width gate+value, SiLU-gate,
+  `linear2`). Keep the fp16 clamp (L256) and the `Gate`.
+  - ⚠️ **Muon confound:** `_is_muon_param` (`dfine.py:128`) keys on names `linear1`/`linear2` — **keep those
+    names** (or update `MUON_TOKENS`) or the new FFN matrices silently leave the Muon group and confound the
+    run (one-change rule).
+- **Why:** RMSNorm is cheaper and drops mean-subtraction (an **fp16-stability win** — may also help the
+  issue-#64 NaN class); SwiGLU is a strictly-more-expressive FFN at ~equal cost. Now-standard upgrades
+  DEIMv2 adopted wholesale.
+- **DON'T also port DEIMv2's "shared decoder pos-embed"** (hoist `query_pos_head` out of the loop): our
+  decoder recomputes it per layer from the **FDR-refined** ref points (`dfine_decoder.py` L486/L531) —
+  hoisting decouples the positional signal from the refined box and fights the cascade; the saving (2
+  small-MLP calls over 3 layers) is negligible. Skip that part.
+- **Transfer:** ✅ graph mechanism, schedule-independent. **Latency:** ~neutral on TRT-fp16. **TRT risk:**
+  low (RMSNorm/SiLU-GLU fuse cleanly; no new grid_sample) — graph change → TRT-row check. **Complexity:**
+  low (one module). **Expected:** small AP + possible stability bonus. **Segment safety:** ✅ shared
+  decoder; verify masks.
+
+### A4. Wide-tail decoder: train wide / eval narrow (dormant D-FINE machinery) — ⬜ speculative
+- **Source:** D-FINE's own GO-LSD design; the `layer_scale`/`eval_idx` path **already exists**
+  (`arch/dfine_decoder.py` L489-495) but is OFF in every released size (`eval_idx=-1`, `layer_scale=1`).
+- **Mechanism:** set `eval_idx` < `num_layers-1` and `layer_scale`>1 so extra **wide** layers train *after*
+  the eval layer and distill into it (GO-LSD), then are **stripped at deploy** (`convert_to_deploy` /
+  `break` at L528) → **zero added inference ops / zero added grid_sample.** Buys decoder capacity for free
+  at inference.
+- **Why:** the one way to add decoder capacity **without** paying latency or adding a grid_sample block
+  (unlike literal extra layers — RT-DETR Table 5: +0.3 AP / +0.4 ms for 3→4 AND linearly more of the fp16
+  footgun).
+- **Transfer:** ✅ if it wins it's a free-at-deploy default for every size. ⚠️ unused upstream, unmeasured
+  at S scale, needs a **from-scratch retrain** (not a warm-ckpt flip), and the wide layers cost screen
+  walltime (fewer epochs under the cap) → a screen tie could be a walltime artifact, not a real null.
+  **Latency:** deploy-neutral (train-time cost only). **TRT risk:** low at deploy (wide layers absent from
+  the engine) — verify the strip path exports clean. **Complexity:** medium. **Segment safety:** ✅.
+  **Expected:** uncertain; architecturally the cleanest "more capacity, same latency" lever.
+
+### A5. discrete cross-attn sampling — REMOVE grid_sample (robustness, NOT accuracy) — ⬜
+- **Source:** RT-DETRv2 (2407.17140) discrete sampling; **already implemented here** as
+  `cross_attn_method="discrete"` (config knob `configs.py:24`; impl `arch/utils.py:219-256`). Rounds
+  sampling coords to integer pixels + gather → the exported graph has **no GridSample** (Gather/GatherND
+  instead — the far-better-supported op family).
+- **Why it matters:** directly removes the single op behind the qk_norm TRT-fp16 disaster (grid_sample
+  fusion bug → deployed f1 0.0). The deployable endgame of the whole "TRT-clean" arc.
+- **Cost:** RT-DETRv2 Table 4 = **−0.5 mAP_50_95** (likely worse on small/dense; mask hit ≥ box) → will
+  probably **FAIL the accuracy bar.** So this is **not an accuracy candidate** — log it as a
+  robustness/future-proofing option to deploy *only if* a real grid_sample/TRT regression bites again.
+- **Bug to fix first (files):** `arch/utils.py:242` clamps **both** coords to `h-1` (`# FIX ME? for
+  rectangle input`); HF's fix clamps x→`w-1`, y→`h-1`. We run **non-square letterboxed** inputs → the bug
+  is live; port the per-axis clamp before trusting any discrete run.
+- **Transfer/Complexity/Segment:** ✅ / low (flag flip + bug fix + short fine-tune from `model.pt`, freeze
+  the offset predictor since rounding is non-diff) / ✅. **TRT:** the rare graph change that *reduces*
+  fragility — still run the TRT-row fp16≈fp32 check.
+
+### A6. Rank-DETR high-order matching cost (HMC) — train-only filler, lower prior — ⬜
+- **Paper:** Rank-DETR (NeurIPS'23, arXiv:2310.08854): multiply the Hungarian **class cost by IoU^α**
+  (α≈4) so matching favors jointly high-cls + well-localized queries. +0.6 mAP (AP75 +1.1) on
+  H-DETR/DINO-R50 12e. **Train-only, zero inference/TRT cost.**
+- **Change (files):** `matcher.py` after L166 — `iou,_ = box_iou(box_cxcywh_to_xyxy(out_bbox),
+  box_cxcywh_to_xyxy(tgt_bbox))` (helper already in `arch/utils.py`), fold `iou.clamp(0).pow(α)` into
+  `cost_class`/`C`. ~5 lines, α sweep.
+- **Caveat:** **PMC-adjacent** (matcher class-cost reshape) and **PMC tied here** (#1: D-FINE already weights
+  geometry 7:2 over class + CDN pre-empts churn) → **lower prior.** The difference is HMC's steep IoU^4 vs
+  PMC's gentle ((GIoU+1)/2)^0.5. Belongs with Tier-2 train-only fillers, not really "architecture" — listed
+  here because the decoder research surfaced it. **Transfer:** ✅. **Segment safety:** ✅ shared matcher, verify.
+
+### A8. Finer mask-head feature (1/8 input) — SEGMENT TRACK, off the detect screen (later) — ⬜
+- **Source:** YOLACT-style real-time seg taps the *finest* feature for masks; merged 2026-06-13 from the
+  alternate-research review (their idea G). For *later* segmentation-quality work — **not** a detect-screen
+  candidate.
+- **Why:** `MaskDecoder` runs at 1/4 res; an 8 px object → a ~2×2 mask feature (≈1 pixel). Feeding the
+  backbone **1/8** (or stem) feature lifts small-object mask fidelity — and 55% of our objects are <16 px,
+  so that's exactly where segment mask mAP is lost.
+- **Change (files):** `arch/dfine_decoder.py` `MaskDecoder` accept + fuse a finer feature; the **plumbing
+  already exists** — the nano path passes a `low_level_feat` for this purpose (`dfine.py:44-50` +
+  `mask_low_level_ch` in `build_model`); extend it to s/m/l/x. ~30 LOC. **Latency:** low (mask decoder is
+  tiny). **TRT risk:** low (bilinear-interp + conv, already in the mask path) — still run the TRT-row check
+  on the **seg** export.
+- **⚠️ Off the detect screen:** the campaign screens `task: detect` → this produces **zero** signal on the
+  detect mAP/f1 `promote.py` reads; it **cannot be promoted/rejected by the harness.** Evaluate on a
+  separate `task: segment` run (mask mAP_50_95). Hence "segment track / later," not the detect run queue.
+- **Pairs with** a boundary-aware mask loss (Boundary Loss, arXiv:1812.07032 — small-object boundary
+  precision) as a second segment-track item if mask quality is the goal.
+- **Transfer:** ✅ any small-object segmentation user benefits. **Detect:** ✅ unaffected (mask head is
+  task-gated — only built when `enable_mask_head`). **Complexity:** low-medium. **Segment safety:** it IS
+  the segment improvement; verify detect is byte-unchanged (it is).
+
+---
+
 ## Methodology fix — needs USER sign-off (frozen file, shifts all numbers)
 
 **`validator.py:54` caps mAP at 100 detections/image** (torchmetrics default
@@ -356,11 +568,29 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
   ablates it at fixed-640 eval, and it's scale-distribution tuning, not a general mechanism.
 - **Rare-class oversampling** (duplicate tail-class rows in `train.csv` at ETL time; LVIS
   repeat-factor style): cheap, but class-balance is dataset-specific — document, don't queue.
+- **Self-supervised backbone (DINOv2/DINOv3) for custom-dataset transfer.** Both RF-DETR
+  (arXiv:2511.09554 — own ablation: the DINOv2 backbone is the dominant lever, **+2.0 COCO AP** vs NAS's
+  +0.3; **#1 on RF100-VL** custom-domain transfer) and DEIMv2 (DINOv3-distilled ViT-Tiny) show the real
+  *few-shot transfer* win comes from a **self-supervised-pretrained backbone, not architecture** — exactly
+  our production use case (users fine-tuning on small custom datasets). **Firewalled from the campaign**
+  (rule 2 ImageNet-init keeps arch comparisons fair), but worth a product/roadmap A/B: an optional
+  DINOv2-ViT-S backbone tier for "best accuracy on your own data," accepting **higher GPU latency** (ViT
+  at uniform 1/16 is TRT-slower than HGNetv2 — DEIMv2-S is +58% latency for +2.4 AP) and licensing
+  (DINOv3 is **non-commercial** → relevant for commercial use; **DINOv2 is Apache-2.0 — prefer it**). It
+  keeps the deformable grid_sample decoder → needs the TRT-fp16 export hardening we already ship.
 
 ## Excluded / answered — do not spend runs
 
 | Idea | Verdict |
 |---|---|
+| DEIMv2 ViT-Tiny/DINOv3 backbone + Spatial-Tuning-Adapter (arXiv 2509.20787) | **Non-ImageNet** (DINOv3-distilled) → unfair under rule 2; **+58% T4 latency for +2.4 AP**; RoPE is fp16/TRT-fragile (repo issues #151/#152 are TRT-fp16 correctness failures — same class as our qk_norm bug); DINOv3 is **non-commercial** (relevant for `agnify.ai`). The HGNetv2-backed DEIMv2-**N** path is only **+0.2 AP** over D-FINE-N → the ViT, not the decoder, carries the gain, and the ViT is exactly what we can't afford on GPU. The decoder bits (RMSNorm/SwiGLU) are salvaged as Tier-3 **A3**. |
+| RF-DETR DINOv2-ViT backbone + MultiScaleProjector (arXiv 2511.09554) | Win is **backbone-driven** (own ablation: DINOv2 +2.0 AP, NAS only +0.3) and the backbone is DINOv2 **self-supervised, not ImageNet** → unfair under rule 2. Decoder is **still deformable grid_sample** (same TRT footgun retained — verified in `ms_deform_attn_func.py`). The projector solves a *ViT-has-no-multi-scale* problem we don't have (HGNetv2 is natively 8/16/32). DINOv2-for-transfer kept as a **product note**. Architecture (LW-DETR lineage) is *behind* D-FINE-X at matched size once the backbone is stripped. |
+| More AIFI levels (`use_encoder_idx` beyond stride-32) | **Rejected by RT-DETR's own ablation** (2304.08069 Table 3: S5-only **46.8 AP / 7.9 ms** beats all-scales **46.4 / 12.2** on *both* axes); stride-16 AIFI ≈ **16×** the stride-32 attention FLOPs → blows the latency budget; v2/v3/D-FINE all keep `use_encoder_idx=[2]`. |
+| DySample / FreqFusion / Gold-YOLO GD neck | The highest small-object-AP necks, all **TRT-unsafe**: DySample (2308.15085) + FreqFusion (2408.12879) use **grid_sample / CARAFE** (re-trigger the fp16 GridSample bug); Gold-YOLO (2309.11331) puts **MHSA in the neck** (attention-fuses-badly + heavy gather). SPD-Conv (Tier-3 A1) is the TRT-safe small-object alternative. |
+| More decoder layers (`num_layers` 3→4+) | RT-DETR Table 5: only **+0.3 AP / +0.4 ms** for 3→4, AND each layer adds another MSDeformableAttention **grid_sample** block → linearly more of the exact fp16 footgun. Worst risk/reward. The free-at-deploy alternative is wide-tail (Tier-3 **A4**). |
+| Mobile/edge backbones (MobileNetV4, EfficientViT, RepViT, StarNet, GhostNetV3, EfficientFormerV2) | Depthwise/attention-heavy → **GPU/TRT bandwidth-bound, slower than HGNetv2 at equal AP** despite lower FLOPs (confirmed by LowFormer 2409.03460, FasterNet 2303.03667, PCN 2502.01303). Speed wins are CPU/mobile/edge-only — wrong target. **FasterNet (PConv, pure std-conv)** is the one GPU-honest swap → Tier-3 **A2**. |
+| ConvNeXt-V2 nano (atto/femto/pico) | Clean `features_only` wiring + good IN-1k acc, but **7×7 depthwise = the GPU-bandwidth tax** → slower than B0 at equal acc; only clears the bar under the ≤1.20×/2×-acc exception a tiny detector won't deliver. Accuracy *fallback* only, not a promotion candidate. |
+| RF-DETR MultiScaleProjector / RT-DETRv2-v3 encoder changes | v2/v3 changed **nothing** in the encoder/neck (v2 = decoder-only deformable tweak; v3 = train-only one-to-many, our thrice-falsified density lever). RF-DETR's projector builds a pyramid *from a single ViT scale* — redundant with our native-multi-scale HGNetv2 + RepNCSPELAN4 neck (which YOLOv9's GELAN ablation 2402.13616 shows is already the optimal fusion block). |
 | Stable-DINO PMC (matcher class-cost ×((GIoU+1)/2)^0.5, was Tier-1 #1) | **Tried 2026-06-13 → tie** (test mAP 0.2122 vs 0.2119, +0.0003 ≪ margin; f1 +0.0005). 12-e COCO +0.4 AP didn't transfer: D-FINE already weights geometry 7:2 over class in the cost and CDN pre-empts the churn. Code on `exp/pmc` (`d392c80`), off-trunk. Lowers the prior on the `cost_class 2→1` config probe (§12). |
 | Walltime-triggered LR cooldown (was Tier-1 #1, 2026-06-13 draft) | **Removed by user decision 2026-06-13**: screen-regime-only — gated on `max_walltime_min`, literally inactive in full runs → no transfer. Real improvements must show in the standard setup. The legitimate core (screen ends near-peak-LR) was fixed as *methodology* instead: schedule horizon `epochs` 100→30 (guide rule 9/§8, re-baseline pending). |
 | Walltime-fraction mosaic close (was Tier-1 #2) | **Removed by user decision 2026-06-13**: full runs already close mosaic (epoch `epochs-5`); the screen not closing it is accepted as a campaign constant (now pinned deterministic via `no_mosaic_epochs: 0`). PreciseBN (#9) covers the BN-stats slice of the concern. |
@@ -397,5 +627,23 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
 - **Segment-safety summary (rule 10):** 2, 3, 4, 6–10 task-agnostic or optimizer-side (verify masks
   on promotion as usual); 1 shared-matcher (verify); 5 detect-only override; 11 changes the
   mask-head optimizer (seg-validated in its paper, verify).
-- **TRT rule:** nothing in Tiers 1–2 touches the inference graph; if any future idea does, the
-  TRT-row f1 ≈ torch f1 check (guide §3) is mandatory before trusting it.
+- **TRT rule:** nothing in Tiers 1–2 touches the inference graph (latency 1.0, zero export risk). **Every
+  Tier-3 idea changes the graph EXCEPT A7 (KD — train-only, graph-identical, zero TRT/latency risk)** → for
+  all the others the TRT-row f1 ≈ torch f1 check (guide §3) is mandatory and the latency ≤1.05× measurement
+  is real, not assumed (A8 runs that check on the **seg** export).
+- **Tier-3 post-mortem of the literature (2026-06-13, user-requested arch deep-dive):** the real-time-DETR
+  family has *converged* on D-FINE-S's skeleton (RT-DETRv2/v3 changed nothing in encoder/neck; RT-DETRv4
+  kept HGNetv2; the big backbone wins are non-ImageNet ViTs we can't test fairly). Net: arch gains are
+  narrow and gated. Top arch bets, in order: **A7 KD** (train-only, zero TRT/latency risk, RT-DETRv4's own
+  direction — top priority, modulo a *fair* ImageNet-init teacher + walltime check), **A1 SPD-Conv**
+  (small-object, best evidence, TRT-safe), **A3 RMSNorm+SwiGLU** (cheap, low-risk), **A2 FasterNet-T1** (the
+  one fair backbone probe — most likely confirms B0 is near-optimal). A4 (wide-tail) is speculative; A5
+  (discrete sampling) is a robustness option not an accuracy play; A6 (HMC) is a PMC-adjacent train-only
+  filler. **A8 (finer mask-head)** is a **segment-track** item (separate `task: segment` eval — off the
+  detect screen). A7/A8 were merged 2026-06-13 from a review of an alternate research pass (user decision).
+  **Sequencing is user-steered** — do NOT auto-run a Tier-3 arch change ahead of the Tier-2 train-only queue
+  without approval (graph risk + biased COCO comparison + retrain cost).
+- **Tier-3 segment-safety (rule 10):** A7 (KD) task-agnostic, applies to mask preds too; A2/A3/A4/A6
+  task-agnostic (verify masks on promotion); A1 changes a downsample feeding the mask-head stride-8 tap
+  (verify); A5 changes the shared deformable attn (verify); A8 IS the segment change (detect byte-unchanged).
+  A backbone swap (A2) must re-point the mask-head stride-8 tap to the new channel count.
