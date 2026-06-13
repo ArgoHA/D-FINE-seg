@@ -25,10 +25,12 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** PMC (#1) → 🔴 tie, Cautious AdamW (#2) → 🔴 tie, **Moonlight RMS-match (#3) → 🔴
-  regression** (−0.0028 mAP / −0.0025 f1; the cooler re-anchored Muon LR underperforms — legacy
-  base_lr×10 scaling vindicated; see 2026-06-13 entry). Resume at **ideas.md Tier-1 #4: real weight
-  decay on the Muon group** (then #5 IoU-aware cls target, lowest posterior).
+- **Next idea:** PMC (#1) → 🔴 tie, Cautious (#2) → 🔴 tie, Moonlight RMS-match (#3) → 🔴 regression,
+  **Muon-WD λ=0.1 (#4) → 🔴 regression** (−0.0062 mAP / −0.0065 f1, 2× margin; λ=0.1 over-regularizes
+  on the ~18k-step screen — see 2026-06-13 entry; λ=0.03 down-check + the §6 full-run, where WD's
+  benefit grows with length, are the documented follow-ups, **deferred**). Resume at **ideas.md
+  Tier-1 #5: IoU-aware cls target swap** (IA-BCE or GCL; run the free matched-IoU histogram pre-step
+  first to pick — prior leans GCL given 55% sub-16px objects). #5 is the last Tier-1 item.
   ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
@@ -86,6 +88,31 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-13 — muon-wd (real decoupled weight decay on the Muon group)   [rejected — regression]
+- Paper / source: Moonlight (arXiv:2502.16982) Fig.2 (vanilla Muon grows weights, ends worse; λ=0.1
+  wins); Kimi K2 (2507.20534) attn-logit explosions; timescale rule (2405.13698) τ_wd=1/(η·λ). Tier-1 #4.
+- Hypothesis: the global WD (1.25e-4) is **inert** on this screen — τ_wd≈1.6e7 steps vs an ~18k-step
+  run. Put real decoupled λ=0.1 on the Muon group only (τ≈2k steps at peak Muon LR, Moonlight's
+  operating point) to bound weight/attn-logit growth → quality + stability. WD's benefit is supposed
+  to *grow* with run length, so a truncated screen under-measures it (asymmetry flagged in ideas.md).
+- Change (files): new `train.muon_weight_decay` knob (`config.yaml` default null → global WD);
+  `build_optimizer` routes it onto the Muon group only (verified: Muon group wd=0.1, all AdamW groups
+  unchanged at 1.25e-4/0.0, legacy muon_lr=base_lr×10 preserved). `research_visdrone.yaml` set 0.1.
+  exp/muon-wd sha `47550f3`. `make test` 89/89.
+- Result (test, 2 seeds, tight): mAP_50_95 **0.2057±0.0008** (seeds .205/.2065, gain **−0.0062**, 2×
+  margin), f1 **0.55±0.002** (TRT row, gain −0.0065, **guard ❌ regressed**), lat trt 2.1 / torch 13.6
+  ms (ratio 1.0). No NaN events. 🔴 KEEP BEST.
+- Read: clear **regression**, larger than Moonlight's — λ=0.1 **over-regularizes** on the ~18k-step
+  horizon. τ≈2k steps means the Muon-group weights are decayed ~9× over the run; on a short schedule
+  that shrinks useful capacity faster than convergence can use it (Moonlight's λ=0.1 is tuned for
+  100k+-step LLM runs). The mechanism (inert global WD → real WD on Muon) is sound; the *level* is
+  wrong for this length. Two documented, **deferred** follow-ups (not run — only #5 was approved next):
+  (1) **λ=0.03 down-check** (τ≈6.7k steps — gentler, ideas.md's own fallback); (2) the **§6 full-run**,
+  where WD's benefit grows with length and the screen is expected to under-measure it — a flat/negative
+  screen is the *expected* signal here, so this is the one rejected idea whose full-run check is
+  genuinely motivated before final discard. For now the inert global WD stays (prod unchanged); knob
+  kept (null→legacy). Segment: Muon group only, mask head stays AdamW; rejected → nothing on trunk.
 
 ## 2026-06-13 — moonlight-rms (Moonlight update-RMS match for the Muon group)   [rejected — regression]
 - Paper / source: Moonlight / "Muon is Scalable for LLM Training" (arXiv:2502.16982) Eq.4. ideas.md Tier-1 #3.
