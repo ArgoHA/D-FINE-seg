@@ -25,12 +25,19 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** PMC (#1) → 🔴 tie, Cautious (#2) → 🔴 tie, Moonlight RMS-match (#3) → 🔴 regression,
-  **Muon-WD λ=0.1 (#4) → 🔴 regression** (−0.0062 mAP / −0.0065 f1, 2× margin; λ=0.1 over-regularizes
-  on the ~18k-step screen — see 2026-06-13 entry; λ=0.03 down-check + the §6 full-run, where WD's
-  benefit grows with length, are the documented follow-ups, **deferred**). Resume at **ideas.md
-  Tier-1 #5: IoU-aware cls target swap** (IA-BCE or GCL; run the free matched-IoU histogram pre-step
-  first to pick — prior leans GCL given 55% sub-16px objects). #5 is the last Tier-1 item.
+- **Next idea: 🔻 TIER-1 EXHAUSTED — all 5 tried 2026-06-13, none promoted.** PMC (#1) 🔴 tie,
+  Cautious (#2) 🔴 tie, Moonlight RMS-match (#3) 🔴 regression, Muon-WD λ=0.1 (#4) 🔴 regression,
+  **IA-BCE (#5) 🔴 regression** (−0.0021 mAP / −0.016 f1; the published +1.3-vs-VFL did not transfer
+  — see 2026-06-13 entry). **Muon stays the only promoted change; `baseline_h30` (0.2119/0.5565)
+  unchanged.** Candidate next steps (no auto-pick — needs user steer): (a) **Muon-WD λ=0.03
+  down-check** + the §6 full-run (the one deferred follow-up with a real motivation — WD's benefit
+  grows with run length, screen under-measures it); (b) **Tier-2** fillers (#6 EMA bracket, #9
+  PreciseBN, #10 backbone-LR ratio, #11 Adan) — but Tier-2 #7/#8 are screen-velocity only; (c) the
+  **marginal-gains "stacking" rule** discussed 2026-06-13 (combine paper-backed, both-seeds-non-neg
+  near-misses) — but the only qualifying near-miss so far is Cautious, so the bag isn't full.
+  Mechanistic read after Tier-1: the **only lever that has moved this screen is Muon (per-step
+  optimization quality)**; matcher-cost (PMC), optimizer-update-shaping (Cautious, Moonlight, Muon-WD)
+  and classification-target (MAL, IA-BCE) families have all now been probed and none beat the bar.
   ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
@@ -88,6 +95,37 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-13 — ia-bce (IoU-aware classification target, Align-DETR IA-BCE)   [rejected — regression]
+- Paper / source: Align-DETR (arXiv:2304.07527, BMVC'24) IA-BCE — +1.3 vs VFL head-to-head (DINO-R50
+  12e: 48.7→50.0), AP_S +2.7–3.7. ideas.md Tier-1 #5 (the IoU-aware cls slot; one of IA-BCE/GCL).
+- Pre-step (free, no train run): `experiments/diag_matched_iou.py` — ran the **baseline_h30** ckpt +
+  the training matcher over the val set, histogrammed matched-pair IoU (the `ious` loss_labels_vfl
+  uses). Result: mean 0.66, **median 0.73, only 6.2% < 0.1**, 79.5% ≥ 0.5. Low IoU≈0 mass → the GCL
+  trigger does NOT fire → **pick IA-BCE** (overturned the size-distribution prior of GCL: 55% sub-16px
+  GT, but tiny objects are either localized well or *missed* — FNs aren't matched pairs, so they don't
+  add IoU≈0 mass). Useful lesson: matched-IoU ≠ GT-size distribution.
+- Hypothesis: replace VFL's IoU target with IA-BCE — pos soft target `t = s^0.25·u^0.75` (s = pred
+  score at matched gt class), pos weight 1, neg focal weight `s^2`. Better aligns cls score with
+  localization quality; the published direct VFL replacement.
+- Change (files): `dfine_criterion.py:loss_labels_vfl` IA-BCE branch + `cls_loss` flag on the
+  criterion; `build_loss`/`train.py` thread it; `config.yaml` default `cls_loss: vfl`
+  (prod/segment unchanged); `research_visdrone.yaml` set `ia_bce` (**detect-only** — shared cls loss).
+  exp/ia-bce sha `cf319f7`. `make test` 89/89; smoke-tested IA-BCE finite & ≠ VFL.
+- Result (test, 2 seeds): mAP_50_95 **0.2098±0.0013** (seeds .2111/.2085, gain **−0.0021**), f1
+  **0.5405±0.0015** (TRT row, gain **−0.016**, **guard ❌ regressed hard**), lat trt 2.1 / torch 13.55
+  ms (ratio 1.0). No NaN. 🔴 KEEP BEST.
+- Read: clear **regression**, worst on f1. The big f1 drop persists *even at the val-optimal threshold*
+  (so it's not just the expected score-operating-point shift — it's genuine degradation at the best
+  operating point). Likely cause: IA-BCE's negatives carry weight `s^2` with **no α (0.2) down-weight**
+  (vs VFL), so the cls loss runs ~4–5× hotter relative to the unchanged bbox/giou/local terms — the
+  loss balance shifts against localization without a `weight_dict` re-tune, which on D-FINE's
+  fine-grained-regression recipe hurts precision/recall. The 12-e COCO +1.3 was measured on a
+  VFL-baseline DINO with its own loss weights; it doesn't transfer to D-FINE's balance here. A
+  `loss_vfl` weight re-tune *might* rescue it, but that's a second variable (one-change rule) and
+  low-prior — **not pursued**. GCL untested (pre-step pointed to IA-BCE); could be a future slot but
+  the whole cls-target family (MAL tie, IA-BCE regress) is now low-prior. Segment: detect-only override
+  → segment stays on vfl, **no segment impact**; rejected → nothing on trunk regardless.
 
 ## 2026-06-13 — muon-wd (real decoupled weight decay on the Muon group)   [rejected — regression]
 - Paper / source: Moonlight (arXiv:2502.16982) Fig.2 (vanilla Muon grows weights, ends worse; λ=0.1
