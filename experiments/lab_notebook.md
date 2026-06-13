@@ -25,9 +25,9 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** horizon-30 re-baseline is **DONE** (maxDets NOT changed, user decision). 🔬 **In
-  progress: ideas.md Tier-1 #1: Stable-DINO PMC** (matcher cost modulation) — running now as the
-  first candidate vs the 0.2119/0.5565 bar. ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
+- **Next idea:** horizon-30 re-baseline DONE; **PMC (Tier-1 #1) tried → 🔴 rejected (tie**, +0.0003
+  mAP / +0.0005 f1, both ≪ 0.003 margin; see 2026-06-13 entry). Resume at **ideas.md Tier-1 #2:
+  Cautious AdamW (C-AdamW)** on the aux groups. ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
   `experiments/qk_norm.md`); if real-user stability ever bites (issue #64), QK-norm is the known
@@ -84,6 +84,32 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-13 — pmc (Stable-DINO PMC, matcher cost modulation)   [rejected — tie]
+- Paper / source: "Detection Transformer with Stable Matching" (arXiv:2304.04742, ICCV'23) PMC;
+  corroborated by Rank-DETR high-order cost (arXiv:2310.08854). ideas.md Tier-1 #1.
+- Hypothesis: modulate the class prob inside the matching cost by overlap, `p ← p·((GIoU+1)/2)^0.5`,
+  to kill the confident-but-misplaced-query-steals-GT failure and matching churn. On the 55% of
+  objects < 16 px (IoU near-binary, L1 flat) the score-driven class cost dominates pair ranking —
+  exactly what PMC is meant to fix. Train-only (matcher is `@torch.no_grad`), zero latency/TRT risk.
+- Change (files): `src/d_fine/matcher.py` — hoisted pairwise GIoU above the class cost, modulated
+  `out_prob` in the focal branch by `((giou+1)/2).clamp(0,1).pow(0.5)`, reused giou for `cost_giou`.
+  ~6 lines. exp/pmc sha `d392c80`. `make test` 89/89.
+- Result (test, 2 seeds): mAP_50_95 **0.2122±0.0014** (seeds .2108/.2135, gain **+0.0003**, ≪ 0.003
+  margin), f1 **0.557±0.0** (TRT row, gain +0.0005, within margin), lat trt 2.1 / torch 13.5 ms
+  (ratio 1.0), params 10.302M. 🔴 KEEP BEST. (TRT bench row healthy — no export regression.)
+- Read: clean **tie**, not a regression — both metrics nudge up a hair but nowhere near the margin.
+  The 12-epoch COCO +0.4 AP did **not** transfer to this VisDrone screen. Most likely reason: D-FINE
+  already carries a strong localization signal in the matching cost (`cost_bbox` 5 + `cost_giou` 2 vs
+  `cost_class` 2 — geometry already outweighs class 7:2), and CDN supplies clean positive matches
+  every step, so the "confident-but-misplaced query steals the GT" pathology PMC targets is largely
+  pre-empted here; modulating class prob by overlap adds little on top. Seed spread 0.0027 < margin
+  → no 3rd seed needed (and the mean would have to jump to >0.2149 to promote — implausible). Matcher
+  cost remains a quiet surface: the cheap config follow-up (idea-1-contingent `cost_class 2→1`,
+  ideas.md §12) is now **lower** prior since the class-cost *shape* change here was inert — deprioritize
+  it. Pivot to the optimizer side: **Tier-1 #2 Cautious AdamW** is next (per-step update quality, the
+  lever that actually moved the needle here — Muon). Segment: PMC is shared-matcher code; since it's
+  rejected, nothing lands on the trunk, so no segment impact to verify.
 
 ## 2026-06-13 — baseline_h30 (horizon-30 re-baseline)   [PROMOTED — new persisted baseline]
 - Source: methodology change `train.epochs` 100→30 (guide rule 9 + §8) invalidated the old
