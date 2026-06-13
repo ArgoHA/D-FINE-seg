@@ -60,10 +60,23 @@ so the old queue item is withdrawn).
 
 ---
 
-## Tier 1 — run in this order (after the horizon-30 re-baseline)
+## Tier 1 — 🔻 EXHAUSTED (all 5 tried 2026-06-13, none promoted)
 
-**Next up: #2 (Cautious AdamW).** #1 (PMC) was tried 2026-06-13 → 🔴 rejected (tie, +0.0003 mAP);
-full reasoning in `lab_notebook.md`. Section #1 kept below for reference; skip it.
+**All Tier-1 ideas have been run; none beat the bar. `baseline_h30` (Muon, 0.2119/0.5565) holds.**
+Verdicts (full reasoning per idea in `lab_notebook.md`):
+- #1 PMC (matcher class-cost ×((GIoU+1)/2)^0.5) → 🔴 **tie** (+0.0003 mAP)
+- #2 Cautious AdamW (mask aux/AdamW updates) → 🔴 **tie** (+0.0015 mAP / +0.0020 f1; seed42 dipped below baseline)
+- #3 Moonlight update-RMS match (+ muon_lr→base_lr) → 🔴 **regression** (−0.0028 mAP); legacy ×10 Muon LR vindicated
+- #4 Muon-group WD λ=0.1 → 🔴 **regression** (−0.0062 mAP); over-regularizes the ~18k-step screen (λ=0.03 / §6 full-run deferred)
+- #5 IA-BCE (IoU-aware cls target) → 🔴 **regression** (−0.0021 mAP / −0.016 f1); un-α'd s² negatives run cls loss ~4-5× hot
+
+**Mechanistic conclusion:** the only lever that has moved this screen is **Muon (per-step optimization
+quality)**. Matcher-cost, optimizer-update-shaping, and classification-target families are all now
+probed and exhausted. **Next: Tier-2.** Skip #6(observability)/#6(b)(run-length-specific, doesn't
+transfer)/#7/#8 (screen-velocity-only methodology — not model candidates per mission §0). The next
+genuine general candidate on the LR/optimizer axis (where signal lives) is **#10 backbone-LR ratio
+raise** (config-only, lowest risk) — running now; then #11 Adan (higher ceiling, higher complexity)
+or #9 PreciseBN. Sections #1–#5 kept below for reference; all are done — do not re-run.
 
 ### 1. Position-modulated classification cost in the matcher (Stable-DINO PMC)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
 - **Result:** test mAP_50_95 0.2122±0.0014 vs 0.2119 (gain +0.0003 ≪ 0.003), f1 0.557 (+0.0005),
@@ -96,7 +109,10 @@ full reasoning in `lab_notebook.md`. Section #1 kept below for reference; skip i
 - **Segment safety:** ⚠️ shared matcher (segment adds mask costs on top — untouched). Mechanically
   task-agnostic; verify masks don't regress before it becomes a shared default.
 
-### 2. Cautious AdamW on the auxiliary groups (C-AdamW)
+### 2. Cautious AdamW on the auxiliary groups (C-AdamW)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
+> Result: test mAP 0.2134 (+0.0015), f1 0.5585 (+0.0020), both < 0.003 margin. AdamW groups already
+> well-conditioned; Muon (the working lever) acts on enc/dec matrices the mask leaves untouched.
+> C-Muon follow-up low-prior. See lab notebook. Section kept for reference; skip it.
 - **Paper:** "Cautious Optimizers" (arXiv:2411.16085, NeurIPS'24): zero update coords whose sign
   disagrees with the live gradient, renormalize by mask density. Vision evidence: timm's
   independent replication (`rwightman/timm-optim-caution`): vit_wee mini-IN 71.23→**73.52**;
@@ -120,7 +136,10 @@ full reasoning in `lab_notebook.md`. Section #1 kept below for reference; skip i
 - **Segment safety:** ✅ optimizer-side only; mask head is in the AdamW groups → verify, but
   mechanism is task-agnostic.
 
-### 3. Moonlight update-RMS matching for the Muon group
+### 3. Moonlight update-RMS matching for the Muon group  — 🔴 TRIED, REJECTED (regression, 2026-06-13)
+> Result: test mAP 0.2091 (−0.0028), f1 0.554 (−0.0025). The cooler RMS-parity Muon LR underperforms
+> the legacy base_lr×10 scaling — answers the "blind ×10" question: hot Muon LR is genuinely better
+> here, not lucky. muon_lr knob kept (null→legacy). See lab notebook. Section kept for reference; skip it.
 - **Paper:** "Muon is Scalable for LLM Training" / Moonlight (arXiv:2502.16982), Eq. 4: rescale the
   orthogonalized update by **`0.2·sqrt(max(A,B))`** so Muon's update RMS matches AdamW's (~0.2) for
   every matrix shape → "Muon can directly reuse the LR and WD tuned for AdamW".
@@ -147,7 +166,11 @@ full reasoning in `lab_notebook.md`. Section #1 kept below for reference; skip i
 - **Generality:** ✅ across shapes/sizes; no vision-published validation yet (flag in notebook).
 - **Segment safety:** ✅ Muon group only; mask head stays AdamW.
 
-### 4. Real weight decay on the Muon group
+### 4. Real weight decay on the Muon group  — 🔴 TRIED, REJECTED (regression, 2026-06-13)
+> Result: test mAP 0.2057 (−0.0062, 2× margin), f1 0.55 (−0.0065). λ=0.1 over-regularizes the
+> ~18k-step screen (τ≈2k; Moonlight's value is for 100k+-step runs). Mechanism sound, level wrong.
+> **Deferred follow-ups** (real motivation — WD's benefit grows with run length): λ=0.03 down-check +
+> §6 full-run. muon_weight_decay knob kept (null→global). See lab notebook. Section kept; skip it.
 - **Paper:** Moonlight (arXiv:2502.16982) Fig. 2: vanilla Muon (no WD) converges faster early but
   weights grow and it ends **worse**; with decoupled λ=0.1 it wins. Kimi K2 (arXiv:2507.20534)
   attributes Muon attention-logit explosions to the same weight growth. Timescale rule
@@ -172,7 +195,12 @@ full reasoning in `lab_notebook.md`. Section #1 kept below for reference; skip i
 - **Generality:** ✅ principled (timescale rule); also a robustness story for issue-#64-class users.
 - **Segment safety:** ✅ Muon group only.
 
-### 5. IoU-aware classification target swap — ONE slot: IA-BCE or GCL
+### 5. IoU-aware classification target swap — ONE slot: IA-BCE or GCL  — 🔴 TRIED (IA-BCE), REJECTED (regression, 2026-06-13)
+> Pre-step matched-IoU histogram (baseline_h30, `experiments/diag_matched_iou.py`): median 0.73, only
+> 6.2% <0.1 → picked **IA-BCE** over GCL. Result: test mAP 0.2098 (−0.0021), f1 0.5405 (−0.016, guard
+> tripped hard even at val-optimal threshold). IA-BCE's un-α'd s² negatives run cls loss ~4-5× hot vs
+> fixed bbox/giou → loss balance shifts off localization; 12e COCO +1.3 didn't transfer. GCL untested
+> but whole cls-target family now low-prior (MAL tie + IA-BCE regress). See lab notebook. Skip it.
 - **Papers:** Align-DETR (arXiv:2304.07527, BMVC'24): IA-BCE, positives `BCE(s, t)` with
   `t = s^α·u^(1−α)`, α=0.25, negatives `s²·BCE(s,0)` — **+1.3 vs VFL head-to-head** (DINO-R50 12e:
   VFL 48.7 → IA-BCE 50.0), AP_S +2.7–3.7 on DAB/DN-DETR. Rank-DETR (arXiv:2310.08854): GIoU-aware
@@ -349,16 +377,18 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
 | Copy-paste augmentation (Kisantal 1902.07296; AD-Det +0.6 VisDrone) | Parked: zero published DETR-family copy-paste result (we'd be first), bbox-only rect-paste is a downgrade of the published mask-based variants, and it's the density lever again. DEIMv2's Copy-Blend is the closest precedent if ever revisited. |
 
 ## Notes / constraints
-- **Re-rank rationale (notebook rule):** the 2026-06-13 research pass put **PMC (#1)** ahead of
-  Cautious, but PMC was **tried → tie** (see notebook), so the pointer is back to the original plan:
-  **resume at Cautious (#2)**. Lesson reinforced: the lever that has *moved* this screen is per-step
-  optimization quality (Muon), not the matcher-cost surface — Tier-1 #2-#4 (optimizer-side) are the
-  higher-prior bets. Screen-regime ideas (cooldown, aug-close) were removed per user decision the
-  same day; the horizon-30 constant replaces them as methodology.
-- **Sequencing:** horizon-30 re-baseline DONE (`baseline_h30`, maxDets left unchanged per user).
-  **Now running idea #1 (PMC).** Ideas 1–4 are mutually independent (safe to run in any order on the
-  evolving trunk); 5 last in Tier 1 (lowest posterior). Tier-2 #7/#8 need a 1-epoch profile before
-  spending a slot.
+- **Tier-1 post-mortem (2026-06-13):** all 5 ran, 0 promoted. The lever that *moved* this screen is
+  per-step optimization quality (**Muon**); the matcher-cost (PMC), optimizer-update-shaping (Cautious,
+  Moonlight, Muon-WD) and classification-target (MAL, IA-BCE) families are now each probed and exhausted.
+  Two optimizer-side knobs were vindicated rather than improved (legacy Muon ×10 LR; the deliberately-inert
+  global WD on this horizon). Net: the per-step-quality hypothesis is confirmed but Muon already captures
+  most of the easy gain on it.
+- **Sequencing (now in Tier-2):** Tier-1 exhausted. Skip #6(observability + run-length-specific
+  momentum probe), #7, #8 (screen-velocity-only methodology — not model candidates per mission §0).
+  **Now running Tier-2 #10 (backbone-LR ratio raise, config-only)** — LR/optimizer axis, lowest risk,
+  targets a concrete suboptimality (HGNetv2-B0 at ratio 0.24 under ImageNet-init + big VisDrone domain
+  gap). Then #11 Adan (highest mechanistic prior on the optimizer axis, but complexity-rule risk +
+  LR retune) or #9 PreciseBN. Deferred real follow-up: Muon-WD λ=0.03 + §6 full-run (#4).
 - **Init policy unchanged:** ImageNet backbone only (guide rule 2). The obj2coco recommendation is
   product-side only.
 - **Segment-safety summary (rule 10):** 2, 3, 4, 6–10 task-agnostic or optimizer-side (verify masks
