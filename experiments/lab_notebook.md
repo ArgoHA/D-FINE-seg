@@ -25,19 +25,20 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea: 🔻 TIER-1 EXHAUSTED — all 5 tried 2026-06-13, none promoted.** PMC (#1) 🔴 tie,
-  Cautious (#2) 🔴 tie, Moonlight RMS-match (#3) 🔴 regression, Muon-WD λ=0.1 (#4) 🔴 regression,
-  **IA-BCE (#5) 🔴 regression** (−0.0021 mAP / −0.016 f1; the published +1.3-vs-VFL did not transfer
-  — see 2026-06-13 entry). **Muon stays the only promoted change; `baseline_h30` (0.2119/0.5565)
-  unchanged.** Candidate next steps (no auto-pick — needs user steer): (a) **Muon-WD λ=0.03
-  down-check** + the §6 full-run (the one deferred follow-up with a real motivation — WD's benefit
-  grows with run length, screen under-measures it); (b) **Tier-2** fillers (#6 EMA bracket, #9
-  PreciseBN, #10 backbone-LR ratio, #11 Adan) — but Tier-2 #7/#8 are screen-velocity only; (c) the
-  **marginal-gains "stacking" rule** discussed 2026-06-13 (combine paper-backed, both-seeds-non-neg
-  near-misses) — but the only qualifying near-miss so far is Cautious, so the bag isn't full.
-  Mechanistic read after Tier-1: the **only lever that has moved this screen is Muon (per-step
-  optimization quality)**; matcher-cost (PMC), optimizer-update-shaping (Cautious, Moonlight, Muon-WD)
-  and classification-target (MAL, IA-BCE) families have all now been probed and none beat the bar.
+- **Next idea: TIER-1 EXHAUSTED (5/5 🔴) + Tier-2 #10 🔴 tie.** Tier-1: PMC tie, Cautious tie,
+  Moonlight regression, Muon-WD regression, IA-BCE regression. **Tier-2 #10 backbone-LR ratio raise
+  (0.24→0.48) → 🔴 tie** (mAP 0.2118, −0.0001; f1 0.5575, +0.0010; no NaN — the cold-backbone
+  hypothesis is neutral at this horizon; see 2026-06-13 entry). **Muon stays the only promoted change;
+  `baseline_h30` (0.2119/0.5565) unchanged.** Candidate next steps (no auto-pick — needs user steer):
+  (a) **Muon-WD λ=0.03 down-check** + the §6 full-run (the one deferred follow-up with real motivation
+  — WD's benefit grows with run length, screen under-measures it); (b) remaining **Tier-2**: #11 Adan
+  (highest mechanistic prior — optimizer axis, published DETR+seg COCO win — but complexity/retune
+  risk), #9 PreciseBN, #6 EMA bracket (#7/#8 are screen-velocity-only methodology, not candidates);
+  (c) the **marginal-gains "stacking" rule** discussed 2026-06-13 — but the only positive near-misses
+  are Cautious (+0.0015, seed42 below baseline) and backbone-LR f1 (+0.0010), so the bag is thin.
+  Mechanistic read: the **only lever that has moved this screen is Muon (per-step optimization
+  quality)**; matcher-cost (PMC), optimizer-update-shaping (Cautious/Moonlight/Muon-WD), cls-target
+  (MAL/IA-BCE), and now LR-ratio (backbone-LR) have all been probed and none beat the bar.
   ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
@@ -95,6 +96,28 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-13 — backbone-lr (backbone-LR ratio raise, Tier-2 #10)   [rejected — tie]
+- Paper / source: RT-DETRv2 (arXiv:2407.17140) scales backbone LR by capacity — its lightest backbone
+  (R18) runs at ratio 1.0 to the head LR. ideas.md Tier-2 #10. First Tier-2 item (Tier-1 exhausted).
+- Hypothesis: ours runs HGNetv2-B0 at ratio 0.24 (backbone_lr 6e-5 / base_lr 2.5e-4) — a heavy-backbone
+  value — under ImageNet-only init + a large VisDrone domain gap, so the backbone is plausibly
+  under-trained. Raise 6e-5 → 1.2e-4 (ratio ~0.5). A win also lands as a better user-facing per-size
+  default in the LR table. Config-only (1 key), zero code/TRT/segment risk.
+- Change (files): **config-only** — `research_visdrone.yaml` override `train.lrs.s.backbone_lr:
+  0.00012`. No code change → no commit on exp/backbone-lr (candidate = on-disk config over main_exp
+  `b3c0228`). `make test` 89/89; verified override resolves (backbone_lr 0.00012 / base_lr 0.00025).
+- Result (test, 2 seeds, tight): mAP_50_95 **0.2118±0.0009** (seeds .2109/.2128, gain **−0.0001**),
+  f1 **0.5575±0.0015** (TRT row, gain +0.0010), lat trt 2.1 / torch 13.6 ms (ratio 1.0). **No NaN
+  events** (the feared backbone-LR NaN amplification did not bite at 2×). 🔴 KEEP BEST.
+- Read: clean **tie** — neutral, not a regression. The cold-backbone hypothesis doesn't pay off at the
+  horizon-30 / ~21-epoch screen: under the walltime cap the backbone gets few enough updates that
+  doubling its LR neither meaningfully speeds adaptation nor destabilizes it (f1 nudged +0.0010, mAP
+  flat). The documented follow-up (ratio ~0.8 → backbone_lr 0.0002) is **not pursued** — a tie at 0.5
+  gives it low prior, and the mechanism is LR-tuning (no new capability). Notably this is the first
+  non-regressing non-Muon result in a while, reinforcing that LR/optimizer is the only live axis but
+  that Muon already captures the reachable gain there. Segment: ✅ (LR config only); rejected → no trunk
+  change regardless.
 
 ## 2026-06-13 — ia-bce (IoU-aware classification target, Align-DETR IA-BCE)   [rejected — regression]
 - Paper / source: Align-DETR (arXiv:2304.07527, BMVC'24) IA-BCE — +1.3 vs VFL head-to-head (DINO-R50
