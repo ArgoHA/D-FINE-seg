@@ -25,9 +25,10 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** horizon-30 re-baseline DONE; **PMC (Tier-1 #1) tried → 🔴 rejected (tie**, +0.0003
-  mAP / +0.0005 f1, both ≪ 0.003 margin; see 2026-06-13 entry). Resume at **ideas.md Tier-1 #2:
-  Cautious AdamW (C-AdamW)** on the aux groups. ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
+- **Next idea:** **PMC (#1) tried → 🔴 tie** (+0.0003 mAP) and **Cautious AdamW (#2) tried → 🔴 tie**
+  (+0.0015 mAP / +0.0020 f1, both within 0.003 margin; see 2026-06-13 entry). Resume at **ideas.md
+  Tier-1 #3: Moonlight update-RMS matching** for the Muon group (then #4 Muon-group weight decay).
+  ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
   `experiments/qk_norm.md`); if real-user stability ever bites (issue #64), QK-norm is the known
@@ -84,6 +85,36 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-13 — cautious (Cautious AdamW on the aux/AdamW groups)   [rejected — tie]
+- Paper / source: "Cautious Optimizers" (arXiv:2411.16085, NeurIPS'24); timm replication
+  (rwightman/timm-optim-caution: vit_wee mini-IN 71.23→73.52). ideas.md Tier-1 #2.
+- Hypothesis: zero AdamW-group update coords whose sign disagrees with the live grad, renorm by
+  mask density ("don't step where unsure") → strictly better per-step progress on the half of params
+  Muon doesn't touch (backbone + det head + norms/biases/embeds). Train-only, zero latency/TRT risk.
+- Change (files): `src/d_fine/muon.py` AdamW branch — `m=(upd*p.grad>0); m/=m.mean().clamp(1e-3);
+  upd*=m`, gated by `cautious` flag; threaded via `dfine.py:build_optimizer` + `train.py`;
+  `config.yaml` default `train.cautious: False` (Hydra struct-mode needs the key declared); enabled
+  via `train.cautious: true` in `research_visdrone.yaml`. exp/cautious sha `ea1bffd`. `make test` 89/89.
+  (First launch died instantly — Hydra rejected the undeclared `train.cautious` override; fixed by
+  adding the `config.yaml` default, then relaunched.)
+- Result (test, 2 seeds): mAP_50_95 **0.2134±0.0018** (seeds .2116/.2151, gain **+0.0015**, < 0.003
+  margin), f1 **0.5585±0.0015** (TRT row, seeds .557/.560, gain +0.0020, within margin), lat trt 2.1 /
+  torch 13.45 ms (ratio 1.0), params 10.302M. 🔴 KEEP BEST. (TRT bench row healthy — no export regression.)
+- Read: clean **tie** — both metrics nudge up but neither clears the margin. The mAP seed spread
+  (0.0035) is marginally > the 0.003 margin (rule 9 flags a possible 3rd seed), but the verdict is
+  robust: to flip reject→promote the mean must clear +0.003 (>0.2149), needing a 3rd seed >0.218 —
+  above both observed seeds and above the baseline's best seed (0.2124). Implausible → no 3rd seed
+  spent. Cautious masking helps a hair but isn't a needle-mover here: the AdamW groups (backbone +
+  det head + norms) are already well-conditioned under the horizon-30 schedule, and the per-step lever
+  that *did* move this screen (Muon) operates on the enc/dec matrices the cautious mask leaves
+  untouched. The C-Muon follow-up (mask the Muon group's momentum∘grad pre-Newton-Schulz) is the only
+  remaining cautious variant — left in the backlog, low prior after this tie. Pivot to **Tier-1 #3
+  (Moonlight RMS-match)** then **#4 (Muon-group WD)** — both reshape the *Muon* update, the active
+  lever. Segment: optimizer-side only; rejected → nothing lands on trunk, no segment impact to verify.
+- Env note: `uv run` silently bumped torch 2.9.0→2.9.1 mid-session; restored the pinned lock + synced
+  the venv back to 2.9.0 before the next runs so #3/#4 keep baseline parity. The tie is robust to a
+  torch patch bump regardless.
 
 ## 2026-06-13 — pmc (Stable-DINO PMC, matcher cost modulation)   [rejected — tie]
 - Paper / source: "Detection Transformer with Stable Matching" (arXiv:2304.04742, ICCV'23) PMC;
