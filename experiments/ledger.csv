@@ -12,3 +12,4 @@ timestamp,name,branch,sha,base,seeds,split,map_mean,map_gain,map_margin,f1_mean,
 2026-06-13T10:29:37,cautious,exp/cautious,ea1bffd,main_exp,2,test,0.2134,0.0015,0.003,0.5585,0.002,0.003,13.45,2.1,1.0,10.302,False,Cautious AdamW (2411.16085) on aux/AdamW groups (train.cautious=true)
 2026-06-13T12:55:57,moonlight-rms,exp/moonlight-rms,4e68f07,main_exp,2,test,0.2091,-0.0028,0.003,0.554,-0.0025,0.003,13.65,2.1,1.0,10.302,False,"Moonlight (2502.16982) update-RMS match: 0.2*sqrt(max(A,B)) + muon_lr re-anchored to base_lr"
 2026-06-13T15:19:45,muon-wd,exp/muon-wd,47550f3,main_exp,2,test,0.2057,-0.0062,0.003,0.55,-0.0065,0.003,13.6,2.1,1.0,10.302,False,Real decoupled WD on the Muon group (train.muon_weight_decay=0.1; Moonlight Fig.2)
+2026-06-13T17:46:05,ia-bce,exp/ia-bce,cf319f7,main_exp,2,test,0.2098,-0.0021,0.003,0.5405,-0.016,0.003,13.55,2.1,1.0,10.302,False,"IoU-aware cls target IA-BCE (Align-DETR 2304.07527): t=s^0.25*u^0.75 pos, s^2 neg; detect-only"
