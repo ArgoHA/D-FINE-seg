@@ -25,9 +25,10 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** **PMC (#1) tried → 🔴 tie** (+0.0003 mAP) and **Cautious AdamW (#2) tried → 🔴 tie**
-  (+0.0015 mAP / +0.0020 f1, both within 0.003 margin; see 2026-06-13 entry). Resume at **ideas.md
-  Tier-1 #3: Moonlight update-RMS matching** for the Muon group (then #4 Muon-group weight decay).
+- **Next idea:** PMC (#1) → 🔴 tie, Cautious AdamW (#2) → 🔴 tie, **Moonlight RMS-match (#3) → 🔴
+  regression** (−0.0028 mAP / −0.0025 f1; the cooler re-anchored Muon LR underperforms — legacy
+  base_lr×10 scaling vindicated; see 2026-06-13 entry). Resume at **ideas.md Tier-1 #4: real weight
+  decay on the Muon group** (then #5 IoU-aware cls target, lowest posterior).
   ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
@@ -85,6 +86,32 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-13 — moonlight-rms (Moonlight update-RMS match for the Muon group)   [rejected — regression]
+- Paper / source: Moonlight / "Muon is Scalable for LLM Training" (arXiv:2502.16982) Eq.4. ideas.md Tier-1 #3.
+- Hypothesis: rescale the orthogonalized Muon update by `0.2·sqrt(max(A,B))` so its update-RMS
+  matches AdamW's (~0.2) per matrix shape, and **re-anchor the Muon-group peak LR to base_lr** (was
+  base_lr×10). Today's fan-shape scaling runs the Muon group ~3× hotter than AdamW-RMS parity; the
+  rescale is cooler overall + a per-shape reallocation (square attn ×3.2, wide FFN down-proj ×6.4) a
+  global multiplier can't express. Closes the "muon_lr is a blind ×10" open question either way.
+- Change (files): `src/d_fine/muon.py:38` scaling line → `0.2*max(A,B)**0.5`; new `train.muon_lr`
+  knob (`config.yaml` default null → legacy base_lr×10) read in `train.py`; `research_visdrone.yaml`
+  set `train.muon_lr: ${train.base_lr}` (= 0.00025 for s, vs legacy 0.0025). exp/moonlight-rms sha
+  `4e68f07`. `make test` 89/89; verified the interpolation resolves to a numeric LR (not a string).
+- Result (test, 2 seeds, tight): mAP_50_95 **0.2091±0.0005** (seeds .2086/.2096, gain **−0.0028**),
+  f1 **0.554±0.0** (TRT row, gain −0.0025), lat trt 2.1 / torch 13.65 ms (ratio 1.0), params 10.302M.
+  No NaN events (the cooler setting is stable). 🔴 KEEP BEST.
+- Read: clear **regression** on both metrics (not a tie) — the principled RMS-parity setting is *worse*
+  here than the accidental 3×-hot legacy scaling. This **answers the open "blind ×10" question**: on
+  this horizon-30 screen the hotter Muon group is genuinely better, not just lucky — the enc/dec
+  matrices tolerate (want) the higher effective step, consistent with why the global raise to 0.01
+  NaN'd (too hot *globally*) yet base_lr×10 *on the Muon group only* is the sweet spot. Net: legacy
+  scaling vindicated and now documented; the `muon_lr` knob stays in (null→legacy, prod unchanged) as
+  a useful exposed default for future LR work, but the trunk keeps the ×10. Follow-up "too cold"
+  knob (muon_lr = base_lr×1.5–2, still shape-correct) is **not** worth a slot — the *shape rescale
+  itself* is the regressor here, not just the LR level (LR re-anchor and rescale moved together, but
+  the result is decisively worse, so re-warming alone is unlikely to recover). Segment: Muon-group
+  only, mask head stays AdamW; rejected → nothing on trunk, no segment impact.
 
 ## 2026-06-13 — cautious (Cautious AdamW on the aux/AdamW groups)   [rejected — tie]
 - Paper / source: "Cautious Optimizers" (arXiv:2411.16085, NeurIPS'24); timm replication
