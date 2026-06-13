@@ -151,9 +151,16 @@ Full/long manual runs (§6) follow the same background pattern.
 ```bash
 uv run python scripts/promote.py --candidate experiments/runs/<name>/candidate_result.json --base main_exp
 ```
-Then update `lab_notebook.md`: the **Current state** block AND a dated entry (why it worked or
-didn't — required for rejections too). Commit ledger + notebook (+ baseline.json if changed) on
-`main_exp` (on rejection) or on the `exp/<name>` branch (so a promotion carries them).
+Then update **BOTH** tracking docs — required on **every** terminal outcome (promote, reject, fail):
+- `lab_notebook.md`: the **Current state** block AND a dated entry (why it worked or didn't —
+  required for rejections too).
+- `ideas.md`: record **what was tried** on the idea you just ran — mark it 🔴/🟢 with the one-line
+  result + a pointer to the notebook, and update the "next up" pointer. You do **not** need to add
+  *new* ideas, but the run-queue must never still list a tried idea as pending (a fresh agent would
+  re-run it). On promotion you additionally move/retire the idea (step G).
+
+Commit ledger + notebook + ideas.md (+ baseline.json if changed) on `main_exp` (on rejection) or on
+the `exp/<name>` branch (so a promotion carries them).
 
 **Then notify the user** (run after `promote.py`, so the ledger holds the verdict):
 ```bash
