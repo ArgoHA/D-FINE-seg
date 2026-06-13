@@ -5,11 +5,18 @@ first to know exactly where to resume, then scans entries to avoid repeating dea
 structured numbers live in `ledger.csv`; this file is the reasoning.
 
 ## Current state  (keep this block updated every iteration)
-- **Baseline established:** yes — control, 3 seeds, sha `09d0463`. Do **not** re-train it.
-- **Current best (`main_exp`):** 🟢 **Muon** (sha `06f448e`, promoted 2026-06-08). Enc/dec attn+MLP
-  matrices on Muon, rest (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
-- **Best metrics (test):** mAP_50_95 = 0.2061 , f1 = 0.552 (margins 0.0006→floor 0.003 / 0.003; `baseline.json`).
-  Beat control by +0.0043 mAP / +0.0087 f1, all 3 seeds, latency-neutral (trt 2.1ms, ratio 1.0).
+- **Baseline established:** yes. ✅ **Horizon-30 re-baseline DONE (2026-06-13, `baseline_h30`)** —
+  same current-best Muon recipe re-measured at `train.epochs=30`, 2 seeds. This is now the persisted
+  `baseline.json`; the old horizon-100 control (3 seeds, sha `09d0463`) is history. maxDets validator
+  fix was **NOT** applied (user decision 2026-06-13: leave detections-per-image as is). Do **not** re-train.
+- **Current best (`main_exp`):** 🟢 **Muon** (recipe sha `06f448e`, re-baselined at horizon-30 →
+  `baseline_h30` sha `239b67c`). Enc/dec attn+MLP matrices on Muon, rest
+  (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
+- **Best metrics (test, horizon-30):** mAP_50_95 = **0.2119** , f1 = **0.5565** (seeds .2114/.2124,
+  .556/.557; std 0.0005→floor margin 0.003 / 0.003; `baseline.json`). Latency-neutral (trt 2.1ms /
+  torch 13.35ms, ratio 1.0), params 10.302M, TRT row healthy (export OK). Horizon-30 lifts absolute
+  numbers vs horizon-100's 0.2061/0.552 (anneal now mostly completes vs ending at ~96% peak LR) — so
+  **all comparisons now use this 0.2119/0.5565 bar, not the old one.**
 - **In progress:** idle. 🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
@@ -18,10 +25,9 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea:** FIRST run the **horizon-30 re-baseline** (epochs 100→30 methodology change,
-  2026-06-13 — see Notes below; decide the maxDets validator fix at the same time so one re-baseline
-  covers both), THEN resume the rewritten queue at **ideas.md Tier-1 #1: Stable-DINO PMC** (matcher
-  cost modulation). ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
+- **Next idea:** horizon-30 re-baseline is **DONE** (maxDets NOT changed, user decision). 🔬 **In
+  progress: ideas.md Tier-1 #1: Stable-DINO PMC** (matcher cost modulation) — running now as the
+  first candidate vs the 0.2119/0.5565 bar. ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
   `experiments/qk_norm.md`); if real-user stability ever bites (issue #64), QK-norm is the known
@@ -34,11 +40,12 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
     21 epochs → runs now end ~65-80% through the anneal (~8-30% of peak LR) instead of at ~96% of
     peak, so screen verdicts are measured near a converged run's end state (user decision; the
     cooldown/aug-close *candidate* ideas were rejected as screen-regime-only — improvements must
-    show in the standard setup). **Horizon-30 re-baseline is PENDING** (guide rule 9) — run it
-    before any candidate; the old 0.2061/0.552 bar is horizon-100 history. Same day: guide §0
+    show in the standard setup). **Horizon-30 re-baseline DONE 2026-06-13** (`baseline_h30`: test
+    mAP 0.2119 / f1 0.5565) — the old 0.2061/0.552 bar was horizon-100 history. Same day: guide §0
     mission rewritten (improve D-FINE-seg generally; VisDrone is only the screen), ideas.md fully
-    rewritten with sources, and a possible validator maxDets=100 under-measurement flagged for user
-    sign-off (ideas.md §Methodology).
+    rewritten with sources. The validator maxDets=100 under-measurement was flagged for user
+    sign-off (ideas.md §Methodology) but **deliberately NOT changed** — user decision 2026-06-13 to
+    leave detections-per-image as is; validator.py stays frozen/unmodified.
   - **Methodology change (2026-06-08): 3 seeds → 2 (`harness.seeds=[42,123]`).** The screen is now
     2×60-min runs. No re-baseline: per-seed std (~0.0005–0.001) ≪ the 0.003 margin floor, so the floor
     governs promotion regardless of seed count; Muon's 3-seed baseline mean stays the bar. If a
@@ -77,6 +84,22 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-13 — baseline_h30 (horizon-30 re-baseline)   [PROMOTED — new persisted baseline]
+- Source: methodology change `train.epochs` 100→30 (guide rule 9 + §8) invalidated the old
+  horizon-100 bar (0.2061/0.552). Per ideas.md, re-run the current-best (Muon) recipe **unchanged**
+  at horizon-30 and re-pin `baseline.json`. **maxDets validator fix NOT applied** (user decision
+  2026-06-13: leave detections-per-image as is — `validator.py` stays frozen/unmodified).
+- Change (files): none to code. Removed stale `baseline.json` so `promote.py` re-establishes; ran on
+  `exp/baseline-h30` (sha `239b67c`, = the horizon-30 doc-setup commit), 2 seeds [42,123].
+- Result (test, 2 seeds): mAP_50_95 **0.2119±0.0005** (seeds .2114/.2124), f1 **0.5565±0.0005**
+  (TRT row, seeds .556/.557), lat trt 2.1 / torch 13.35 ms (ratio 1.0), params 10.302M. Walltime
+  140 min total. TRT bench row healthy (f1 0.557, not 0) → export OK.
+- Read: horizon-30 raises absolute numbers vs horizon-100 (mAP +0.0058, f1 +0.0045) — exactly the
+  expected effect of letting the anneal mostly complete instead of stopping at ~96% of peak LR; the
+  *recipe* is identical (Muon), only the LR-schedule horizon changed. Per-seed std stays tiny
+  (0.0005 ≪ 0.003 floor), so the margin floor governs promotion as before. **This 0.2119/0.5565 is
+  the new bar for every subsequent candidate** (first up: Stable-DINO PMC, ideas.md Tier-1 #1).
 
 ## 2026-06-10 — TRT fp16 root-cause + export hardening LANDED; qknorm_full75 confirmation; QK-norm stays shelved
 - Source: user-driven deep dive into the qk-norm TRT collapse + a full 75-ep qk-norm confirmation run.

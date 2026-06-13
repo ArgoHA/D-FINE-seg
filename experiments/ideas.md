@@ -14,16 +14,16 @@ convergence); changes that only optimize the 60-min screen regime are methodolog
 *mechanism generality × expected value*; dataset-specific tuning is demoted to §Product-recipe
 notes / §Excluded.
 
-**⚠️ Before the first candidate: the horizon-30 re-baseline is PENDING.** `train.epochs` changed
-100→30 on 2026-06-13 (guide rule 9 + §8) — the old Muon numbers below were measured at horizon-100
-and are no longer the bar. Re-run the control (`run_candidate.py`, 2 seeds, unchanged code) and let
-`promote.py` re-pin `baseline.json`. This is also the natural moment to decide the **maxDets
-validator fix** (§Methodology below) — one re-baseline covers both if approved.
+**✅ Horizon-30 re-baseline DONE (2026-06-13, `baseline_h30`).** `train.epochs` changed 100→30 on
+2026-06-13 (guide rule 9 + §8); the current-best Muon recipe was re-run unchanged at horizon-30, 2
+seeds, and `promote.py` re-pinned `baseline.json`. The **maxDets validator fix was NOT applied**
+(user decision 2026-06-13: leave detections-per-image as is — `validator.py` stays frozen/unmodified;
+§Methodology below is informational only now, not a pending action).
 
-Baseline to beat (horizon-100 history, to be replaced) = **Muon** (`baseline.json`): test mAP_50_95
-**0.2061**, f1 **0.552**; margins = floor **0.003**. All Tier-1 ideas are train-only → expected
-latency ratio 1.0 and **zero TRT-export risk** (the qk-norm lesson: any change that touches the
-inference graph needs TRT-row validation — guide §3, `qk_norm.md`).
+Baseline to beat (current, horizon-30) = **Muon** (`baseline.json`, `baseline_h30`): test mAP_50_95
+**0.2119**, f1 **0.5565**; margins = floor **0.003**. (Horizon-100 history was 0.2061/0.552.) All
+Tier-1 ideas are train-only → expected latency ratio 1.0 and **zero TRT-export risk** (the qk-norm
+lesson: any change that touches the inference graph needs TRT-row validation — guide §3, `qk_norm.md`).
 
 ## Diagnosis driving this queue
 
@@ -343,9 +343,10 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
   quality-side surface, with two independent +0.4 results at 12-e schedules and a ~6-line diff;
   Cautious follows immediately at #2. Screen-regime ideas (cooldown, aug-close) were removed per
   user decision the same day; the horizon-30 constant replaces them as methodology.
-- **Sequencing:** run the horizon-30 re-baseline first (decide maxDets at the same time). Ideas
-  1–4 are mutually independent (safe to run in any order on the evolving trunk); 5 last in Tier 1
-  (lowest posterior). Tier-2 #7/#8 need a 1-epoch profile before spending a slot.
+- **Sequencing:** horizon-30 re-baseline DONE (`baseline_h30`, maxDets left unchanged per user).
+  **Now running idea #1 (PMC).** Ideas 1–4 are mutually independent (safe to run in any order on the
+  evolving trunk); 5 last in Tier 1 (lowest posterior). Tier-2 #7/#8 need a 1-epoch profile before
+  spending a slot.
 - **Init policy unchanged:** ImageNet backbone only (guide rule 2). The obj2coco recommendation is
   product-side only.
 - **Segment-safety summary (rule 10):** 2, 3, 4, 6–10 task-agnostic or optimizer-side (verify masks
