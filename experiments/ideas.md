@@ -84,9 +84,11 @@ quality)**. **Update 2026-06-14: the optimizer axis is ALIVE — #11 Adan 🟢 P
 0.2167/0.5635, +0.0048 mAP / +0.0070 f1; second win after Muon). **Tier-2 results:** #10 backbone-LR →
 🔴 tie; #9 PreciseBN → 🔴 tie/no-op (guard reverted both seeds); **#11 Adan → 🟢 PROMOTED.** Skip
 #6(observability)/#6(b)(run-length-specific, doesn't transfer)/#7/#8 (screen-velocity-only methodology —
-not model candidates per mission §0). **User-approved 3-experiment set (2026-06-14): #9 PreciseBN [🔴] →
-#11 Adan [🟢 PROMOTED] → Muon-WD λ=0.03 [running, now vs the Adan baseline].** Sections #1–#5, #9, #10,
-#11 are done — do not re-run.
+not model candidates per mission §0). **User-approved 3-experiment set DONE (2026-06-14): #9 PreciseBN
+[🔴 tie] → #11 Adan [🟢 PROMOTED, new best] → Muon-WD λ=0.03 [🔴 positive near-miss +0.0021/+0.0045,
+sub-margin, vs Adan].** Net: +1 promotion (Adan). Sections #1–#5, #9, #10, #11 done — do not re-run.
+**Top of queue: §6 Adan COCO full-run (non-arch → fair), then §6 Adan+Muon-WD λ=0.03 full-run (the
+near-miss), then #6 EMA bracket or a Tier-3 arch pivot (user-steered).**
 
 ### 1. Position-modulated classification cost in the matcher (Stable-DINO PMC)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
 - **Result:** test mAP_50_95 0.2122±0.0014 vs 0.2119 (gain +0.0003 ≪ 0.003), f1 0.557 (+0.0005),
@@ -176,11 +178,16 @@ not model candidates per mission §0). **User-approved 3-experiment set (2026-06
 - **Generality:** ✅ across shapes/sizes; no vision-published validation yet (flag in notebook).
 - **Segment safety:** ✅ Muon group only; mask head stays AdamW.
 
-### 4. Real weight decay on the Muon group  — 🔴 TRIED, REJECTED (regression, 2026-06-13)
-> Result: test mAP 0.2057 (−0.0062, 2× margin), f1 0.55 (−0.0065). λ=0.1 over-regularizes the
-> ~18k-step screen (τ≈2k; Moonlight's value is for 100k+-step runs). Mechanism sound, level wrong.
-> **Deferred follow-ups** (real motivation — WD's benefit grows with run length): λ=0.03 down-check +
-> §6 full-run. muon_weight_decay knob kept (null→global). See lab notebook. Section kept; skip it.
+### 4. Real weight decay on the Muon group  — 🔴 BOTH LEVELS TRIED (λ=0.1 regression 2026-06-13; λ=0.03 positive near-miss 2026-06-14)
+> λ=0.1 (2026-06-13, Muon baseline): test mAP 0.2057 (−0.0062, 2× margin), f1 0.55 (−0.0065) —
+> over-regularized the ~18k-step screen (τ≈2k). λ=0.03 (2026-06-14, **Adan baseline**, `muon-wd-003`):
+> mAP **0.2188 (+0.0021, sub-margin)**, f1 **0.568 (+0.0045)** — both seeds cleanly above Adan, no NaN.
+> **λ=0.03 reverses λ=0.1's regression → mechanism sound, near the screen sweet spot, just under the
+> 0.003 margin.** Rejected on the screen (rule-bound) but the **strongest-motivated §6 full-run
+> candidate** (WD's benefit grows with run length → the screen under-measures it; on top of Adan it may
+> clear the bar). muon_weight_decay knob lives on `exp/muon-wd-003` (NOT trunk — the earlier "kept on
+> trunk" note was wrong). Follow-up λ-sweep 0.02/0.05 is low-prior (sub-margin). See lab notebook
+> 2026-06-14. Skip as a screen candidate; revisit at §6 full-run.
 - **Paper:** Moonlight (arXiv:2502.16982) Fig. 2: vanilla Muon (no WD) converges faster early but
   weights grow and it ends **worse**; with decoupled λ=0.1 it wins. Kimi K2 (arXiv:2507.20534)
   attributes Muon attention-logit explosions to the same weight growth. Timescale rule
@@ -624,9 +631,11 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
   momentum probe), #7, #8 (screen-velocity-only methodology — not model candidates per mission §0).
   **Tier-2 #10 (backbone-LR ratio raise) → 🔴 tie** (2026-06-13); **#9 PreciseBN → 🔴 tie/no-op**
   (2026-06-14, guard reverted both seeds); **#11 Adan → 🟢 PROMOTED** (2026-06-14, new best 0.2167/0.5635,
-  +0.0048/+0.0070 — optimizer axis confirmed alive). User-approved 3-experiment set: PreciseBN [🔴] →
-  Adan [🟢] → **Muon-WD λ=0.03 [running, vs the Adan baseline]**. Then #6 EMA bracket / §6 Adan COCO
-  full-run.
+  +0.0048/+0.0070 — optimizer axis confirmed alive); **Muon-WD λ=0.03 → 🔴 positive near-miss**
+  (2026-06-14, +0.0021/+0.0045 vs Adan, sub-margin — λ=0.03 reverses λ=0.1's regression, strongest §6
+  full-run candidate). User-approved 3-experiment set DONE: PreciseBN [🔴] → Adan [🟢] → Muon-WD λ=0.03
+  [🔴 near-miss]. **Top of queue: §6 Adan COCO full-run, then §6 Adan+Muon-WD λ=0.03 full-run, then #6
+  EMA bracket or a Tier-3 arch pivot (user-steered).**
 - **Init policy unchanged:** ImageNet backbone only (guide rule 2). The obj2coco recommendation is
   product-side only.
 - **Segment-safety summary (rule 10):** 2, 3, 4, 6–10 task-agnostic or optimizer-side (verify masks
