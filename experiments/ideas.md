@@ -82,11 +82,11 @@ Verdicts (full reasoning per idea in `lab_notebook.md`):
 **Mechanistic conclusion:** the only lever that has moved this screen is **Muon (per-step optimization
 quality)**. Matcher-cost, optimizer-update-shaping, and classification-target families are all now
 probed and exhausted. **Tier-2 so far:** #10 backbone-LR ratio raise → 🔴 **tie** (2026-06-13: mAP
-−0.0001 / f1 +0.0010, no NaN). Skip #6(observability)/#6(b)(run-length-specific, doesn't transfer)/
-#7/#8 (screen-velocity-only methodology — not model candidates per mission §0). **Next genuine
-candidate: #11 Adan** (optimizer axis = where signal lives; published DETR+seg COCO win; but
-complexity-rule risk + LR retune), then #9 PreciseBN. Deferred real follow-up: Muon-WD λ=0.03 + §6
-full-run (#4). Sections #1–#5, #10 are done — do not re-run.
+−0.0001 / f1 +0.0010, no NaN); **#9 PreciseBN → 🔴 tie/no-op** (2026-06-14: guard reverted both seeds —
+BN-stat staleness is not a lever here). Skip #6(observability)/#6(b)(run-length-specific, doesn't transfer)/
+#7/#8 (screen-velocity-only methodology — not model candidates per mission §0). **Currently running the
+user-approved 3-experiment Tier-2 set (2026-06-14): #9 PreciseBN [done 🔴] → #11 Adan [next] → Muon-WD
+λ=0.03 (#4 follow-up).** Sections #1–#5, #9, #10 are done — do not re-run.
 
 ### 1. Position-modulated classification cost in the matcher (Stable-DINO PMC)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
 - **Result:** test mAP_50_95 0.2122±0.0014 vs 0.2119 (gain +0.0003 ≪ 0.003), f1 0.557 (+0.0005),
@@ -277,7 +277,13 @@ full-run (#4). Sections #1–#5, #10 are done — do not re-run.
   product knob for users with big val sets; accuracy-neutral. **Complexity:** low.
   **Segment safety:** ✅.
 
-### 9. PreciseBN: recompute BN statistics post-cap on clean-distribution data
+### 9. PreciseBN: recompute BN statistics post-cap on clean-distribution data  — 🔴 TRIED, REJECTED (tie / no-op, 2026-06-14)
+> Result: test mAP 0.2117 (−0.0002), f1 0.554 (−0.0025); both within margin. Implemented with a
+> **keep-if-better guard** (eval val mAP before/after, revert if worse) — and it **reverted on BOTH seeds**
+> (val mAP 0.2602→0.2571 / 0.2607→0.2565), so the candidate = baseline recipe. The mosaic→clean BN-gap
+> hypothesis is **falsified** here: HGNetv2-B0 has few BN layers + the long EMA window (τ≈5k) already tracks
+> the eval distribution, and a 200-batch recompute is a higher-variance estimate that *adds* noise. Guard
+> worked as designed (zero regression). Code default-off, off-trunk. See lab notebook 2026-06-14. Skip it.
 - **Paper:** Wu & Johnson, "Rethinking 'Batch' in BatchNorm" (arXiv:2105.07576): EMA running stats
   are worst when train/eval input distributions differ — and ours permanently do, since the
   campaign trains on 80%-mosaic collages and **never closes mosaic** (accepted constant), while
@@ -619,9 +625,10 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
   most of the easy gain on it.
 - **Sequencing (now in Tier-2):** Tier-1 exhausted. Skip #6(observability + run-length-specific
   momentum probe), #7, #8 (screen-velocity-only methodology — not model candidates per mission §0).
-  **Tier-2 #10 (backbone-LR ratio raise) → 🔴 tie** (2026-06-13). **Next: #11 Adan** (highest
-  mechanistic prior on the optimizer axis — the only live one — but complexity-rule risk + LR retune),
-  then #9 PreciseBN. Deferred real follow-up: Muon-WD λ=0.03 + §6 full-run (#4).
+  **Tier-2 #10 (backbone-LR ratio raise) → 🔴 tie** (2026-06-13); **#9 PreciseBN → 🔴 tie/no-op**
+  (2026-06-14, guard reverted both seeds). Running the user-approved 3-experiment set: PreciseBN [done] →
+  **#11 Adan [next]** (highest mechanistic prior on the optimizer axis — the only live one — but
+  complexity-rule risk + LR retune) → **Muon-WD λ=0.03** (#4 follow-up). Then #6 EMA bracket / §6 full-run.
 - **Init policy unchanged:** ImageNet backbone only (guide rule 2). The obj2coco recommendation is
   product-side only.
 - **Segment-safety summary (rule 10):** 2, 3, 4, 6–10 task-agnostic or optimizer-side (verify masks
