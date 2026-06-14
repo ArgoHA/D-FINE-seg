@@ -217,6 +217,7 @@ class Trainer:
         )
 
         use_muon = cfg.train.get("use_muon", False)
+        aux_optimizer = cfg.train.get("aux_optimizer", "adamw")
         muon_lr = cfg.train.base_lr * 10  # Muon peak (pre-*2); enc/dec matrices tolerate higher LR
         self.optimizer = build_optimizer(
             self.model,
@@ -227,6 +228,7 @@ class Trainer:
             base_lr=cfg.train.base_lr,
             use_muon=use_muon,
             muon_lr=muon_lr,
+            aux_optimizer=aux_optimizer,
         )
 
         self.scheduler = None
@@ -239,8 +241,11 @@ class Trainer:
                     cfg.train.base_lr * 2,
                     cfg.train.base_lr * 2,
                 ]
-            if use_muon:  # AdamW groups keep base*2; Muon group (appended last) gets its own peak
-                max_lr = [cfg.train.base_lr * 2] * 4 + [muon_lr * 2]
+            if use_muon:  # aux groups keep base*2; Muon group (appended last) gets its own peak
+                aux_peak = cfg.train.base_lr * 2
+                if aux_optimizer == "adan":  # Adan needs a higher LR (its convention)
+                    aux_peak *= cfg.train.get("adan_lr_mult", 5.0)
+                max_lr = [aux_peak] * 4 + [muon_lr * 2]
 
             self.scheduler = OneCycleLR(
                 self.optimizer,
