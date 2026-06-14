@@ -25,11 +25,17 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Next idea: TIER-1 EXHAUSTED (5/5 🔴) + Tier-2 #10 🔴 tie.** Tier-1: PMC tie, Cautious tie,
+- **Running the user-approved 3-experiment Tier-2 train-only set (2026-06-14): precise-bn → adan →
+  muon-wd λ=0.03, one after another.** ① **#9 PreciseBN → 🔴 tie / no-op** (mAP 0.2117, −0.0002; f1
+  0.554, −0.0025; PreciseBN guard REVERTED both seeds — recomputing BN stats hurt val, so candidate =
+  baseline recipe; the mosaic→clean BN-gap hypothesis is falsified here; see 2026-06-14 entry). ② Adan
+  and ③ Muon-WD λ=0.03 still queued.
+- **Next idea: TIER-1 EXHAUSTED (5/5 🔴) + Tier-2 #10 🔴 tie + #9 🔴 tie.** Tier-1: PMC tie, Cautious tie,
   Moonlight regression, Muon-WD regression, IA-BCE regression. **Tier-2 #10 backbone-LR ratio raise
   (0.24→0.48) → 🔴 tie** (mAP 0.2118, −0.0001; f1 0.5575, +0.0010; no NaN — the cold-backbone
-  hypothesis is neutral at this horizon; see 2026-06-13 entry). **Muon stays the only promoted change;
-  `baseline_h30` (0.2119/0.5565) unchanged.** Candidate next steps (no auto-pick — needs user steer):
+  hypothesis is neutral at this horizon; see 2026-06-13 entry). **#9 PreciseBN → 🔴 tie/no-op** (guard
+  reverted; 2026-06-14). **Muon stays the only promoted change; `baseline_h30` (0.2119/0.5565)
+  unchanged.** Candidate next steps (no auto-pick — needs user steer):
   (a) **Muon-WD λ=0.03 down-check** + the §6 full-run (the one deferred follow-up with real motivation
   — WD's benefit grows with run length, screen under-measures it); (b) remaining **Tier-2**: #11 Adan
   (highest mechanistic prior — optimizer axis, published DETR+seg COCO win — but complexity/retune
@@ -96,6 +102,38 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-14 — precise-bn (PreciseBN BN-stat recalibration, Tier-2 #9)   [rejected — tie / no-op]
+- Paper / source: Wu & Johnson, "Rethinking 'Batch' in BatchNorm" (arXiv:2105.07576). ideas.md Tier-2 #9.
+  First of the user-approved 3-experiment Tier-2 train-only set (precise-bn → adan → muon-wd λ=0.03).
+- Hypothesis: the campaign trains on 80% mosaic and **never closes it** (pinned `no_mosaic_epochs:0`), so
+  the EMA BN running stats are estimated on a collage distribution the clean eval never sees. Recompute BN
+  population stats on clean (val-transform) train data after the cap → fix the train/eval BN mismatch at
+  ~free cost (runs outside the 60-min walltime).
+- Change (files): new `train.precise_bn` / `train.precise_bn_batches` knobs (`config.yaml` defaults
+  False/200 — Hydra struct-mode needs them declared); module-level `update_precise_bn` in `train.py`
+  (model stays `eval()` → inference path, no CDN/targets; only `_BatchNorm` modules switch to
+  cumulative-average tracking via `reset_running_stats()` + `momentum=None`); wired into the `finally`
+  block with a **keep-if-better guard** — eval val mAP_50_95 before/after, overwrite `model.pt` only if
+  PreciseBN ≥ EMA else revert (so the change can never regress, and export/bench use the winner). Clean
+  (val-transform) train-images loader built from `base_loader` (CustomDataset over train split, mode=val).
+  Detect-only override `train.precise_bn: true` in `research_visdrone.yaml` (on-disk; that file is
+  git-ignored). exp/precise-bn sha `cf4d8fc`. `make test` 89/89; Hydra override verified.
+- Result (test, 2 seeds): mAP_50_95 **0.2117±0.0013** (seeds .2129/.2104, gain **−0.0002**), f1
+  **0.554±0.001** (TRT row, seeds .555/.553, gain −0.0025, within margin), lat trt 2.1 / torch 13.6 ms
+  (ratio 1.0), params 10.302M. **PreciseBN REVERTED on BOTH seeds** (guard fired): val mAP_50_95
+  0.2602→0.2571 (s42) and 0.2607→0.2565 (s123) — recomputing BN stats made val *worse*. 🔴 KEEP BEST.
+- Read: clean **tie / no-op**. Because the keep-if-better guard reverted both seeds, the candidate
+  `model.pt` is byte-equivalent to the baseline recipe (no BN change applied) → the result IS the baseline
+  re-run, and the tiny deltas are pure seed/walltime-stop variance (baseline was .2114/.2124, f1 .556/.557).
+  The substantive finding is the **revert itself**: the "mosaic→clean BN distribution gap" hypothesis does
+  **not** hold for this model. Likely why — (1) HGNetv2-B0 has relatively few BN layers and the EMA running
+  stats (τ≈5k steps) already average over a long, well-mixed window that tracks the eval distribution fine;
+  (2) recomputing over a 200-batch (1600-img) sample is a *higher-variance* estimate than the long EMA
+  average, so it adds noise rather than removing bias. The guard worked exactly as designed — zero
+  regression risk, and the negative is informative (BN-stat staleness is not a lever here). Code stays
+  default-off; rejected → nothing lands on trunk. Segment: ✅ (BN-stat recompute is task-agnostic, mask head
+  untouched). **Next: #11 Adan** (experiment 2 of 3).
 
 ## 2026-06-13 — backbone-lr (backbone-LR ratio raise, Tier-2 #10)   [rejected — tie]
 - Paper / source: RT-DETRv2 (arXiv:2407.17140) scales backbone LR by capacity — its lightest backbone
