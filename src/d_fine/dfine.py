@@ -138,7 +138,8 @@ def _is_muon_param(name, param):
 
 
 def build_optimizer(
-    model, lr, backbone_lr, betas, weight_decay, base_lr, use_muon=False, muon_lr=None
+    model, lr, backbone_lr, betas, weight_decay, base_lr, use_muon=False, muon_lr=None,
+    aux_optimizer="adamw",
 ):
     backbone_exclude_norm = []
     backbone_norm = []
@@ -189,8 +190,15 @@ def build_optimizer(
     # per-group max_lr list can target it by index.
     for g in param_groups:
         g["use_muon"] = False
-        g["betas"] = betas
         g.setdefault("weight_decay", weight_decay)
+        if aux_optimizer == "adan":
+            # Adan on the aux groups: optimizer-intrinsic betas/eps; per-group weight_decay
+            # kept identical to the AdamW recipe so only the update rule (+LR) changes.
+            g["aux_optimizer"] = "adan"
+            g["betas"] = (0.98, 0.92, 0.99)
+            g["eps"] = 1e-8
+        else:
+            g["betas"] = betas
     muon_lr = muon_lr if muon_lr is not None else base_lr * 10
     param_groups.append(
         {
