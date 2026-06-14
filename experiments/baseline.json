@@ -1,13 +1,13 @@
 {
-  "name": "baseline_h30",
+  "name": "adan",
   "eval_split": "test",
   "git": {
-    "branch": "exp/baseline-h30",
-    "sha": "239b67c"
+    "branch": "exp/adan",
+    "sha": "4a09ba7"
   },
   "means": {
-    "mAP_50_95": 0.2119,
-    "f1": 0.5565
+    "mAP_50_95": 0.2167,
+    "f1": 0.5635
   },
   "margin": {
     "mAP_50_95": 0.003,
@@ -15,7 +15,7 @@
   },
   "latency_ms": {
     "trt": 2.1,
-    "torch": 13.35
+    "torch": 13.65
   },
   "params_M": 10.302
 }

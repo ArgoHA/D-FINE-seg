@@ -9,14 +9,15 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   same current-best Muon recipe re-measured at `train.epochs=30`, 2 seeds. This is now the persisted
   `baseline.json`; the old horizon-100 control (3 seeds, sha `09d0463`) is history. maxDets validator
   fix was **NOT** applied (user decision 2026-06-13: leave detections-per-image as is). Do **not** re-train.
-- **Current best (`main_exp`):** 🟢 **Muon** (recipe sha `06f448e`, re-baselined at horizon-30 →
-  `baseline_h30` sha `239b67c`). Enc/dec attn+MLP matrices on Muon, rest
-  (backbone/norms/biases/embeds/det+mask heads) on AdamW; gated by `train.use_muon`.
-- **Best metrics (test, horizon-30):** mAP_50_95 = **0.2119** , f1 = **0.5565** (seeds .2114/.2124,
-  .556/.557; std 0.0005→floor margin 0.003 / 0.003; `baseline.json`). Latency-neutral (trt 2.1ms /
-  torch 13.35ms, ratio 1.0), params 10.302M, TRT row healthy (export OK). Horizon-30 lifts absolute
-  numbers vs horizon-100's 0.2061/0.552 (anneal now mostly completes vs ending at ~96% peak LR) — so
-  **all comparisons now use this 0.2119/0.5565 bar, not the old one.**
+- **Current best (`main_exp`):** 🟢 **Muon + Adan** (Adan promoted 2026-06-14, `baseline.json` →
+  name `adan`, sha `4a09ba7`). Enc/dec attn+MLP matrices on Muon (gated by `train.use_muon`); the
+  **aux (non-Muon) groups now run Adan** instead of AdamW (gated by `train.aux_optimizer: adan`, aux
+  peak LR ×5 via `train.adan_lr_mult`). Backbone/norms/biases/embeds/det+mask heads are the aux groups.
+- **Best metrics (test, horizon-30):** mAP_50_95 = **0.2167** , f1 = **0.5635** (seeds .2166/.2169,
+  .564/.563; std 0.0002/0.0005→floor margin 0.003 / 0.003; `baseline.json`). Latency-neutral (trt
+  2.1ms / torch 13.65ms, ratio 1.0), params 10.302M, TRT row healthy (export OK). **This is the new bar
+  for every subsequent candidate** (was Muon-only `baseline_h30` 0.2119/0.5565; Adan added
+  +0.0048 mAP / +0.0070 f1, both > margin, multi-seed, zero latency — see 2026-06-14 adan entry).
 - **In progress:** idle. 🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
@@ -25,26 +26,21 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **Running the user-approved 3-experiment Tier-2 train-only set (2026-06-14): precise-bn → adan →
-  muon-wd λ=0.03, one after another.** ① **#9 PreciseBN → 🔴 tie / no-op** (mAP 0.2117, −0.0002; f1
-  0.554, −0.0025; PreciseBN guard REVERTED both seeds — recomputing BN stats hurt val, so candidate =
-  baseline recipe; the mosaic→clean BN-gap hypothesis is falsified here; see 2026-06-14 entry). ② Adan
-  and ③ Muon-WD λ=0.03 still queued.
-- **Next idea: TIER-1 EXHAUSTED (5/5 🔴) + Tier-2 #10 🔴 tie + #9 🔴 tie.** Tier-1: PMC tie, Cautious tie,
-  Moonlight regression, Muon-WD regression, IA-BCE regression. **Tier-2 #10 backbone-LR ratio raise
-  (0.24→0.48) → 🔴 tie** (mAP 0.2118, −0.0001; f1 0.5575, +0.0010; no NaN — the cold-backbone
-  hypothesis is neutral at this horizon; see 2026-06-13 entry). **#9 PreciseBN → 🔴 tie/no-op** (guard
-  reverted; 2026-06-14). **Muon stays the only promoted change; `baseline_h30` (0.2119/0.5565)
-  unchanged.** Candidate next steps (no auto-pick — needs user steer):
-  (a) **Muon-WD λ=0.03 down-check** + the §6 full-run (the one deferred follow-up with real motivation
-  — WD's benefit grows with run length, screen under-measures it); (b) remaining **Tier-2**: #11 Adan
-  (highest mechanistic prior — optimizer axis, published DETR+seg COCO win — but complexity/retune
-  risk), #9 PreciseBN, #6 EMA bracket (#7/#8 are screen-velocity-only methodology, not candidates);
-  (c) the **marginal-gains "stacking" rule** discussed 2026-06-13 — but the only positive near-misses
-  are Cautious (+0.0015, seed42 below baseline) and backbone-LR f1 (+0.0010), so the bag is thin.
-  Mechanistic read: the **only lever that has moved this screen is Muon (per-step optimization
-  quality)**; matcher-cost (PMC), optimizer-update-shaping (Cautious/Moonlight/Muon-WD), cls-target
-  (MAL/IA-BCE), and now LR-ratio (backbone-LR) have all been probed and none beat the bar.
+- **User-approved 3-experiment Tier-2 train-only set (2026-06-14): precise-bn → adan → muon-wd λ=0.03.**
+  ① **#9 PreciseBN → 🔴 tie/no-op** (guard reverted both seeds; BN-gap falsified). ② **#11 Adan → 🟢
+  PROMOTED** (mAP 0.2167, +0.0048; f1 0.5635, +0.0070; both > margin, multi-seed std 0.0002/0.0005,
+  zero latency, no NaN — new best). ③ **Muon-WD λ=0.03 — IN PROGRESS next**, now tested **on top of the
+  new Adan baseline** (Muon-group WD is orthogonal to the aux Adan change, so the follow-up is still
+  clean; bar is now 0.2167/0.5635).
+- **Next idea: Adan promoted → optimizer axis is alive again.** TIER-1 EXHAUSTED (5/5 🔴); Tier-2 #10
+  backbone-LR 🔴 tie, #9 PreciseBN 🔴 tie/no-op; **#11 Adan 🟢 PROMOTED (new best 0.2167/0.5635).**
+  Running #3 of the approved set next: **Muon-WD λ=0.03** (deferred #4 follow-up — λ=0.1 over-regularized
+  the short screen, λ=0.03 τ≈6.7k is gentler; vs the Adan bar now). After that: #6 EMA bracket, and the
+  **§6 full-run / COCO confirmation of Adan** (non-arch change → COCO-init is a fair bar, like Muon got;
+  manual, user-triggered). Mechanistic read updated: **the optimizer axis is where the signal lives —
+  Muon (enc/dec matrices) AND now Adan (aux groups) both moved the screen.** Matcher-cost (PMC),
+  optimizer-update-shaping (Cautious/Moonlight/Muon-WD λ=0.1), cls-target (MAL/IA-BCE), LR-ratio
+  (backbone-LR), and BN-stats (PreciseBN) were all probed and did not beat the bar.
   ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
@@ -102,6 +98,48 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-14 — adan (Adan optimizer on the aux/non-Muon groups, Tier-2 #11)   [PROMOTED — second real win]
+- Paper / source: Adan (Xie et al., arXiv:2208.06677, TPAMI'24) — adaptive Nesterov momentum; the only
+  modern optimizer with a published DETR-family COCO win (Deformable-DETR-R50 50e 44.5→45.3, +0.8 over
+  tuned AdamW; Mask R-CNN +0.5 box/+0.5 mask). ideas.md Tier-2 #11. Experiment 2 of the user-approved set.
+- Hypothesis: the optimizer axis is the only lever that has moved this screen (Muon). Muon already owns
+  the enc/dec matrices; the **aux groups** (backbone + det/mask heads + norms/biases) still run vanilla
+  AdamW. Swap them to Adan — its gradient-difference (Nesterov) term + per-coord second moment should give
+  better per-step progress on exactly those params. Train-only, zero latency/TRT risk.
+- Change (files): vendored single-tensor `_adan_update` in `src/d_fine/muon.py` (3 buffers m/v/n +
+  `neg_pre_grad`, betas (0.98,0.92,0.99), eps 1e-8, decoupled post-prox WD — faithful to the sail-sg
+  reference, minus global-grad-clip/restart); branched into `MuonWithAuxAdam.step()` for aux groups via a
+  per-group `aux_optimizer` flag. `dfine.py:build_optimizer` gains `aux_optimizer="adamw"` → flags the 4
+  aux groups + sets Adan betas/eps (per-group WD kept identical to the AdamW recipe, so only the update
+  rule + LR change). `train.py` threads `train.aux_optimizer` and scales the aux OneCycle peak LR ×5
+  (`train.adan_lr_mult`, Adan's convention) — Muon group's `muon_lr*2` peak untouched. `config.yaml`
+  defaults `aux_optimizer: adamw` / `adan_lr_mult: 5.0` (Hydra struct + prod off). Detect-screen override
+  `train.aux_optimizer: adan` in `research_visdrone.yaml` (on-disk, git-ignored). exp/adan sha `4a09ba7`.
+  `make test` 89/89; numerically smoke-tested (Adan finite, ≠ AdamW on same grads, first-step diff=0,
+  neg_pre_grad stores −grad); verified group structure on the real model (4 aux groups Adan, 25-matrix
+  Muon group untouched, aux peak 0.0025 / muon peak 0.005).
+- Result (test, 2 seeds): mAP_50_95 **0.2167±0.0002** (seeds .2166/.2169, gain **+0.0048** > margin
+  0.003), f1 **0.5635±0.0005** (TRT row, seeds .564/.563, gain **+0.0070** > margin), lat trt 2.1 /
+  torch 13.65 ms (ratio 1.0), params 10.302M. **No NaN events** (the feared ×5-aux-LR backbone NaN did
+  not bite — Adan's normalized update keeps the effective step ~lr-bounded). TRT row healthy → no export
+  regression. 🟢 PROMOTE.
+- Read: **second clean win after Muon, and bigger** (Muon was +0.0043 mAP; Adan +0.0048). Both metrics
+  clear the margin with extremely tight seeds (std 0.0002/0.0005), latency flat, no NaN, and the f1 GUARD
+  *improved* (+0.0070) — a strict dominance, not a trade. Confirms the standing diagnosis sharpened:
+  **the live lever is per-step optimization quality, and it has now paid off on BOTH parameter blocks** —
+  Muon on the high-condition enc/dec matrices, Adan on the aux groups (backbone/heads/norms). Adan's win
+  is consistent with its published DETR result, so it should transfer (the §6 COCO-init full-run is a fair
+  confirmation since this is a non-arch change — deferred/manual, like Muon's). **Simplicity check
+  (rule 1.6):** ~45 lines, default-off, isolated inside the existing optimizer module — comparable to
+  Muon's ~90 lines, for a larger and cleaner win → complexity justified, promote. **Confound note:** Adan
+  ships with a ×5 aux-LR (its convention); this is "Adan + its recommended LR" as one conceptual unit
+  (exactly how Muon = optimizer + its own LR was judged), not two free variables — the AdamW LR would
+  mis-tune Adan. WD was deliberately *not* changed (kept the repo's per-group values) to isolate the
+  optimizer. **Segment safety:** Adan now drives the **mask-head** optimizer (mask params are in the aux
+  groups). Adan is seg-validated in its own paper (Mask R-CNN +0.5 mask), but verify masks don't regress
+  before/at any segment release. Follow-ups: (a) §6 Adan COCO full-run; (b) Muon-WD λ=0.03 (experiment 3,
+  now on the Adan baseline); (c) Adan LR-mult sweep (×3/×8) is a *retune*, low priority after a clean win.
 
 ## 2026-06-14 — precise-bn (PreciseBN BN-stat recalibration, Tier-2 #9)   [rejected — tie / no-op]
 - Paper / source: Wu & Johnson, "Rethinking 'Batch' in BatchNorm" (arXiv:2105.07576). ideas.md Tier-2 #9.
