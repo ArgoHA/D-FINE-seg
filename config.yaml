@@ -80,6 +80,8 @@ train:
   ### Optimizer and Scheduler ###
   use_scheduler: True
   use_muon: False # True -> route enc/dec attn+MLP matrices to Muon, rest stays AdamW
+  aux_optimizer: adamw # adamw | adan -> optimizer for the non-Muon (aux) param groups
+  adan_lr_mult: 5.0 # adan only: aux-group peak-LR multiplier vs the AdamW aux peak (Adan convention)
   base_lr: ${train.lrs.${model_name}.base_lr}
   backbone_lr: ${train.lrs.${model_name}.backbone_lr}
   cycler_pct_start: 0.1
