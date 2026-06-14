@@ -18,7 +18,22 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   2.1ms / torch 13.65ms, ratio 1.0), params 10.302M, TRT row healthy (export OK). **This is the new bar
   for every subsequent candidate** (was Muon-only `baseline_h30` 0.2119/0.5565; Adan added
   +0.0048 mAP / +0.0070 f1, both > margin, multi-seed, zero latency — see 2026-06-14 adan entry).
-- **In progress:** idle. 🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
+- **In progress:** ✅ **§6 full-run: Adan + Muon-WD λ=0.03 BEATS the Muon full reference (2026-06-14, user-triggered).**
+  COCO-init `dfine_s_coco.pt`, 75ep, no cap, seed 42, batch 9, mosaic close ep70 — recipe identical to the
+  Muon reference (`vis_drone/output/models/test_2026-06-10`) except the optimizer (aux→Adan ×5 + Muon-group
+  WD λ=0.03). Artifacts: `experiments/runs/adan_muonwd_full75`. **Result (test): mAP_50_95 0.2413 vs 0.2403
+  (+0.0010), mAP_50 0.4159 vs 0.4121 (+0.0038), val mAP_50_95 0.2978 vs 0.2946 (+0.0032), bench TRT f1
+  0.593 vs 0.586 (+0.007), latency 2.1 ms = (identical), ZERO NaN over 75ep.** Better on every metric +
+  fully stable at the ×5 Adan LR on COCO-init. Caveats: (a) headline test-mAP gain is modest (+0.0010,
+  single-seed — corroborated by val/mAP_50/f1); (b) the screen's Adan lead (+0.0048) **compressed at full
+  COCO convergence** to +0.0010 test mAP (expected §6 behaviour); (c) this run is **Adan+MuonWD combined**
+  vs Muon-only — it does NOT isolate Muon-WD's full-scale contribution (so no grounds yet to land Muon-WD
+  on trunk by itself; Adan stays the promoted trunk change, Muon-WD stays a documented near-miss with a
+  positive combined §6 signal). **Next (user-steered): X-size (B5) full run** vs `det_x_2026-02-21` (plain
+  AdamW, test mAP_50_95 0.2601 / TRT f1 0.611 @ 4.5 ms) — ⚠️ the Muon LR wiring homogenizes the backbone
+  to a base_lr-derived peak, so X+Adan×5 would train the B5 backbone at ~2e-3 = ~500× its reference
+  `backbone_lr·2` (4e-6); deciding naive-transfer vs a backbone-LR-respecting recipe before launch.
+- 🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
   (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
