@@ -26,21 +26,28 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **User-approved 3-experiment Tier-2 train-only set (2026-06-14): precise-bn → adan → muon-wd λ=0.03.**
+- **User-approved 3-experiment Tier-2 set DONE (2026-06-14): precise-bn → adan → muon-wd λ=0.03.**
   ① **#9 PreciseBN → 🔴 tie/no-op** (guard reverted both seeds; BN-gap falsified). ② **#11 Adan → 🟢
-  PROMOTED** (mAP 0.2167, +0.0048; f1 0.5635, +0.0070; both > margin, multi-seed std 0.0002/0.0005,
-  zero latency, no NaN — new best). ③ **Muon-WD λ=0.03 — IN PROGRESS next**, now tested **on top of the
-  new Adan baseline** (Muon-group WD is orthogonal to the aux Adan change, so the follow-up is still
-  clean; bar is now 0.2167/0.5635).
-- **Next idea: Adan promoted → optimizer axis is alive again.** TIER-1 EXHAUSTED (5/5 🔴); Tier-2 #10
-  backbone-LR 🔴 tie, #9 PreciseBN 🔴 tie/no-op; **#11 Adan 🟢 PROMOTED (new best 0.2167/0.5635).**
-  Running #3 of the approved set next: **Muon-WD λ=0.03** (deferred #4 follow-up — λ=0.1 over-regularized
-  the short screen, λ=0.03 τ≈6.7k is gentler; vs the Adan bar now). After that: #6 EMA bracket, and the
-  **§6 full-run / COCO confirmation of Adan** (non-arch change → COCO-init is a fair bar, like Muon got;
-  manual, user-triggered). Mechanistic read updated: **the optimizer axis is where the signal lives —
-  Muon (enc/dec matrices) AND now Adan (aux groups) both moved the screen.** Matcher-cost (PMC),
-  optimizer-update-shaping (Cautious/Moonlight/Muon-WD λ=0.1), cls-target (MAL/IA-BCE), LR-ratio
-  (backbone-LR), and BN-stats (PreciseBN) were all probed and did not beat the bar.
+  PROMOTED** (mAP 0.2167, +0.0048; f1 0.5635, +0.0070; new best). ③ **Muon-WD λ=0.03 → 🔴 rejected
+  (positive near-miss)** vs the Adan baseline: mAP 0.2188 (+0.0021, **< margin**), f1 0.568 (+0.0045);
+  both seeds cleanly above Adan, no NaN. λ=0.03 *reverses* λ=0.1's −0.0062 regression → mechanism sound,
+  sub-margin; **strongest-motivated §6 full-run candidate** (WD's benefit grows with run length).
+  Net result of the set: **+1 promotion (Adan), Adan is the new best.**
+- **Next idea: Adan promoted → optimizer axis is alive; two near-miss §6 candidates queued.** TIER-1
+  EXHAUSTED (5/5 🔴); Tier-2 #10 backbone-LR 🔴 tie, #9 PreciseBN 🔴 tie/no-op, **#11 Adan 🟢 PROMOTED
+  (new best 0.2167/0.5635)**, Muon-WD λ=0.03 🔴 positive near-miss (+0.0021/+0.0045, sub-margin).
+  Candidate next steps (no auto-pick — user steer): **(a) §6 full-run / COCO confirmation of Adan**
+  (non-arch → COCO-init is a fair bar like Muon got; manual, highest priority — confirm the screen win
+  at full schedule); **(b) §6 full-run of Adan + Muon-WD λ=0.03** (the positive near-miss; WD's benefit
+  grows with length, so it may clear the bar there); (c) remaining Tier-2 #6 EMA momentum bracket;
+  (d) re-probe a couple of the previously-rejected train-only ideas **on the new Adan baseline** if their
+  interaction with Adan could differ (low prior); (e) **pivot to Tier-3 architecture** (user-requested
+  direction; A1 SPD-Conv / A3 RMSNorm+SwiGLU are the cheap TRT-safe entries — each needs the TRT-row
+  check + approval gate). Mechanistic read: **the optimizer axis is where the signal lives — Muon
+  (enc/dec matrices) AND Adan (aux groups) both moved the screen, and Muon-WD λ=0.03 nudges it further
+  (sub-margin).** Matcher-cost (PMC), optimizer-update-shaping (Cautious/Moonlight/Muon-WD λ=0.1),
+  cls-target (MAL/IA-BCE), LR-ratio (backbone-LR), and BN-stats (PreciseBN) were probed and did not beat
+  the bar.
   ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
@@ -98,6 +105,37 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-14 — muon-wd-003 (real decoupled WD λ=0.03 on the Muon group, on the Adan baseline; Tier-2 #4 follow-up)   [rejected — positive near-miss]
+- Paper / source: Moonlight (arXiv:2502.16982) Fig.2 / timescale rule (2405.13698) τ_wd=1/(η·λ). The
+  deferred down-check of the rejected #4 (λ=0.1 → −0.0062 regression). ideas.md Tier-1 #4 follow-up.
+  Experiment 3 of the user-approved set — first candidate measured against the **new Adan baseline**.
+- Hypothesis: the global WD (1.25e-4) is inert on this ~18k-step screen (τ≈1.6e7). λ=0.1 over-regularized
+  (τ≈2k, decayed Muon weights ~9× over the run). λ=0.03 (τ≈6.7k) is the gentler down-check — enough to
+  bound Muon weight/attn-logit growth without starving capacity on the short horizon. Muon-group WD is
+  orthogonal to the aux Adan change, so testing on the Adan baseline is still one clean change.
+- Change (files): **re-added** the `muon_weight_decay` knob (it never landed on trunk — only #4's docs
+  did; the earlier "knob kept" notebook claim was imprecise). `config.yaml` default `muon_weight_decay:
+  null` (→ global WD); `dfine.py:build_optimizer` routes it onto the **Muon group only** (verified: Muon
+  group wd=0.03, all 4 Adan aux groups unchanged at 1.25e-4/0.0); `train.py` threads it.
+  `research_visdrone.yaml` set 0.03 (on the Adan override). exp/muon-wd-003 sha `e5a5feb`. `make test`
+  89/89; group wiring verified.
+- Result (test, 2 seeds, tight): mAP_50_95 **0.2188±0.0003** (seeds .2185/.2190, gain **+0.0021** vs Adan
+  0.2167, **< 0.003 margin**), f1 **0.568±0.0** (TRT row, both .568, gain **+0.0045** > margin), lat trt
+  2.1 / torch 13.75 ms (ratio 1.0), params 10.302M. No NaN. 🔴 KEEP BEST (Adan).
+- Read: **positive near-miss, not a tie or regression.** Both seeds (.2185/.2190) sit cleanly above BOTH
+  Adan-baseline seeds (.2166/.2169), and f1 improves a clean +0.0045 (.568 vs .564/.563) — so this is a
+  real, small, consistent gain that just misses the 0.003 mAP margin floor (a 3rd seed can't rescue it:
+  promotion needs mean >0.2197 → a seed >0.2213, above both observed; seeds agree to 0.0005 so rule-9
+  doesn't even ask for one). **This decisively reverses the λ=0.1 verdict's level error:** λ=0.1 was
+  −0.0062 (over-regularized), λ=0.03 is +0.0021 — the mechanism is sound, λ=0.03 is near the screen sweet
+  spot, just sub-margin. **Most important for adoption:** the original ideas.md motivation is that **WD's
+  benefit GROWS with run length, so the truncated 60-min screen UNDER-measures it** — a +0.0021/+0.0045
+  positive near-miss here is exactly the signal that says "run the §6 full-run." So muon-wd-003 is now the
+  **strongest-motivated §6 full-run candidate** (on top of Adan), where it may clear the bar. On the screen
+  it stays rejected (rule-bound). Knob lives on `exp/muon-wd-003` (forensics), NOT on trunk. Follow-ups
+  (not auto-run): §6 full-run of Adan+Muon-WD λ=0.03; λ-sweep 0.02/0.05 to map the screen peak (low prior
+  — sub-margin). Segment: Muon group only, mask head stays on Adan; rejected → nothing on trunk.
 
 ## 2026-06-14 — adan (Adan optimizer on the aux/non-Muon groups, Tier-2 #11)   [PROMOTED — second real win]
 - Paper / source: Adan (Xie et al., arXiv:2208.06677, TPAMI'24) — adaptive Nesterov momentum; the only
