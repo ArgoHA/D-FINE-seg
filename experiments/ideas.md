@@ -80,13 +80,13 @@ Verdicts (full reasoning per idea in `lab_notebook.md`):
 - #5 IA-BCE (IoU-aware cls target) → 🔴 **regression** (−0.0021 mAP / −0.016 f1); un-α'd s² negatives run cls loss ~4-5× hot
 
 **Mechanistic conclusion:** the only lever that has moved this screen is **Muon (per-step optimization
-quality)**. Matcher-cost, optimizer-update-shaping, and classification-target families are all now
-probed and exhausted. **Tier-2 so far:** #10 backbone-LR ratio raise → 🔴 **tie** (2026-06-13: mAP
-−0.0001 / f1 +0.0010, no NaN); **#9 PreciseBN → 🔴 tie/no-op** (2026-06-14: guard reverted both seeds —
-BN-stat staleness is not a lever here). Skip #6(observability)/#6(b)(run-length-specific, doesn't transfer)/
-#7/#8 (screen-velocity-only methodology — not model candidates per mission §0). **Currently running the
-user-approved 3-experiment Tier-2 set (2026-06-14): #9 PreciseBN [done 🔴] → #11 Adan [next] → Muon-WD
-λ=0.03 (#4 follow-up).** Sections #1–#5, #9, #10 are done — do not re-run.
+quality)**. **Update 2026-06-14: the optimizer axis is ALIVE — #11 Adan 🟢 PROMOTED** (new best
+0.2167/0.5635, +0.0048 mAP / +0.0070 f1; second win after Muon). **Tier-2 results:** #10 backbone-LR →
+🔴 tie; #9 PreciseBN → 🔴 tie/no-op (guard reverted both seeds); **#11 Adan → 🟢 PROMOTED.** Skip
+#6(observability)/#6(b)(run-length-specific, doesn't transfer)/#7/#8 (screen-velocity-only methodology —
+not model candidates per mission §0). **User-approved 3-experiment set (2026-06-14): #9 PreciseBN [🔴] →
+#11 Adan [🟢 PROMOTED] → Muon-WD λ=0.03 [running, now vs the Adan baseline].** Sections #1–#5, #9, #10,
+#11 are done — do not re-run.
 
 ### 1. Position-modulated classification cost in the matcher (Stable-DINO PMC)  — 🔴 TRIED, REJECTED (tie, 2026-06-13)
 - **Result:** test mAP_50_95 0.2122±0.0014 vs 0.2119 (gain +0.0003 ≪ 0.003), f1 0.557 (+0.0005),
@@ -313,18 +313,15 @@ user-approved 3-experiment Tier-2 set (2026-06-14): #9 PreciseBN [done 🔴] →
   backbone LR is a NaN amplifier historically — watch the NaN-recovery log. **Latency:** none.
   **Segment safety:** ✅.
 
-### 11. Adan on the AdamW aux groups
-- **Paper:** Adan (arXiv:2208.06677, TPAMI'24) — the only modern optimizer with a published
-  DETR-family COCO win: Deformable-DETR-R50 50e **44.5 → 45.3** (+0.8 over tuned AdamW); Mask R-CNN
-  +0.5 box/+0.5 mask; "half-epochs" claims (ViT-B 150e ≈ AdamW 300e).
-- **Change (files):** vendored ~40-line Adan update in `muon.py`'s aux branch (3 buffers/param),
-  gated by `train.aux_optimizer: adamw|adan`; aux-group LR ×5 as the starting point (their
-  convention). Muon group untouched.
-- **Transfer:** ✅ published gains are at full schedules. **Risk:** no Adan-vs-Muon head-to-head
-  anywhere; LR/beta retune strains one-change-per-run; complexity rule (guide 1.6) bites unless it
-  clearly wins. **Generality:** ✅ (seg-validated on Mask R-CNN). **Segment safety:** ✅ but it
-  changes the mask-head optimizer — verify.
-- **Run after** ideas 2–4 settle the optimizer picture.
+### 11. Adan on the AdamW aux groups  — 🟢 PROMOTED (2026-06-14) → now in the baseline, retired from queue
+> **Promoted as the new current best (`baseline.json` → `adan`, sha `4a09ba7`).** Adan (arXiv:2208.06677)
+> on the aux (non-Muon) groups, aux peak LR ×5: test mAP_50_95 **0.2167** (+0.0048 > margin), f1 **0.5635**
+> (+0.0070 > margin), 2 seeds std 0.0002/0.0005, latency-neutral, no NaN. Second clean optimizer win after
+> Muon (bigger than Muon's +0.0043). Gated by `train.aux_optimizer: adan` + `train.adan_lr_mult: 5.0`
+> (default off in `config.yaml`). Follow-ups (not auto-run): §6 Adan COCO-init full-run (fair — non-arch);
+> Muon-WD λ=0.03 on the Adan baseline (experiment 3, running); Adan LR-mult ×3/×8 sweep (low-prior retune
+> after a clean win); verify masks on a segment release (Adan now drives the mask-head optimizer). See lab
+> notebook 2026-06-14. Section retained for forensics; do not re-run as a candidate.
 
 ### 12. Config-only probes (cheap landscape-mapping; one run each, lowest priority)
 - **Matcher cost rebalance:** `configs.py:45` `cost_class: 2 → 1` — a genuine literature gap (every
@@ -626,9 +623,10 @@ inherits the bias. The official VisDrone protocol evaluates up to 500 dets/image
 - **Sequencing (now in Tier-2):** Tier-1 exhausted. Skip #6(observability + run-length-specific
   momentum probe), #7, #8 (screen-velocity-only methodology — not model candidates per mission §0).
   **Tier-2 #10 (backbone-LR ratio raise) → 🔴 tie** (2026-06-13); **#9 PreciseBN → 🔴 tie/no-op**
-  (2026-06-14, guard reverted both seeds). Running the user-approved 3-experiment set: PreciseBN [done] →
-  **#11 Adan [next]** (highest mechanistic prior on the optimizer axis — the only live one — but
-  complexity-rule risk + LR retune) → **Muon-WD λ=0.03** (#4 follow-up). Then #6 EMA bracket / §6 full-run.
+  (2026-06-14, guard reverted both seeds); **#11 Adan → 🟢 PROMOTED** (2026-06-14, new best 0.2167/0.5635,
+  +0.0048/+0.0070 — optimizer axis confirmed alive). User-approved 3-experiment set: PreciseBN [🔴] →
+  Adan [🟢] → **Muon-WD λ=0.03 [running, vs the Adan baseline]**. Then #6 EMA bracket / §6 Adan COCO
+  full-run.
 - **Init policy unchanged:** ImageNet backbone only (guide rule 2). The obj2coco recommendation is
   product-side only.
 - **Segment-safety summary (rule 10):** 2, 3, 4, 6–10 task-agnostic or optimizer-side (verify masks
