@@ -234,7 +234,7 @@ Entry template:
 ## 2026-06-13 — ia-bce (IoU-aware classification target, Align-DETR IA-BCE)   [rejected — regression]
 - Paper / source: Align-DETR (arXiv:2304.07527, BMVC'24) IA-BCE — +1.3 vs VFL head-to-head (DINO-R50
   12e: 48.7→50.0), AP_S +2.7–3.7. ideas.md Tier-1 #5 (the IoU-aware cls slot; one of IA-BCE/GCL).
-- Pre-step (free, no train run): `experiments/diag_matched_iou.py` — ran the **baseline_h30** ckpt +
+- Pre-step (free, no train run): a matched-IoU diagnostic (script since removed) — ran the **baseline_h30** ckpt +
   the training matcher over the val set, histogrammed matched-pair IoU (the `ious` loss_labels_vfl
   uses). Result: mean 0.66, **median 0.73, only 6.2% < 0.1**, 79.5% ≥ 0.5. Low IoU≈0 mass → the GCL
   trigger does NOT fire → **pick IA-BCE** (overturned the size-distribution prior of GCL: 55% sub-16px
