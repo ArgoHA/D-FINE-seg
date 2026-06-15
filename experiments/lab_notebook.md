@@ -18,22 +18,43 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   2.1ms / torch 13.65ms, ratio 1.0), params 10.302M, TRT row healthy (export OK). **This is the new bar
   for every subsequent candidate** (was Muon-only `baseline_h30` 0.2119/0.5565; Adan added
   +0.0048 mAP / +0.0070 f1, both > margin, multi-seed, zero latency — see 2026-06-14 adan entry).
-- **In progress:** ✅ **§6 full-run: Adan + Muon-WD λ=0.03 BEATS the Muon full reference (2026-06-14, user-triggered).**
-  COCO-init `dfine_s_coco.pt`, 75ep, no cap, seed 42, batch 9, mosaic close ep70 — recipe identical to the
-  Muon reference (`vis_drone/output/models/test_2026-06-10`) except the optimizer (aux→Adan ×5 + Muon-group
-  WD λ=0.03). Artifacts: `experiments/runs/adan_muonwd_full75`. **Result (test): mAP_50_95 0.2413 vs 0.2403
-  (+0.0010), mAP_50 0.4159 vs 0.4121 (+0.0038), val mAP_50_95 0.2978 vs 0.2946 (+0.0032), bench TRT f1
-  0.593 vs 0.586 (+0.007), latency 2.1 ms = (identical), ZERO NaN over 75ep.** Better on every metric +
-  fully stable at the ×5 Adan LR on COCO-init. Caveats: (a) headline test-mAP gain is modest (+0.0010,
-  single-seed — corroborated by val/mAP_50/f1); (b) the screen's Adan lead (+0.0048) **compressed at full
-  COCO convergence** to +0.0010 test mAP (expected §6 behaviour); (c) this run is **Adan+MuonWD combined**
-  vs Muon-only — it does NOT isolate Muon-WD's full-scale contribution (so no grounds yet to land Muon-WD
-  on trunk by itself; Adan stays the promoted trunk change, Muon-WD stays a documented near-miss with a
-  positive combined §6 signal). **Next (user-steered): X-size (B5) full run** vs `det_x_2026-02-21` (plain
-  AdamW, test mAP_50_95 0.2601 / TRT f1 0.611 @ 4.5 ms) — ⚠️ the Muon LR wiring homogenizes the backbone
-  to a base_lr-derived peak, so X+Adan×5 would train the B5 backbone at ~2e-3 = ~500× its reference
-  `backbone_lr·2` (4e-6); deciding naive-transfer vs a backbone-LR-respecting recipe before launch.
-- 🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
+- **In progress:** 🔬 **§6 X full-run A/B** (COCO-init dfine_x_coco, 75ep, batch 4, option-B optimizer
+  split: backbone AdamW @4e-6 / heads Adan ×5 @2e-3 / enc-dec Muon @4e-3) vs ref `det_x_2026-02-21`
+  (test mAP_50_95 0.2601 / mAP_50 0.4431 / TRT f1 0.611 @4.5ms). **Run-1 = Adan + Muon-WD λ=0.03 DONE
+  (2026-06-14)** — user-stopped at best ep46 (overfitting tail, nothing lost): test mAP_50_95 **0.2571
+  (−0.0030)**, mAP_50 0.4390 (−0.0041), **TRT f1 0.611 @4.5ms = tie**, torch f1 0.610 @23.2ms. Verdict:
+  **not a win** — ties ref on the prod metric, a hair under on mAP; λ=0.03 was marginal/mild-harmful, as
+  suspected. Artifacts `experiments/runs/adan_muonwd_x_full75` (+ engine/onnx). **Run-2 = baseline + Adan,
+  NO WD DONE (2026-06-15, 9.79h, full 75ep, no early overfit)** — identical recipe minus
+  `muon_weight_decay=0.03`. 🟢 **WIN over AdamW-X ref on ALL metrics, latency-neutral:** test mAP_50_95
+  **0.2679 (+0.0078)**, mAP_50 0.4543 (+0.0112), **TRT f1 0.617 @4.5ms (+0.006)**, torch f1 0.619.
+  Artifacts `experiments/runs/adan_x_full75`. **A/B vs Run-1 is decisive: dropping λ=0.03 WD = +0.0108
+  mAP_50_95 swing (0.2571→0.2679), −0.0030 below ref → +0.0078 above.** (Caveat: Run-1 was the one
+  stopped at ep46, not a perfectly controlled A/B, but direction unambiguous; WD also caused Run-1's
+  early overfit.) **Run-3 = "just Muon" DONE (2026-06-15, stopped ep71, overfitting; best kept)** on the
+  FIXED code with the flag REMOVED → validates the l/x size-swap end-to-end (ran correctly, no NaN, sane
+  win). test mAP_50_95 **0.2626 (+0.0025)**, mAP_50 0.4466 (+0.0035), **TRT f1 0.613 @4.5ms (+0.002)**,
+  torch f1 0.616. Artifacts `experiments/runs/muon_x_full75`. (`run_muon_x_full75.sh`, `aux_optimizer=adamw`
+  + Muon; only delta vs ref is enc/dec→Muon.)
+- 🟢 **A/B/C VERDICT at X (all latency-neutral, TRT 4.5ms = ref):** clean decomposition — **+Muon alone
+  = +0.0025** mAP_50_95 (small real lift); **+Adan on top = +0.0053** (Run-2 0.2679 − Run-3 0.2626,
+  ~2× Muon's share); **−WD λ=0.03 = harmful** (rejected). **Muon+Adan (Run-2, +0.0078) is the best X
+  recipe.** Key finding: **Adan scales** — it added +0.0048 over Muon at S (horizon-30) and +0.0053 at X
+  (full-75); near-identical, killing the "Adan is an S-only artifact" hypothesis. (Horizon caveat:
+  Run-2 full-75, Run-3 ep71, Run-1 ep46 — each at its overfit point, best kept, near-final but not matched.)
+  **DECISION (user, 2026-06-15):** (1) l/x LR fix **PROMOTED to main_exp** (commit `e2e5ef9`, code only;
+  `muon_weight_decay` deliberately NOT included — it's the rejected muon-wd-003 knob); (2) X win
+  **ACCEPTED as-is** (single-seed full runs, no further X confirmation) → **resume the S autoresearch loop.**
+- 🔧 **Muon l/x LR fix LANDED (this branch, 2026-06-14):** `train.py` now auto-forces
+  `respect_backbone_lr` True for l/x. **Root cause:** the Muon scheduler branch (train.py ~247) *overwrote*
+  the per-group `max_lr` list the non-Muon path already builds for l/x (`backbone_lr*2` for backbone
+  groups), homogenizing the B5 backbone to `base_lr*2` (×5 for Adan) → up to **500× too high**, frying
+  the pretrained backbone. Never bit because the loop only runs S (single scalar max_lr there; tiny B0
+  tolerates it). Fix is S-byte-identical (`s` ∉ l/x). Verified X auto-default `max_lr=[4e-6,4e-6,4e-4,
+  4e-4,4e-3]` with the flag REMOVED → run-3 validates `model_name=x` size-swap. **PROMOTED to main_exp
+  2026-06-15 (commit `e2e5ef9`: dfine.py+train.py+config.yaml, S byte-identical, 78 unit tests pass).**
+  The cleaner follow-up (also cover `enable_mask_head`, drop the flag entirely) is open.
+  🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
   (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
@@ -41,28 +62,21 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   Key: the +0.0043 test gain is **identical to the 22-epoch proxy gain** → Muon reaches a *better
   optimum*, not just faster convergence (an AdamW catch-up would have shrunk the gap by ep75). Single
   seed, but proxy(+0.0043, clean same-code) and full(+0.0043 vs Feb ref) agreeing rules out seed/code-drift luck.
-- **User-approved 3-experiment Tier-2 set DONE (2026-06-14): precise-bn → adan → muon-wd λ=0.03.**
+- **User-approved 3-experiment Tier-2 train-only set (2026-06-14): precise-bn → adan → muon-wd λ=0.03.**
   ① **#9 PreciseBN → 🔴 tie/no-op** (guard reverted both seeds; BN-gap falsified). ② **#11 Adan → 🟢
-  PROMOTED** (mAP 0.2167, +0.0048; f1 0.5635, +0.0070; new best). ③ **Muon-WD λ=0.03 → 🔴 rejected
-  (positive near-miss)** vs the Adan baseline: mAP 0.2188 (+0.0021, **< margin**), f1 0.568 (+0.0045);
-  both seeds cleanly above Adan, no NaN. λ=0.03 *reverses* λ=0.1's −0.0062 regression → mechanism sound,
-  sub-margin; **strongest-motivated §6 full-run candidate** (WD's benefit grows with run length).
-  Net result of the set: **+1 promotion (Adan), Adan is the new best.**
-- **Next idea: Adan promoted → optimizer axis is alive; two near-miss §6 candidates queued.** TIER-1
-  EXHAUSTED (5/5 🔴); Tier-2 #10 backbone-LR 🔴 tie, #9 PreciseBN 🔴 tie/no-op, **#11 Adan 🟢 PROMOTED
-  (new best 0.2167/0.5635)**, Muon-WD λ=0.03 🔴 positive near-miss (+0.0021/+0.0045, sub-margin).
-  Candidate next steps (no auto-pick — user steer): **(a) §6 full-run / COCO confirmation of Adan**
-  (non-arch → COCO-init is a fair bar like Muon got; manual, highest priority — confirm the screen win
-  at full schedule); **(b) §6 full-run of Adan + Muon-WD λ=0.03** (the positive near-miss; WD's benefit
-  grows with length, so it may clear the bar there); (c) remaining Tier-2 #6 EMA momentum bracket;
-  (d) re-probe a couple of the previously-rejected train-only ideas **on the new Adan baseline** if their
-  interaction with Adan could differ (low prior); (e) **pivot to Tier-3 architecture** (user-requested
-  direction; A1 SPD-Conv / A3 RMSNorm+SwiGLU are the cheap TRT-safe entries — each needs the TRT-row
-  check + approval gate). Mechanistic read: **the optimizer axis is where the signal lives — Muon
-  (enc/dec matrices) AND Adan (aux groups) both moved the screen, and Muon-WD λ=0.03 nudges it further
-  (sub-margin).** Matcher-cost (PMC), optimizer-update-shaping (Cautious/Moonlight/Muon-WD λ=0.1),
-  cls-target (MAL/IA-BCE), LR-ratio (backbone-LR), and BN-stats (PreciseBN) were probed and did not beat
-  the bar.
+  PROMOTED** (mAP 0.2167, +0.0048; f1 0.5635, +0.0070; both > margin, multi-seed std 0.0002/0.0005,
+  zero latency, no NaN — new best). ③ **Muon-WD λ=0.03 — IN PROGRESS next**, now tested **on top of the
+  new Adan baseline** (Muon-group WD is orthogonal to the aux Adan change, so the follow-up is still
+  clean; bar is now 0.2167/0.5635).
+- **Next idea: Adan promoted → optimizer axis is alive again.** TIER-1 EXHAUSTED (5/5 🔴); Tier-2 #10
+  backbone-LR 🔴 tie, #9 PreciseBN 🔴 tie/no-op; **#11 Adan 🟢 PROMOTED (new best 0.2167/0.5635).**
+  Running #3 of the approved set next: **Muon-WD λ=0.03** (deferred #4 follow-up — λ=0.1 over-regularized
+  the short screen, λ=0.03 τ≈6.7k is gentler; vs the Adan bar now). After that: #6 EMA bracket, and the
+  **§6 full-run / COCO confirmation of Adan** (non-arch change → COCO-init is a fair bar, like Muon got;
+  manual, user-triggered). Mechanistic read updated: **the optimizer axis is where the signal lives —
+  Muon (enc/dec matrices) AND now Adan (aux groups) both moved the screen.** Matcher-cost (PMC),
+  optimizer-update-shaping (Cautious/Moonlight/Muon-WD λ=0.1), cls-target (MAL/IA-BCE), LR-ratio
+  (backbone-LR), and BN-stats (PreciseBN) were all probed and did not beat the bar.
   ideas.md was fully rewritten 2026-06-13 after a deep-research pass (5 Tier-1 +
   7 Tier-2, all train-only); the old MAL-on-Muon re-test is **withdrawn** (DEIM never ablates MAL
   standalone — our tie matches the paper). QK-norm remains shelved (TRT-undeployable; recipe in
@@ -120,37 +134,6 @@ Entry template:
 ---
 
 <!-- entries below -->
-
-## 2026-06-14 — muon-wd-003 (real decoupled WD λ=0.03 on the Muon group, on the Adan baseline; Tier-2 #4 follow-up)   [rejected — positive near-miss]
-- Paper / source: Moonlight (arXiv:2502.16982) Fig.2 / timescale rule (2405.13698) τ_wd=1/(η·λ). The
-  deferred down-check of the rejected #4 (λ=0.1 → −0.0062 regression). ideas.md Tier-1 #4 follow-up.
-  Experiment 3 of the user-approved set — first candidate measured against the **new Adan baseline**.
-- Hypothesis: the global WD (1.25e-4) is inert on this ~18k-step screen (τ≈1.6e7). λ=0.1 over-regularized
-  (τ≈2k, decayed Muon weights ~9× over the run). λ=0.03 (τ≈6.7k) is the gentler down-check — enough to
-  bound Muon weight/attn-logit growth without starving capacity on the short horizon. Muon-group WD is
-  orthogonal to the aux Adan change, so testing on the Adan baseline is still one clean change.
-- Change (files): **re-added** the `muon_weight_decay` knob (it never landed on trunk — only #4's docs
-  did; the earlier "knob kept" notebook claim was imprecise). `config.yaml` default `muon_weight_decay:
-  null` (→ global WD); `dfine.py:build_optimizer` routes it onto the **Muon group only** (verified: Muon
-  group wd=0.03, all 4 Adan aux groups unchanged at 1.25e-4/0.0); `train.py` threads it.
-  `research_visdrone.yaml` set 0.03 (on the Adan override). exp/muon-wd-003 sha `e5a5feb`. `make test`
-  89/89; group wiring verified.
-- Result (test, 2 seeds, tight): mAP_50_95 **0.2188±0.0003** (seeds .2185/.2190, gain **+0.0021** vs Adan
-  0.2167, **< 0.003 margin**), f1 **0.568±0.0** (TRT row, both .568, gain **+0.0045** > margin), lat trt
-  2.1 / torch 13.75 ms (ratio 1.0), params 10.302M. No NaN. 🔴 KEEP BEST (Adan).
-- Read: **positive near-miss, not a tie or regression.** Both seeds (.2185/.2190) sit cleanly above BOTH
-  Adan-baseline seeds (.2166/.2169), and f1 improves a clean +0.0045 (.568 vs .564/.563) — so this is a
-  real, small, consistent gain that just misses the 0.003 mAP margin floor (a 3rd seed can't rescue it:
-  promotion needs mean >0.2197 → a seed >0.2213, above both observed; seeds agree to 0.0005 so rule-9
-  doesn't even ask for one). **This decisively reverses the λ=0.1 verdict's level error:** λ=0.1 was
-  −0.0062 (over-regularized), λ=0.03 is +0.0021 — the mechanism is sound, λ=0.03 is near the screen sweet
-  spot, just sub-margin. **Most important for adoption:** the original ideas.md motivation is that **WD's
-  benefit GROWS with run length, so the truncated 60-min screen UNDER-measures it** — a +0.0021/+0.0045
-  positive near-miss here is exactly the signal that says "run the §6 full-run." So muon-wd-003 is now the
-  **strongest-motivated §6 full-run candidate** (on top of Adan), where it may clear the bar. On the screen
-  it stays rejected (rule-bound). Knob lives on `exp/muon-wd-003` (forensics), NOT on trunk. Follow-ups
-  (not auto-run): §6 full-run of Adan+Muon-WD λ=0.03; λ-sweep 0.02/0.05 to map the screen peak (low prior
-  — sub-margin). Segment: Muon group only, mask head stays on Adan; rejected → nothing on trunk.
 
 ## 2026-06-14 — adan (Adan optimizer on the aux/non-Muon groups, Tier-2 #11)   [PROMOTED — second real win]
 - Paper / source: Adan (Xie et al., arXiv:2208.06677, TPAMI'24) — adaptive Nesterov momentum; the only
