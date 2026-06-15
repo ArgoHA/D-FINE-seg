@@ -1,13 +1,13 @@
 {
-  "name": "muon",
+  "name": "adan",
   "eval_split": "test",
   "git": {
-    "branch": "exp/muon",
-    "sha": "06f448e"
+    "branch": "exp/adan",
+    "sha": "4a09ba7"
   },
   "means": {
-    "mAP_50_95": 0.2061,
-    "f1": 0.552
+    "mAP_50_95": 0.2167,
+    "f1": 0.5635
   },
   "margin": {
     "mAP_50_95": 0.003,
@@ -15,7 +15,7 @@
   },
   "latency_ms": {
     "trt": 2.1,
-    "torch": 13.9333
+    "torch": 13.65
   },
   "params_M": 10.302
 }
