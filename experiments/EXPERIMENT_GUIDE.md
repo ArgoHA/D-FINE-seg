@@ -4,9 +4,15 @@ How an AI agent runs the D-FINE-seg improvement loop. Read this together with `C
 mechanics) before starting. Follow it literally.
 
 ## 0. Mission
-Improve detection accuracy on **VisDrone** (hard, small/dense objects, ~1h to train) **without
-meaningfully raising inference latency**, via changes that should also help COCO. Each accepted
-change is a small, motivated, paper-grounded edit — proven to beat the current best across seeds.
+Improve **D-FINE-seg itself** — the model + training recipe every user of this repo gets
+(detection and segmentation; the campaign trains `detect`, segmentation must not regress — rule
+10) — **without meaningfully raising inference latency**. **VisDrone is only the experimentation
+dataset**: a fast, hard screen (small/dense objects, ~1h to train), a proxy — not the target.
+Prefer changes whose *mechanism* is general (optimizer, schedule, losses, augmentation policy,
+training process) over dataset-specific tuning; a VisDrone-only hack (tiny-object matcher
+reweighting, drone-specific augs) is at best a flagged side-finding, not a campaign win. Each
+accepted change is a small, motivated, paper-grounded edit — proven to beat the current best
+across seeds.
 
 ## 1. Hard rules (do not violate)
 1. **One change per experiment.** Isolate the variable, or the ledger is meaningless.
@@ -31,9 +37,11 @@ change is a small, motivated, paper-grounded edit — proven to beat the current
 8. **Approval gate (interactive mode):** after research, present a short proposal and WAIT for the
    user to approve / edit / skip before implementing and burning GPU time. (See §7 for when this is
    relaxed.)
-9. **Fixed campaign constants — do not retune.** `train.epochs=100` and `harness.seeds` are held
+9. **Fixed campaign constants — do not retune.** `train.epochs=30` and `harness.seeds` are held
    constant across the whole campaign (epochs shapes the LR schedule, not run length — see §8).
-   Never change them *to chase a result*; if you ever must, re-baseline. Never raise `epochs` back to
+   Never change them *to chase a result*; if you ever must, re-baseline. (`epochs` was changed
+   100→30 on 2026-06-13 as a deliberate methodology fix — the required **horizon-30 re-baseline is
+   PENDING**; run it before the next candidate.) Never raise `epochs` back to
    1000. **Seeds are now `[42, 123]` (2-seed screen, down from 3 as of 2026-06-08).** This did not
    require a re-baseline: observed per-seed std (~0.0005–0.001) is far below the 0.003 margin floor, so
    the floor — not the seed-count std — governs promotion, and Muon's 3-seed baseline mean stays valid.
@@ -143,9 +151,16 @@ Full/long manual runs (§6) follow the same background pattern.
 ```bash
 uv run python scripts/promote.py --candidate experiments/runs/<name>/candidate_result.json --base main_exp
 ```
-Then update `lab_notebook.md`: the **Current state** block AND a dated entry (why it worked or
-didn't — required for rejections too). Commit ledger + notebook (+ baseline.json if changed) on
-`main_exp` (on rejection) or on the `exp/<name>` branch (so a promotion carries them).
+Then update **BOTH** tracking docs — required on **every** terminal outcome (promote, reject, fail):
+- `lab_notebook.md`: the **Current state** block AND a dated entry (why it worked or didn't —
+  required for rejections too).
+- `ideas.md`: record **what was tried** on the idea you just ran — mark it 🔴/🟢 with the one-line
+  result + a pointer to the notebook, and update the "next up" pointer. You do **not** need to add
+  *new* ideas, but the run-queue must never still list a tried idea as pending (a fresh agent would
+  re-run it). On promotion you additionally move/retire the idea (step G).
+
+Commit ledger + notebook + ideas.md (+ baseline.json if changed) on `main_exp` (on rejection) or on
+the `exp/<name>` branch (so a promotion carries them).
 
 **Then notify the user** (run after `promote.py`, so the ledger holds the verdict):
 ```bash
@@ -199,15 +214,20 @@ Two modes:
   follow progress remotely without watching the box.
 
 ## 8. Gotchas
-- **Walltime governs *when we stop*, but `epochs` sets the LR-schedule horizon.** `train.epochs=100`
-  (fixed — **do not change**), `train.max_walltime_min=60`; training stops mid-schedule at ~epoch
-  20-25. `epochs` is **not** a "train this long" knob here — walltime ends the run — it only shapes
-  the warmup/decay curve. At `epochs=1000` the schedule is stretched so far that the real ~20-25
-  epochs never leave early warmup (LR too low → starved convergence); `100` matches the curve to the
-  real training length. Treat `train.epochs=100` as a campaign constant like the seeds: changing it
-  re-shapes every run's LR and invalidates the baseline margin — re-baseline if you ever do.
-  Mosaic-close and any epoch-fraction schedule still never reach their end — consistent across
-  candidates, so fair, but every run is "early schedule." Keep it identical for all runs.
+- **Walltime governs *when we stop*, but `epochs` sets the LR-schedule horizon.** `train.epochs=30`
+  (fixed — **do not change**; 100 until 2026-06-13, originally 1000), `train.max_walltime_min=60`.
+  60 min ≈ 21 epochs, so runs stop at ~epoch 20-25 — i.e. ~65-80% through the 30-epoch anneal,
+  ending at ~8-30% of peak LR. Why 30: at horizon 100 every run ended at ~96% of peak LR (45%
+  warmup / 55% cruise / 0% decay) — an operating point full training never produces, so screen
+  verdicts were measured in an unrealistic state; horizon 30 keeps warmup short (3 epochs) and lets
+  the anneal mostly complete. At `epochs=1000` the run never leaves warmup (starved convergence);
+  never go back. `epochs` is **not** a "train this long" knob — walltime ends the run. It is a
+  campaign constant like the seeds: changing it re-shapes every run's LR and invalidates the
+  baseline margin — re-baseline when changed (**horizon-30 re-baseline: PENDING**). Stop-epoch
+  jitter now maps to end-LR jitter (~8-30% of peak); the margin floor absorbs it — the price of a
+  realistic end state. Mosaic-close is pinned OFF in the research config (`no_mosaic_epochs: 0`,
+  user decision 2026-06-13): the default close at `epochs-5`=25 could fire on a fast seed but not a
+  slow one — pinning keeps seeds comparable. "No clean-data tail" is an accepted campaign constant.
 - **Accuracy split = test.** Both f1 (bench, **TensorRT row** — §3) and mAP_50_95 (train) are read from
   the test set; keep it that way so candidate and baseline are comparable.
 - **Determinism:** seeds are fixed in `harness.seeds`. Don't change them mid-campaign or the
