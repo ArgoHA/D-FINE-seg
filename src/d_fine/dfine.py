@@ -139,7 +139,7 @@ def _is_muon_param(name, param):
 
 def build_optimizer(
     model, lr, backbone_lr, betas, weight_decay, base_lr, use_muon=False, muon_lr=None,
-    aux_optimizer="adamw",
+    aux_optimizer="adamw", respect_backbone_lr=False,
 ):
     backbone_exclude_norm = []
     backbone_norm = []
@@ -188,10 +188,14 @@ def build_optimizer(
     # Muon path: same AdamW groups (use_muon=False, explicit betas/wd since the custom
     # optimizer has no top-level defaults) + a Muon group appended LAST so the scheduler's
     # per-group max_lr list can target it by index.
-    for g in param_groups:
+    # respect_backbone_lr: keep the pretrained backbone on AdamW at its own (low) LR — for
+    # scaling to l/x where backbone_lr << base_lr and Adan's x5 + LR-homogenization would
+    # over-train it. Default off -> S/n behaviour (all aux on Adan) unchanged.
+    for i, g in enumerate(param_groups):  # groups 0,1 = backbone; 2 = encdec norm/bias; 3 = rest
         g["use_muon"] = False
         g.setdefault("weight_decay", weight_decay)
-        if aux_optimizer == "adan":
+        is_backbone = i < 2
+        if aux_optimizer == "adan" and not (respect_backbone_lr and is_backbone):
             # Adan on the aux groups: optimizer-intrinsic betas/eps; per-group weight_decay
             # kept identical to the AdamW recipe so only the update rule (+LR) changes.
             g["aux_optimizer"] = "adan"
