@@ -218,10 +218,8 @@ class Trainer:
 
         use_muon = cfg.train.get("use_muon", False)
         aux_optimizer = cfg.train.get("aux_optimizer", "adamw")
-        # l/x: always preserve the backbone's own (low) LR. The Muon scheduler/optimizer
-        # split otherwise homogenizes it to a base_lr-derived peak (~100-500x too high for
-        # the B5/B4 backbone), clobbering the per-group max_lr the non-Muon path already
-        # builds for l/x below. n/s/m unchanged (single scalar max_lr there anyway).
+        # l/x: force the backbone to its own low LR — the Muon path otherwise homogenizes it
+        # to a base_lr-derived peak (~100-500x too high). n/s/m unchanged.
         respect_backbone_lr = (
             cfg.train.get("muon_respect_backbone_lr", False) or cfg.model_name in ("l", "x")
         )
@@ -253,7 +251,7 @@ class Trainer:
                 aux_peak = cfg.train.base_lr * 2
                 if aux_optimizer == "adan":  # Adan needs a higher LR (its convention)
                     aux_peak *= cfg.train.get("adan_lr_mult", 5.0)
-                if respect_backbone_lr:  # keep the pretrained backbone near its own (low) LR
+                if respect_backbone_lr:
                     bb_peak = cfg.train.backbone_lr * 2
                     max_lr = [bb_peak, bb_peak, aux_peak, aux_peak, muon_lr * 2]
                 else:
