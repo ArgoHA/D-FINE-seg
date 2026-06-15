@@ -188,9 +188,7 @@ def build_optimizer(
     # Muon path: same AdamW groups (use_muon=False, explicit betas/wd since the custom
     # optimizer has no top-level defaults) + a Muon group appended LAST so the scheduler's
     # per-group max_lr list can target it by index.
-    # respect_backbone_lr: keep the pretrained backbone on AdamW at its own (low) LR — for
-    # scaling to l/x where backbone_lr << base_lr and Adan's x5 + LR-homogenization would
-    # over-train it. Default off -> S/n behaviour (all aux on Adan) unchanged.
+    # respect_backbone_lr: keep the backbone on AdamW at its own low LR (l/x, backbone_lr << base_lr).
     for i, g in enumerate(param_groups):  # groups 0,1 = backbone; 2 = encdec norm/bias; 3 = rest
         g["use_muon"] = False
         g.setdefault("weight_decay", weight_decay)
