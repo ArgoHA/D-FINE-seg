@@ -218,11 +218,9 @@ class Trainer:
 
         use_muon = cfg.train.get("use_muon", False)
         aux_optimizer = cfg.train.get("aux_optimizer", "adamw")
-        # l/x: force the backbone to its own low LR — the Muon path otherwise homogenizes it
+        # l/x: keep the backbone on its own low LR — the Muon path otherwise homogenizes it
         # to a base_lr-derived peak (~100-500x too high). n/s/m unchanged.
-        respect_backbone_lr = (
-            cfg.train.get("muon_respect_backbone_lr", False) or cfg.model_name in ("l", "x")
-        )
+        respect_backbone_lr = cfg.model_name in ("l", "x")
         muon_lr = cfg.train.base_lr * 10  # Muon peak (pre-*2); enc/dec matrices tolerate higher LR
         self.optimizer = build_optimizer(
             self.model,

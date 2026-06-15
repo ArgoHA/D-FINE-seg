@@ -213,7 +213,7 @@ near-miss), then #6 EMA bracket or a Tier-3 arch pivot (user-steered).**
 - **Segment safety:** ✅ Muon group only.
 
 ### 5. IoU-aware classification target swap — ONE slot: IA-BCE or GCL  — 🔴 TRIED (IA-BCE), REJECTED (regression, 2026-06-13)
-> Pre-step matched-IoU histogram (baseline_h30, `experiments/diag_matched_iou.py`): median 0.73, only
+> Pre-step matched-IoU histogram (baseline_h30, diagnostic since removed): median 0.73, only
 > 6.2% <0.1 → picked **IA-BCE** over GCL. Result: test mAP 0.2098 (−0.0021), f1 0.5405 (−0.016, guard
 > tripped hard even at val-optimal threshold). IA-BCE's un-α'd s² negatives run cls loss ~4-5× hot vs
 > fixed bbox/giou → loss balance shifts off localization; 12e COCO +1.3 didn't transfer. GCL untested
