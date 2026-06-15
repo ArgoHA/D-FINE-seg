@@ -233,6 +233,7 @@ class Trainer:
             muon_lr=muon_lr,
             aux_optimizer=aux_optimizer,
             respect_backbone_lr=respect_backbone_lr,
+            adan_betas=tuple(cfg.train.get("adan_betas", (0.98, 0.92, 0.99))),
         )
 
         self.scheduler = None
