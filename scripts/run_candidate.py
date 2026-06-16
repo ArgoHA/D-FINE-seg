@@ -9,7 +9,10 @@ export + bench EACH seed. Accuracy is measured on the held-out TEST set:
                   because bench runs at a fixed conf threshold.
   - latency     : from bench (PyTorch + TensorRT rows), mean over seeds.
 
-Both accuracy metrics are averaged over seeds (3-seed promotion). Writes
+Per seed, also flags any |TRT f1 - torch f1| > 0.003 as a likely-broken/degraded export
+(warn-only; recorded as trt_f1_gap / trt_export_flagged in the result JSON).
+
+Both accuracy metrics are averaged over seeds. Writes
 experiments/runs/<name>/candidate_result.json. Does NOT touch git or the ledger
 (that's promote.py). Whatever is in the working tree now IS the candidate, so check
 out the experiment branch before running this.
@@ -30,6 +33,7 @@ import torch
 import yaml
 
 REPO = Path(__file__).resolve().parents[1]
+TRT_F1_GAP_TOL = 0.003  # |TRT f1 - torch f1| above this flags a likely-broken/degraded export
 
 
 def hydra_val(v):
@@ -62,22 +66,23 @@ def read_map(run_dir, split="test"):
 
 
 def read_bench(run_dir):
-    """f1 (TensorRT row, fallback PyTorch) + latency (PyTorch/TensorRT) from bench_metrics.csv (test)."""
+    """(f1, lat, f1_by_backend) from bench_metrics.csv (test). f1 is the TensorRT row — the deployment
+    artifact; fall back to PyTorch only if TRT was not benched at all, so a present-but-~0 TRT row
+    surfaces and fails the guard (EXPERIMENT_GUIDE §3). f1_by_backend carries both rows for the
+    torch-vs-TRT consistency check."""
     df = pd.read_csv(run_dir / "bench_metrics.csv", index_col=0)
-    # f1 from the TensorRT row — the deployment artifact. A present-but-~0 TRT row must surface so a
-    # broken/degraded export fails the guard (EXPERIMENT_GUIDE §3). Fall back to PyTorch only if TRT
-    # was not benched on this platform at all.
-    if "TensorRT" in df.index:
-        f1 = float(df.loc["TensorRT", "f1"])
-    elif "PyTorch" in df.index:
-        f1 = float(df.loc["PyTorch", "f1"])
-    else:
-        f1 = None
-    lat = {}
-    for label, key in (("PyTorch", "torch"), ("TensorRT", "tensorrt")):
-        if label in df.index and "latency" in df.columns:
-            lat[key] = float(df.loc[label, "latency"])
-    return f1, lat
+    f1_by = {
+        key: float(df.loc[label, "f1"])
+        for label, key in (("PyTorch", "torch"), ("TensorRT", "tensorrt"))
+        if label in df.index and "f1" in df.columns
+    }
+    f1 = f1_by.get("tensorrt", f1_by.get("torch"))
+    lat = {
+        key: float(df.loc[label, "latency"])
+        for label, key in (("PyTorch", "torch"), ("TensorRT", "tensorrt"))
+        if label in df.index and "latency" in df.columns
+    }
+    return f1, lat, f1_by
 
 
 def count_params(model_pt):
@@ -144,15 +149,32 @@ def main():
         # export + bench this seed
         run(["uv", "run", "python", "-m", "src.dl.export", *base_args, f"train.path_to_save={sd}"])
         run(["uv", "run", "python", "-m", "src.dl.bench", *base_args, f"train.path_to_save={sd}"])
-        f1, lat = read_bench(sd)
+        f1, lat, f1_by = read_bench(sd)
+        gap = (
+            round(f1_by["tensorrt"] - f1_by["torch"], 4)
+            if f1_by.get("tensorrt") is not None and f1_by.get("torch") is not None
+            else None
+        )
+        if gap is not None and abs(gap) > TRT_F1_GAP_TOL:
+            print(
+                f"⚠️  seed {seed}: TRT f1 {f1_by['tensorrt']} vs torch f1 {f1_by['torch']} "
+                f"(gap {gap:+}, tol {TRT_F1_GAP_TOL}) — TRT export may be broken/degraded.",
+                flush=True,
+            )
         per_seed[seed] = {
             "mAP_50_95": read_map(sd, split),
             "f1": f1,
+            "f1_torch": f1_by.get("torch"),
+            "f1_trt": f1_by.get("tensorrt"),
+            "trt_f1_gap": gap,
             "lat_torch": lat.get("torch"),
             "lat_trt": lat.get("tensorrt"),
         }
 
     params_m = count_params(run_root / f"seed{seeds[0]}" / "model.pt")
+    trt_flagged = [
+        s for s in seeds if (g := per_seed[s]["trt_f1_gap"]) is not None and abs(g) > TRT_F1_GAP_TOL
+    ]
 
     def agg(key):
         m, s, n = mean_std([per_seed[s][key] for s in seeds])
@@ -168,6 +190,7 @@ def main():
         "walltime_min_per_seed": overrides.get("train.max_walltime_min"),
         "wall_total_min": round((time.time() - t0) / 60, 1),
         "params_M": params_m,
+        "trt_export_flagged": trt_flagged,
         "per_seed": per_seed,
         "agg": {k: agg(k) for k in ("mAP_50_95", "f1", "lat_torch", "lat_trt")},
     }
@@ -182,6 +205,11 @@ def main():
     print(
         f"   latency_ms: torch={a['lat_torch']['mean']} trt={a['lat_trt']['mean']}  params_M={params_m}"
     )
+    if trt_flagged:
+        print(
+            f"   ⚠️  TRT export FLAGGED on seeds {trt_flagged}: torch vs TRT f1 differ by > "
+            f"{TRT_F1_GAP_TOL}. Investigate the engine before trusting the verdict (EXPERIMENT_GUIDE §3)."
+        )
 
 
 if __name__ == "__main__":

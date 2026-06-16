@@ -10,16 +10,18 @@ established once on the first run and then overwritten whenever a candidate is
 promoted, so a fresh agent never re-trains a baseline — it just reads this file.
 
 Two metrics, both on the held-out TEST set, mean over seeds:
-  - mAP_50_95  (from training)  — primary; must improve beyond its noise margin.
-  - f1         (from bench)     — guard;   must not regress beyond its noise margin.
-`margin` = the current best's across-seed std for that metric (floor 0.003), i.e. a
-move must clear the variance we actually measured.
+  - mAP_50_95  (from training)  — accuracy.
+  - f1         (from bench)     — deployment artifact (TensorRT engine + NMS).
+Both count toward promotion via their average gain; neither may regress beyond its
+own noise margin (the f1 floor still catches a broken/degraded TRT export).
+`margin` = the current best's across-seed std for that metric (floor 0.003).
 
     gain_map = cand_map - best_map ;  gain_f1 = cand_f1 - best_f1
+    avg_gain = (gain_map + gain_f1) / 2 ;  M = (map_margin + f1_margin) / 2
     lat_ratio = cand_latency / best_latency   (TensorRT, fallback PyTorch)
-    PROMOTE if  gain_f1 > -f1_margin  (no real f1 regression)  AND
-                ( (gain_map > map_margin   and lat_ratio <= 1.05)
-                  or (gain_map > 2*map_margin and lat_ratio <= 1.20) )
+    PROMOTE if  gain_map > -map_margin  and  gain_f1 > -f1_margin  (neither regresses)  AND
+                ( (avg_gain > M    and lat_ratio <= 1.05)
+                  or (avg_gain > 2*M and lat_ratio <= 1.20) )
 
 Usage:
     # first run establishes the baseline automatically:
@@ -188,23 +190,27 @@ def main():
     viol = frozen_violations(args.base)
     blocked = bool(viol)
 
-    f1_ok = gain_f1 > -m_f1
+    no_regress = gain_map > -m_map and gain_f1 > -m_f1
+    avg_gain = round((gain_map + gain_f1) / 2, 4)
+    m_avg = round((m_map + m_f1) / 2, 4)
     within_tight = lat_ratio is not None and lat_ratio <= LAT_TIGHT
     within_loose = lat_ratio is not None and lat_ratio <= LAT_LOOSE
     promote = (
         (not blocked)
-        and f1_ok
-        and ((gain_map > m_map and within_tight) or (gain_map > 2 * m_map and within_loose))
+        and no_regress
+        and ((avg_gain > m_avg and within_tight) or (avg_gain > 2 * m_avg and within_loose))
     )
 
     print(f"\n=== {cand['name']} vs current best '{base['name']}' [{split}] ===")
     print(
-        f" mAP_50_95 : {cand_map}  (best {base_map}, gain {gain_map:+}, margin {m_map}, 2x {2 * m_map:.4f})  PRIMARY"
+        f" mAP_50_95 : {cand_map}  (best {base_map}, gain {gain_map:+}, margin {m_map})"
+        f"{'' if gain_map > -m_map else '  ❌ regressed'}"
     )
     print(
-        f" f1        : {cand_f1}  (best {base_f1}, gain {gain_f1:+}, margin {m_f1})  GUARD"
-        f"{'' if f1_ok else '  ❌ regressed'}"
+        f" f1        : {cand_f1}  (best {base_f1}, gain {gain_f1:+}, margin {m_f1})"
+        f"{'' if gain_f1 > -m_f1 else '  ❌ regressed'}"
     )
+    print(f" avg_gain  : {avg_gain:+}  (margin {m_avg}, 2x {2 * m_avg:.4f})  DECIDES")
     print(
         f" latency_ms: cand {cand_lat} / best {base_lat}  ratio {lat_ratio} (tight {LAT_TIGHT}, loose {LAT_LOOSE})"
     )
