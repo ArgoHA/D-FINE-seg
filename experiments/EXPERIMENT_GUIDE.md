@@ -1,109 +1,54 @@
 # EXPERIMENT_GUIDE.md — autoresearch playbook
 
-How an AI agent runs the D-FINE-seg improvement loop. Read this together with `CLAUDE.md` (repo
-mechanics) before starting. Follow it literally.
+How an AI agent runs the D-FINE-seg improvement loop. Read this together with `CLAUDE.md` (repo mechanics) before starting. Follow it literally.
 
 ## 0. Mission
-Improve **D-FINE-seg itself** — the model + training recipe every user of this repo gets
-(detection and segmentation; the campaign trains `detect`, segmentation must not regress — rule
-10) — **without meaningfully raising inference latency**. **VisDrone is only the experimentation
-dataset**: a fast, hard screen (small/dense objects, ~1h to train), a proxy — not the target.
-Prefer changes whose *mechanism* is general (optimizer, schedule, losses, augmentation policy,
-training process) over dataset-specific tuning; a VisDrone-only hack (tiny-object matcher
-reweighting, drone-specific augs) is at best a flagged side-finding, not a campaign win. Each
-accepted change is a small, motivated, paper-grounded edit — proven to beat the current best
-across seeds.
+Improve **D-FINE-seg itself** — the model + training (detection and segmentation; the campaign trains `detect`, segmentation must not regress — rule 10) without meaningfully raising inference latency. **VisDrone is only the experimentation dataset**: a fast, hard screen (small/dense objects, ~1h to train), a proxy — not the target. Prefer changes whose *mechanism* is general over dataset-specific tuning.
 
 ## 1. Hard rules (do not violate)
 1. **One change per experiment.** Isolate the variable, or the ledger is meaningless.
-2. **Init = ImageNet backbone only.** `train.imagenet_backbone=true` +
-   `train.pretrained_model_path=null`. Never load `dfine_*_coco.pt` — it biases toward the original
-   architecture. (Already set in `configs/research_visdrone.yaml`.)
-3. **Frozen files — never edit to change a result:** `src/dl/validator.py`, `src/dl/bench.py`,
-   `scripts/run_candidate.py`, `scripts/promote.py`. These define how success is measured.
-   `promote.py` rejects any candidate whose diff touches them.
-4. **Edit the model and the training process:** `src/d_fine/` (arch, losses, matcher) and
-   `src/dl/train.py` **when the change optimizes training** (optimizer, schedule, EMA, augmentation,
-   loss wiring). Pure-config ideas go in `configs/research_visdrone.yaml` overrides. Nothing else —
-   and never the frozen eval files above.
-5. **Latency budget:** promote only if latency ≤ 1.05× baseline, OR ≤ 1.20× with a *2× margin*
-   accuracy win. Enforced by `promote.py`.
-6. **Complexity / simplicity rule.** If a change adds a lot of code or large structural complexity
-   and the accuracy/latency delta is marginal, **skip it.** Prefer the simpler model. A borderline
-   metric win does not justify a big, hard-to-maintain change — say so in the notebook and keep the
-   baseline.
-7. **`make test` must pass** before training (full suite, ~6s). If it fails, the change is broken —
-   fix or abandon, don't train.
-8. **Approval gate (interactive mode):** after research, present a short proposal and WAIT for the
-   user to approve / edit / skip before implementing and burning GPU time. (See §7 for when this is
-   relaxed.)
-9. **Fixed campaign constants — do not retune.** `train.epochs=30` and `harness.seeds` are held
-   constant across the whole campaign (epochs shapes the LR schedule, not run length — see §8).
-   Never change them *to chase a result*; if you ever must, re-baseline. (`epochs` was changed
-   100→30 on 2026-06-13 as a deliberate methodology fix — the required **horizon-30 re-baseline is
-   PENDING**; run it before the next candidate.) Never raise `epochs` back to
-   1000. **Seeds are now `[42, 123]` (2-seed screen, down from 3 as of 2026-06-08).** This did not
-   require a re-baseline: observed per-seed std (~0.0005–0.001) is far below the 0.003 margin floor, so
-   the floor — not the seed-count std — governs promotion, and Muon's 3-seed baseline mean stays valid.
-   If a candidate's 2 seeds disagree by more than the margin, add a 3rd by hand before deciding.
-10. **Don't harm the `segment` variant.** The campaign trains `detect`, but any change that lands as
-    model code or a shared-config default also runs on `segment`. A change that helps detect must not
-    regress segmentation. If a change is unsafe for masks (e.g. heavy mosaic — CLAUDE.md gotcha #6)
-    or touches the mask head, gate it on `task` / keep it a detect-only override in
-    `research_visdrone.yaml`, and note the segment impact in the notebook.
+2. **Init = ImageNet backbone only:** `train.imagenet_backbone=true` + `train.pretrained_model_path=null` (set in `research_visdrone.yaml`). Never load `dfine_*_coco.pt` — biases toward the current arch. The backbone is **always pretrained**; swapping in a different backbone means bringing *its* pretrained (ImageNet) weights too, so comparisons stay fair.
+3. **Frozen files — never edit to change a result:** `src/dl/validator.py`, `src/dl/bench.py`, `scripts/run_candidate.py`, `scripts/promote.py`. These define how success is measured. `promote.py` rejects any candidate whose diff touches them.
+4. **Edit the model and the training process:** `src/d_fine/` (arch, losses, matcher) and `src/dl/train.py` **when the change optimizes training** (optimizer, schedule, EMA, augmentation, loss wiring). Pure-config ideas go in `configs/research_visdrone.yaml` overrides.
+5. **Latency budget:** promote only if latency ≤ 1.05× baseline, OR ≤ 1.20× with a *2× margin* accuracy win. Enforced by `promote.py`.
+6. **Complexity / simplicity rule.** If a change adds a lot of code or large structural complexity and the accuracy/latency delta is marginal, **skip it.** Prefer the simpler model. A borderline metric win does not justify a big, hard-to-maintain change — say so in the notebook and keep the baseline.
+7. **`make test` must pass** before training (full suite, ~6s). If it fails, the change is broken — fix or abandon, don't train.
+8. **Approval gate (interactive mode):** after research, present a short proposal and WAIT for the user to approve / edit / skip before implementing and burning GPU time. (See §7 for when this is relaxed.)
+9. **Fixed campaign constants — do not retune.** `train.epochs=30` and `harness.seeds` are held constant across the whole campaign. Never change them *to chase a result*; if you ever must, re-baseline. Seeds are `[42, 123]`.
+10. **Don't harm the `segment` variant.** The campaign trains `detect`, but any change that lands as model code or a shared-config default also runs on `segment`. A change that helps detect must not regress segmentation. If a change is unsafe for masks or touches the mask head, gate it on `task` / keep it a detect-only override in `research_visdrone.yaml`, and note the segment impact in the notebook.
 
 ## 2. Branching model
 - `main` — the user's real project. Never commit experiments here.
-- `main_exp` — the **single durable trunk**: harness + ledger + notebook + ideas + baseline +
-  current-best model code. Created once from `main` + the harness commit. Everything research lives
-  here, so `main` stays untouched.
+- `main_exp` — the **single durable trunk**: harness + ledger + notebook + ideas + baseline + current-best model code. Created once from `main` + the harness commit. Everything research lives here, so `main` stays untouched.
 - `exp/<name>` — one per experiment, branched from `main_exp`.
 
-Promotion = fast-forward `main_exp` to the winning `exp/<name>` (it carries both the code change and
-that run's ledger/notebook/baseline commits). On rejection, commit only the ledger/notebook update
-straight to `main_exp` and leave `exp/<name>` in place for forensics. Either way the tracking files
-advance on `main_exp` every iteration — that is what lets a fresh agent resume.
+Promotion = fast-forward `main_exp` to the winning `exp/<name>` (it carries both the code change and that run's ledger/notebook/baseline commits). On rejection, commit only the ledger/notebook update straight to `main_exp` and leave `exp/<name>` in place for forensics. Either way the tracking files advance on `main_exp` every iteration — that is what lets a fresh agent resume.
 
 ## 3. The decision (in `promote.py`)
 Two metrics, both on the held-out **test** set, mean over seeds:
-- **mAP_50_95** — from training `metrics.csv` (test row). **Primary.** Bench mAPs are meaningless
-  (bench runs at a single conf threshold), so mAP always comes from training.
-- **f1** — from `bench_metrics.csv` (**TensorRT row**). **Guard.** This is the *actual deployment
-  artifact* (TensorRT engine + letterbox + NMS), so f1 comes from the **TRT** bench row, not the PyTorch
-  row. Using the TRT f1 makes the guard also catch a **broken or degraded export**: a change can train
-  fine in PyTorch yet produce a TRT engine that collapses — e.g. a TensorRT fp16 fusion bug around
-  GridSample gave the QK-norm model test f1 0.0 (0 detections) while PyTorch f1 was 0.55 (2026-06-08;
-  root-caused 2026-06-10 → GridSample-fp32 pin in export.py, see experiments/qk_norm.md). The
-  PyTorch-row f1 never sees that;
-  the TRT row does. **A TRT row that is present but ≈0 must FAIL the guard — that is the whole point;**
-  fall back to the PyTorch row only when TRT was not benched on the platform at all (e.g. no GPU). Bench
-  runs at the **val-optimal conf threshold** (argmax-f1 on val, stored as `optimal_thresh` in
-  `extended_metrics.csv`), not a fixed 0.5 — so the guard reflects each model's best operating point
-  instead of penalizing models whose optimal threshold shifted (e.g. score-suppressing losses like MAL).
-  **mAP_50_95 (primary) is unchanged: torch, from training `metrics.csv` (test row).** (Implementation:
-  `run_candidate.py` must write the **TensorRT** f1 into `candidate_result.json` for `promote.py` to read;
-  if it still emits the PyTorch-row f1, that harness code is the one place to update to match this rule.)
+- **mAP_50_95** — from training `metrics.csv` (test row). Bench mAPs are meaningless (bench runs at a single conf threshold), so mAP always comes from training.
+- **f1** — from `bench_metrics.csv` (**TensorRT row**) — the *actual deployment artifact* (TRT engine + NMS), so the no-regression floor also catches a **broken or degraded export**: a change can train fine in PyTorch yet produce a TRT engine that collapses.
+
+Both count toward promotion via their **average gain**; neither may regress past its own margin.
 
 ```
-margin    = current best's across-seed std for that metric (floor 0.003)
 gain_map  = cand_map - best_map ;  gain_f1 = cand_f1 - best_f1
+avg_gain  = (gain_map + gain_f1) / 2 ;  M = (map_margin + f1_margin) / 2
+margin    = current best's across-seed std for that metric (floor 0.003)
 lat_ratio = cand_latency / best_latency      (TensorRT, fallback PyTorch)
-PROMOTE if  gain_f1 > -f1_margin             (f1 not regressing beyond noise)  AND
-            ( (gain_map > map_margin   and lat_ratio <= 1.05)
-              or (gain_map > 2*map_margin and lat_ratio <= 1.20) )
+PROMOTE if  gain_map > -map_margin  and  gain_f1 > -f1_margin            (neither regresses)
+       and  ( (avg_gain > M    and lat_ratio <= 1.05)
+              or (avg_gain > 2*M and lat_ratio <= 1.20) )
 ```
-`margin` is the variance we actually measured, so a "win" must clear real noise. The simplicity
-rule (1.6) still overrides a marginal pass.
+`margin` is the variance we actually measured, so a "win" must clear real noise. The simplicity rule (1.6) still overrides a marginal pass.
+
+**Export sanity check:** `run_candidate.py` flags any seed whose **torch vs TRT f1 differ by > 0.003** as a likely-broken/degraded export (warn-only, in the run log + `trt_export_flagged` in the result JSON) — an independent catch beyond the f1 no-regression floor.
 
 ## 4. The baseline is established ONCE and persisted
-`experiments/baseline.json` describes the **current best** (not the original control). It is created
-on the very first run and then overwritten automatically whenever a candidate is promoted.
+`experiments/baseline.json` describes the **current best**. It is created on the very first run and then overwritten automatically whenever a candidate is promoted.
 
-- **First run ever** (no `baseline.json`): your first experiment is the **unchanged** architecture
-  — the control. `promote.py` detects the missing file, stores it as the baseline, and logs it.
-  Commit it. This 3-seed run happens **exactly once in the project's life.**
-- **Every later agent/session**: `baseline.json` already exists and is committed → **never re-train
-  the control.** Read it and go straight to the next idea. This is why starting over is not 3h.
+- **First run ever** (no `baseline.json`): your first experiment is the **unchanged** architecture — the control. `promote.py` detects the missing file, stores it as the baseline, and logs it. Commit it. This 2-seed run happens **exactly once in the project's life.**
+- **Every later agent/session**: `baseline.json` already exists and is committed → **never re-train the control.** Read it and go straight to the next idea.
 
 Establish it (one time):
 ```bash
@@ -113,8 +58,6 @@ uv run python scripts/promote.py --candidate experiments/runs/baseline/candidate
 git branch -f main_exp HEAD            # control is the first 'best'
 # commit experiments/baseline.json + ledger.csv + notebook on main_exp
 ```
-Inspect the per-seed std in `baseline.json` margins: if it's large relative to the gains you hope
-for, raise seeds or walltime before trusting any single comparison.
 
 ## 5. The loop (one iteration)
 **A. Bootstrap / read state.** Be on the trunk: `git checkout main_exp`. Read this guide,
@@ -135,13 +78,10 @@ expected result. Wait for approve / edit / skip.
 pass. Commit.
 
 **E. Run candidate** (≈2×60 min train + per-seed export/bench):
-Launch in the **background** redirecting to the log; the agent monitors that log (and is woken on
-completion if it used its background-exec tool). No separate tmux session — this agent already runs
-inside the user's tmux on the server, so a second detached session adds no visibility: output is
-redirected to the log, so attaching shows a blank pane.
+Launch in the **background** redirecting to the `current.log`;
 ```bash
 nohup uv run python scripts/run_candidate.py --name <name> --comment "<what changed>" \
-  > experiments/runs/<name>.log 2>&1 &
+  > experiments/runs/current.log 2>&1 &
 # user: `tail -f experiments/runs/<name>.log` to watch epochs live.
 # agent: poll experiments/runs/<name>.log + train_log.txt.
 ```
