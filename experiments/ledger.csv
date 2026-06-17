@@ -17,3 +17,4 @@ timestamp,name,branch,sha,base,seeds,split,map_mean,map_gain,map_margin,f1_mean,
 2026-06-14T02:41:13,precise-bn,exp/precise-bn,cf4d8fc,main_exp,2,test,0.2117,-0.0002,0.003,0.554,-0.0025,0.003,13.6,2.1,1.0,10.302,False,"PreciseBN post-cap BN recalibration on clean (val-transform) data, keep-if-better (Tier-2 #9)"
 2026-06-14T05:13:23,adan,exp/adan,4a09ba7,main_exp,2,test,0.2167,0.0048,0.003,0.5635,0.007,0.003,13.65,2.1,1.0,10.302,True,"Adan optimizer on aux (non-Muon) groups, aux peak LR x5 (Tier-2 #11)"
 2026-06-14T07:39:11,muon-wd-003,exp/muon-wd-003,e5a5feb,main_exp,2,test,0.2188,0.0021,0.003,0.568,0.0045,0.003,13.75,2.1,1.0,10.302,False,"Real decoupled WD lambda=0.03 on the Muon group, on the Adan baseline (Tier-2 #4 follow-up)"
+2026-06-17T03:06:36,spd-conv,exp/spd-conv,3be4729,main_exp,2,test,0.2173,0.0006,0.003,0.5615,-0.002,0.003,13.25,2.1,1.0,10.689,False,"SPD-Conv (arXiv:2208.03641) neck PAN downsample: space-to-depth + 1x1 conv (A1, partial-init arch)"

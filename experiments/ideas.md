@@ -372,9 +372,10 @@ ablation), RT-DETRv2 2407.17140, RT-DETRv3 2409.08475, RT-DETRv4 2510.25257, DEI
 2509.20787, RF-DETR 2511.09554, LW-DETR 2406.03459, FasterNet 2303.03667, LowFormer 2409.03460, PCN
 2502.01303, StarNet 2403.19967, SPD-Conv 2208.03641, Rank-DETR 2310.08854, YOLOv9/GELAN 2402.13616.
 
-**Ranked run queue (user-steered).** **A7 KD (train-only, top priority)** → A1 (small-object, best
-evidence) → A3 (cheap, low-risk) → A2 (the one fair backbone probe) → A4 (free-at-deploy, speculative) →
-A5 (robustness, not accuracy) → A6 (train-only filler). **Segment track (separate `task: segment` eval,
+**Ranked run queue (user-steered).** **A7 KD (train-only, top priority)** → ~~A1~~ 🔴 (tried 2026-06-17,
+tie) → **A3 (cheap, low-risk) ← NEXT (autonomous trio ②)** → A2 (the one fair backbone probe) → A4
+(free-at-deploy, speculative) → A5 (robustness, not accuracy) → **A6 (train-only filler) ← autonomous trio ③**.
+**Autonomous arch trio in progress (2026-06-17): ① A1 🔴 done → ② A3 → ③ A6.** **Segment track (separate `task: segment` eval,
 later — NOT on the detect screen): A8 finer mask-head.** Read the paper, measure latency, run the TRT-row
 check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate research pass — user decision.)
 
@@ -407,7 +408,14 @@ check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate resear
   mask predictions too. **Expected:** highest-EV Tier-3 item, gated by (a) a fair teacher and (b) the
   walltime check — both must pass before trusting the screen number.
 
-### A1. SPD-Conv detail-preserving downsampling (small/dense; best small-object evidence) — ⬜ next
+### A1. SPD-Conv detail-preserving downsampling (small/dense; best small-object evidence) — 🔴 TRIED, REJECTED (tie/slight-neg, 2026-06-17)
+> Placement (a) tried (neck PAN SCDown → space-to-depth + 1x1). Result: test mAP_50_95 0.2173 (+0.0006 ≪
+> margin), f1 0.5615 (−0.0020), avg_gain −0.0007, lat 1.0, **params +0.387M**, seed42 TRT-gap −0.004. The
+> YOLO small-object win didn't transfer to the DETR neck: PAN stride 16/32 isn't where SPD's detail
+> preservation pays, and RepNCSPELAN4 + deformable decoder already fuse multi-scale context. Rejected
+> (simplicity: params↑ + faint Slice+Concat TRT-fragility for a tie). Code on exp/spd-conv (`3be4729`),
+> off-trunk. **Placement (b) — backbone-stem space-to-depth — remains an open larger arch bet** if revisited.
+> See lab notebook 2026-06-17. Section kept below for the (b) follow-up.
 - **Paper:** Sunkara & Luo, "No More Strided Convolutions or Pooling" (SPD-Conv, arXiv:2208.03641,
   ECML-PKDD'22). Replace a *strided/pooled* downsample with **parameter-free space-to-depth** — slice the
   map into 4 stride-2 sub-maps, concat → 4×C at H/2×W/2 — then a stride-1 conv. **COCO Table 4 (verified):**

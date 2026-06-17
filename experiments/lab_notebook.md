@@ -18,6 +18,14 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   2.1ms / torch 13.65ms, ratio 1.0), params 10.302M, TRT row healthy (export OK). **This is the new bar
   for every subsequent candidate** (was Muon-only `baseline_h30` 0.2119/0.5565; Adan added
   +0.0048 mAP / +0.0070 f1, both > margin, multi-seed, zero latency — see 2026-06-14 adan entry).
+- 🤖 **Autonomous arch-trio campaign (2026-06-17, user-steered Tier-3 light set):** A1 SPD-Conv → A3
+  RMSNorm+SwiGLU → A6 HMC, back-to-back on the S/ImageNet/h30 2-seed screen. Bar = Adan 0.2167/0.5635.
+  **① A1 SPD-Conv → 🔴 rejected** (tie/slight-neg: mAP 0.2173 +0.0006, f1 0.5615 −0.0020, avg_gain
+  −0.0007, lat 1.0, params +0.387M, seed42 TRT-gap −0.004). **Next: ② A3 RMSNorm+SwiGLU.** **Methodology
+  call (this campaign):** arch changes alter named params → full `make test` pretrained-COCO row fails by
+  construction (no COCO weights for a new graph, §6); gate on `make test-fast` (structural/forward/shapes)
+  instead. A6 (matcher-only, graph-identical) passes full `make test`. Trunk synced main_exp→main first
+  (latest frozen harness + torch 2.9.1).
 - **In progress:** 🔬 **§6 X full-run A/B** (COCO-init dfine_x_coco, 75ep, batch 4, option-B optimizer
   split: backbone AdamW @4e-6 / heads Adan ×5 @2e-3 / enc-dec Muon @4e-3) vs ref `det_x_2026-02-21`
   (test mAP_50_95 0.2601 / mAP_50 0.4431 / TRT f1 0.611 @4.5ms). **Run-1 = Adan + Muon-WD λ=0.03 DONE
@@ -134,6 +142,34 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-17 — spd-conv (SPD-Conv neck PAN downsample, Tier-3 A1)   [rejected — tie / slight-neg]
+- Paper / source: SPD-Conv (Sunkara & Luo, arXiv:2208.03641, ECML-PKDD'22). ideas.md Tier-3 A1. First
+  of the user-approved autonomous arch trio (A1 SPD-Conv → A3 RMSNorm+SwiGLU → A6 HMC), 2026-06-17.
+- Hypothesis: strided downsampling discards the high-freq detail tiny objects live on (55% of our boxes
+  <16px). Replace the PAN bottom-up SCDown (1x1 + depthwise stride-2) with space-to-depth (slice into 4
+  stride-2 sub-maps, concat → 4C at H/2×W/2) + a 1x1 conv to restore channels — moves detail into
+  channels instead of dropping it. TRT-safe (Slice+Concat, no grid_sample); fair (neck change, backbone
+  ImageNet weights untouched; the 2 downsample convs init random under strict=False — partial-init).
+- Change (files): `arch/hybrid_encoder.py` — new `SPDConv` (space-to-depth + ConvNormLayer_fuse(4C,C,1,1));
+  swapped into `downsample_convs` (was `SCDown(hidden_dim,hidden_dim,3,2)`). ~10 LOC. exp/spd-conv sha
+  3be4729. `make test-fast` 87/87 (full `make test` pretrained-COCO row fails by construction — new graph,
+  no COCO weights; forward healthy 14TP/0FP/5FN, mAP_50_95 0.712≥0.7).
+- Result (test, 2 seeds): mAP_50_95 **0.2173±0.0007** (seeds .2166/.218, gain **+0.0006** ≪ margin),
+  f1 **0.5615±0.0005** (TRT row, seeds .561/.562, gain **−0.0020**, within margin), avg_gain −0.0007,
+  lat trt 2.1 / torch 13.25 ms (ratio 1.0), params **10.689M (+0.387M)**. trt_export_flagged [seed42]:
+  torch f1 0.565 vs TRT 0.561 (gap −0.004, just over the 0.003 warn tol; not a collapse — both healthy).
+  No NaN. 🔴 KEEP BEST.
+- Read: clean **tie / slight-negative** — the first DETR-family SPD-Conv test does not transfer the YOLO
+  small-object win here. Likely reasons: (1) the swap is at the **neck PAN** (stride 16/32), not the early
+  high-res backbone where SPD's detail-preservation pays most — ideas.md's higher-upside placement (b),
+  the backbone stem, was deferred as the bigger arch change; (2) D-FINE's RepNCSPELAN4 neck + deformable
+  decoder already aggregate multi-scale context, so a detail-preserving downsample at 1/16–1/32 adds
+  little. The +0.387M params + the seed42 TRT-gap flag (a faint Slice+Concat fragility signal) make this
+  **not** worth keeping even at a tie (simplicity rule). Rejected → code stays on exp/spd-conv for
+  forensics; the backbone-stem placement (b) remains an open, larger arch bet if SPD is revisited.
+  Segment: feeds the mask-head stride-8 tap region but masks untouched on this detect screen (rejected →
+  n/a). Next: A3 RMSNorm+SwiGLU decoder modernization.
 
 ## 2026-06-14 — adan (Adan optimizer on the aux/non-Muon groups, Tier-2 #11)   [PROMOTED — second real win]
 - Paper / source: Adan (Xie et al., arXiv:2208.06677, TPAMI'24) — adaptive Nesterov momentum; the only
