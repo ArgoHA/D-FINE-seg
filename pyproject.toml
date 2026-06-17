@@ -40,6 +40,7 @@ dependencies = [
     "torchvision==0.24.1",
     "tqdm==4.66.5",
     "wandb==0.26.1",
+    "python-multipart==0.0.31",
 ]
 
 [dependency-groups]
