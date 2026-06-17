@@ -373,9 +373,10 @@ ablation), RT-DETRv2 2407.17140, RT-DETRv3 2409.08475, RT-DETRv4 2510.25257, DEI
 2502.01303, StarNet 2403.19967, SPD-Conv 2208.03641, Rank-DETR 2310.08854, YOLOv9/GELAN 2402.13616.
 
 **Ranked run queue (user-steered).** **A7 KD (train-only, top priority)** → ~~A1~~ 🔴 (tried 2026-06-17,
-tie) → **A3 (cheap, low-risk) ← NEXT (autonomous trio ②)** → A2 (the one fair backbone probe) → A4
-(free-at-deploy, speculative) → A5 (robustness, not accuracy) → **A6 (train-only filler) ← autonomous trio ③**.
-**Autonomous arch trio in progress (2026-06-17): ① A1 🔴 done → ② A3 → ③ A6.** **Segment track (separate `task: segment` eval,
+tie) → ~~A3~~ 🔴 (tried 2026-06-17, positive near-miss; RMSNorm-only ablation open) → A2 (the one fair
+backbone probe) → A4 (free-at-deploy, speculative) → A5 (robustness, not accuracy) → **A6 (train-only
+filler) ← NEXT (autonomous trio ③)**.
+**Autonomous arch trio (2026-06-17): ① A1 🔴 → ② A3 🔴 → ③ A6 (running).** **Segment track (separate `task: segment` eval,
 later — NOT on the detect screen): A8 finer mask-head.** Read the paper, measure latency, run the TRT-row
 check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate research pass — user decision.)
 
@@ -462,7 +463,14 @@ check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate resear
   Nov'25). Run it as the *definitive* "is the backbone the bottleneck?" answer — cheap, one experiment,
   high information value either way. **Segment safety:** ✅ verify mask tap (128-ch stride-8).
 
-### A3. RMSNorm + SwiGLU decoder modernization (from DEIMv2) — ⬜
+### A3. RMSNorm + SwiGLU decoder modernization (from DEIMv2) — 🔴 TRIED, REJECTED (positive near-miss, 2026-06-17)
+> Result: test mAP_50_95 0.218 (+0.0013), f1 0.5645 (+0.0010), avg_gain +0.0011 < margin 0.003 — both up,
+> latency-neutral, **export TRT-clean** (RMSNorm→ONNX→TRT fine, no qk-norm footgun), but sub-margin + **+0.788M
+> params** (SwiGLU's doubled linear1) → simplicity-rule keep. Code on exp/rmsnorm-swiglu (`8dc49aa`), off-trunk.
+> **Open follow-ups (each a separate experiment):** (a) ablate which half drove it — **RMSNorm-only (zero
+> param cost)** vs SwiGLU-only; RMSNorm-only could be a free, simpler, promotable change. (b) param-matched
+> SwiGLU (dim_feedforward ×⅔). RMSNorm is now a known TRT-clean stability brick (issue-#64). See lab notebook
+> 2026-06-17. Section kept below for the ablation follow-up.
 - **Paper:** DEIMv2 "Real-Time Object Detection Meets DINOv3" (arXiv:2509.20787). Its "efficient decoder"
   keeps D-FINE's MSDeformableAttention + FDR + LQE + CDN **verbatim** and only swaps decoder
   **LayerNorm→RMSNorm** and the **ReLU-MLP FFN→SwiGLU**.
