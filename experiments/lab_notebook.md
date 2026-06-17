@@ -21,7 +21,9 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
 - 🤖 **Autonomous arch-trio campaign (2026-06-17, user-steered Tier-3 light set):** A1 SPD-Conv → A3
   RMSNorm+SwiGLU → A6 HMC, back-to-back on the S/ImageNet/h30 2-seed screen. Bar = Adan 0.2167/0.5635.
   **① A1 SPD-Conv → 🔴 rejected** (tie/slight-neg: mAP 0.2173 +0.0006, f1 0.5615 −0.0020, avg_gain
-  −0.0007, lat 1.0, params +0.387M, seed42 TRT-gap −0.004). **Next: ② A3 RMSNorm+SwiGLU.** **Methodology
+  −0.0007, lat 1.0, params +0.387M, seed42 TRT-gap −0.004). **② A3 RMSNorm+SwiGLU → 🔴 rejected**
+  (positive near-miss: mAP 0.218 +0.0013, f1 0.5645 +0.0010, avg_gain +0.0011 < margin; lat 1.0, params
+  +0.788M; export TRT-clean). **Next: ③ A6 HMC** (train-only matcher filler). **Methodology
   call (this campaign):** arch changes alter named params → full `make test` pretrained-COCO row fails by
   construction (no COCO weights for a new graph, §6); gate on `make test-fast` (structural/forward/shapes)
   instead. A6 (matcher-only, graph-identical) passes full `make test`. Trunk synced main_exp→main first
@@ -142,6 +144,33 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-17 — rmsnorm-swiglu (DEIMv2 decoder modernization, Tier-3 A3)   [rejected — positive near-miss]
+- Paper / source: DEIMv2 "Real-Time Object Detection Meets DINOv3" (arXiv:2509.20787) efficient decoder.
+  ideas.md Tier-3 A3. Second of the autonomous arch trio (A1→A3→A6), 2026-06-17.
+- Hypothesis: modernize the decoder layer the way DEIMv2 does — LayerNorm→RMSNorm (drops mean-subtraction,
+  cheaper + an fp16-stability win) and the ReLU-MLP FFN→SwiGLU (gated, strictly more expressive).
+  Deformable cross-attn + FDR + LQE + CDN kept verbatim. linear1/linear2 names preserved so Muon still
+  captures them (no optimizer-group confound).
+- Change (files): `arch/dfine_decoder.py` TransformerDecoderLayer — norm1/norm3 nn.LayerNorm→nn.RMSNorm;
+  FFN→SwiGLU (linear1 d_model→2*dim_feedforward, chunk gate/value, F.silu(gate)*value, linear2 unchanged).
+  Gate's internal LayerNorm + fp16 clamp left as-is; shared decoder pos-embed deliberately NOT hoisted
+  (fights the FDR cascade). ~6 LOC. exp/rmsnorm-swiglu sha 8dc49aa. `make test-fast` 87/87 (full make test
+  pretrained-COCO row N/A — arch change).
+- Result (test, 2 seeds): mAP_50_95 **0.218±0.0007** (seeds .2187/.2173, gain **+0.0013**), f1
+  **0.5645±0.0005** (TRT row, seeds .565/.564, gain **+0.0010**), avg_gain **+0.0011 < margin 0.003**,
+  lat trt 2.1 / torch 13.55 ms (ratio 1.0), params **11.09M (+0.788M)**. trt_export_flagged [] — **clean
+  export, both seeds gap −0.002** (RMSNorm→ONNX→TRT fine; no qk-norm-class footgun). No NaN. 🔴 KEEP BEST.
+- Read: **positive near-miss** — both metrics up, latency-neutral, export clean, but avg_gain (+0.0011) is
+  ~⅓ of the 0.003 margin. The decoder modernization genuinely helps a hair (consistent with DEIMv2 adopting
+  it wholesale), just not past screen noise — and it costs **+0.788M params** (SwiGLU's doubled linear1), so
+  the simplicity rule (1.6) seals the keep: a sub-margin gain doesn't justify the arch complexity + param
+  growth. Notable positive: **RMSNorm is TRT-clean** (the feared LayerNorm→RMSNorm export issue did not
+  materialize) → a safe stability building block if issue-#64-class NaNs ever bite. Open follow-ups (each a
+  separate experiment, not run): (a) **ablate which half drove +0.0013** — RMSNorm-only (zero param cost)
+  vs SwiGLU-only; if RMSNorm-only keeps most of the gain it'd be a free, simpler, promotable change worth a
+  slot; (b) param-matched SwiGLU (shrink dim_feedforward ×⅔) to drop the param penalty. Segment: shared
+  decoder; rejected → n/a here. Next: A6 HMC (train-only matcher filler, trio ③).
 
 ## 2026-06-17 — spd-conv (SPD-Conv neck PAN downsample, Tier-3 A1)   [rejected — tie / slight-neg]
 - Paper / source: SPD-Conv (Sunkara & Luo, arXiv:2208.03641, ECML-PKDD'22). ideas.md Tier-3 A1. First
