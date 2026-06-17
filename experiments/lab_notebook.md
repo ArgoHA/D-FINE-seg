@@ -18,16 +18,19 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   2.1ms / torch 13.65ms, ratio 1.0), params 10.302M, TRT row healthy (export OK). **This is the new bar
   for every subsequent candidate** (was Muon-only `baseline_h30` 0.2119/0.5565; Adan added
   +0.0048 mAP / +0.0070 f1, both > margin, multi-seed, zero latency — see 2026-06-14 adan entry).
-- 🤖 **Autonomous arch-trio campaign (2026-06-17, user-steered Tier-3 light set):** A1 SPD-Conv → A3
-  RMSNorm+SwiGLU → A6 HMC, back-to-back on the S/ImageNet/h30 2-seed screen. Bar = Adan 0.2167/0.5635.
-  **① A1 SPD-Conv → 🔴 rejected** (tie/slight-neg: mAP 0.2173 +0.0006, f1 0.5615 −0.0020, avg_gain
-  −0.0007, lat 1.0, params +0.387M, seed42 TRT-gap −0.004). **② A3 RMSNorm+SwiGLU → 🔴 rejected**
-  (positive near-miss: mAP 0.218 +0.0013, f1 0.5645 +0.0010, avg_gain +0.0011 < margin; lat 1.0, params
-  +0.788M; export TRT-clean). **Next: ③ A6 HMC** (train-only matcher filler). **Methodology
-  call (this campaign):** arch changes alter named params → full `make test` pretrained-COCO row fails by
-  construction (no COCO weights for a new graph, §6); gate on `make test-fast` (structural/forward/shapes)
-  instead. A6 (matcher-only, graph-identical) passes full `make test`. Trunk synced main_exp→main first
-  (latest frozen harness + torch 2.9.1).
+- 🤖 **Autonomous arch-trio campaign (2026-06-17, user-steered Tier-3 light set) — COMPLETE, 0/3 promoted.**
+  A1 SPD-Conv → A3 RMSNorm+SwiGLU → A6 HMC, back-to-back on the S/ImageNet/h30 2-seed screen. Bar = Adan
+  0.2167/0.5635 (**HOLDS**). **① A1 SPD-Conv → 🔴** (tie/slight-neg: mAP +0.0006, f1 −0.0020, params
+  +0.387M, seed42 TRT-gap −0.004). **② A3 RMSNorm+SwiGLU → 🔴** (positive near-miss: mAP +0.0013, f1
+  +0.0010, avg_gain +0.0011 < margin; params +0.788M; **RMSNorm TRT-clean**; RMSNorm-only ablation left
+  open). **③ A6 HMC → 🔴** (regression: mAP −0.0101, f1 −0.0235, both past 2× margin; IoU^4 too steep,
+  class-cost-×-overlap family dead — extends the PMC tie). Net: the Tier-3 light arch levers don't beat
+  the converged design point — consistent with the Tier-3 meta-finding (RT-DETR family stopped touching
+  this skeleton). **Methodology call (this campaign):** arch changes alter named params → full `make test`
+  pretrained-COCO row fails by construction (no COCO weights for a new graph, §6); gated on `make test-fast`
+  (structural/forward/shapes) for A1/A3; A6 (graph-identical) passed full `make test`. Trunk synced
+  main_exp→main first (latest frozen harness + torch 2.9.1). **New guide rule added (§5.E):** seed-1
+  early-abort when both metrics drop >0.002 (A6's seed42 would have triggered it).
 - **In progress:** 🔬 **§6 X full-run A/B** (COCO-init dfine_x_coco, 75ep, batch 4, option-B optimizer
   split: backbone AdamW @4e-6 / heads Adan ×5 @2e-3 / enc-dec Muon @4e-3) vs ref `det_x_2026-02-21`
   (test mAP_50_95 0.2601 / mAP_50 0.4431 / TRT f1 0.611 @4.5ms). **Run-1 = Adan + Muon-WD λ=0.03 DONE
@@ -144,6 +147,29 @@ Entry template:
 ---
 
 <!-- entries below -->
+
+## 2026-06-17 — hmc (Rank-DETR high-order matching cost, Tier-3 A6)   [rejected — regression]
+- Paper / source: Rank-DETR (NeurIPS'23, arXiv:2310.08854) high-order matching cost. ideas.md Tier-3 A6.
+  Third/final of the autonomous arch trio (A1→A3→A6), 2026-06-17.
+- Hypothesis: weight the Hungarian class cost by IoU^4 so matching favors jointly high-confidence +
+  well-localized queries (steeper than the gentle PMC ((GIoU+1)/2)^0.5 that tied earlier). Train-only
+  (matcher @no_grad), graph-identical → zero TRT/latency risk.
+- Change (files): `matcher.py` — import box_iou; after cost_giou, `cost_class = cost_class *
+  iou.clamp(min=0).pow(4)`. ~4 LOC. exp/hmc sha bc8bbe8. **Full `make test` 89/89** (graph-identical →
+  pretrained-COCO row passes, unlike the A1/A3 arch changes).
+- Result (test, 2 seeds): mAP_50_95 **0.2066±0.0019** (seeds .2047/.2085, gain **−0.0101**, past 2×
+  margin ❌), f1 **0.54±0.002** (TRT row, seeds .538/.542, gain **−0.0235** ❌), lat trt 2.1 / torch
+  13.85 ms (ratio 1.0), params 10.302M (unchanged — train-only). trt_export_flagged []. No NaN. 🔴 KEEP BEST.
+- Read: clear **regression on both metrics**, the worst of the trio. IoU^4 is **far too steep** for this
+  matcher: it zeroes the class cost for every pair below near-perfect IoU, so early in training (when
+  predicted IoU is low across the board) the matcher loses its classification signal and assigns almost
+  purely on bbox/giou — exactly the churn PMC was meant to *reduce*, here amplified. Confirms and extends
+  the PMC tie (#1): the class-cost-×-overlap family is dead here, and steeper is strictly worse (PMC ^0.5
+  tied, HMC ^4 regresses −0.01/−0.024). A milder exponent (α=1-2) might recover toward the PMC tie but not
+  beat it → not worth a slot. **Validates the new seed-1 early-abort rule (§5.E, added this session):**
+  seed42 alone was −0.0120 mAP / −0.0255 f1 (both ≫ 0.002 below baseline) → the rule would have killed
+  after seed42 and saved the seed123 hour. Segment: shared matcher; rejected → n/a. **Autonomous arch trio
+  COMPLETE: A1 🔴 / A3 🔴 / A6 🔴 — none promoted; Adan (0.2167/0.5635) holds.**
 
 ## 2026-06-17 — rmsnorm-swiglu (DEIMv2 decoder modernization, Tier-3 A3)   [rejected — positive near-miss]
 - Paper / source: DEIMv2 "Real-Time Object Detection Meets DINOv3" (arXiv:2509.20787) efficient decoder.
