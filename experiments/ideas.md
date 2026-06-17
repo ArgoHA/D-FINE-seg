@@ -374,9 +374,11 @@ ablation), RT-DETRv2 2407.17140, RT-DETRv3 2409.08475, RT-DETRv4 2510.25257, DEI
 
 **Ranked run queue (user-steered).** **A7 KD (train-only, top priority)** → ~~A1~~ 🔴 (tried 2026-06-17,
 tie) → ~~A3~~ 🔴 (tried 2026-06-17, positive near-miss; RMSNorm-only ablation open) → A2 (the one fair
-backbone probe) → A4 (free-at-deploy, speculative) → A5 (robustness, not accuracy) → **A6 (train-only
-filler) ← NEXT (autonomous trio ③)**.
-**Autonomous arch trio (2026-06-17): ① A1 🔴 → ② A3 🔴 → ③ A6 (running).** **Segment track (separate `task: segment` eval,
+backbone probe) → A4 (free-at-deploy, speculative) → A5 (robustness, not accuracy) → ~~A6~~ 🔴 (tried
+2026-06-17, regression). **Next remaining: A7 KD (top priority, needs a fair ImageNet-init teacher) or A2
+(backbone probe), user-steered.**
+**Autonomous arch trio (2026-06-17) COMPLETE — 0/3 promoted: ① A1 🔴 → ② A3 🔴 (near-miss) → ③ A6 🔴.
+Adan 0.2167/0.5635 holds. Light arch levers don't beat the converged point (Tier-3 meta-finding confirmed).** **Segment track (separate `task: segment` eval,
 later — NOT on the detect screen): A8 finer mask-head.** Read the paper, measure latency, run the TRT-row
 check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate research pass — user decision.)
 
@@ -526,7 +528,13 @@ check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate resear
   the offset predictor since rounding is non-diff) / ✅. **TRT:** the rare graph change that *reduces*
   fragility — still run the TRT-row fp16≈fp32 check.
 
-### A6. Rank-DETR high-order matching cost (HMC) — train-only filler, lower prior — ⬜
+### A6. Rank-DETR high-order matching cost (HMC) — 🔴 TRIED, REJECTED (regression, 2026-06-17)
+> Result (α=4): test mAP_50_95 0.2066 (−0.0101), f1 0.54 (−0.0235), both past 2× margin — worst of the arch
+> trio. IoU^4 is far too steep: it zeroes the class cost below near-perfect IoU, so early on (low IoU
+> everywhere) the matcher loses its class signal and assigns ~purely on bbox/giou — the churn PMC reduces,
+> amplified. **Class-cost-×-overlap family now dead here** (PMC ^0.5 tied, HMC ^4 regresses); a milder α=1-2
+> might recover toward the PMC tie but not beat it → no slot. Code on exp/hmc (`bc8bbe8`), off-trunk. See lab
+> notebook 2026-06-17. Section kept below for reference.
 - **Paper:** Rank-DETR (NeurIPS'23, arXiv:2310.08854): multiply the Hungarian **class cost by IoU^α**
   (α≈4) so matching favors jointly high-cls + well-localized queries. +0.6 mAP (AP75 +1.1) on
   H-DETR/DINO-R50 12e. **Train-only, zero inference/TRT cost.**
