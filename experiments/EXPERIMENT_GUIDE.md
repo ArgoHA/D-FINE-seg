@@ -87,6 +87,8 @@ nohup uv run python scripts/run_candidate.py --name <name> --comment "<what chan
 ```
 Full/long manual runs (§6) follow the same background pattern.
 
+**Seed-1 early abort (save GPU on clear losers):** if the first seed ends with *both* mAP_50_95 and f1 > 0.002 below baseline, kill the run, skip the remaining seed(s), and reject (keep best) — don't spend a second seed on a change already losing on both metrics.
+
 **F. Decide + log.**
 ```bash
 uv run python scripts/promote.py --candidate experiments/runs/<name>/candidate_result.json --base main_exp
