@@ -12,6 +12,10 @@ export + bench EACH seed. Accuracy is measured on the held-out TEST set:
 Per seed, also flags any |TRT f1 - torch f1| > 0.003 as a likely-broken/degraded export
 (warn-only; recorded as trt_f1_gap / trt_export_flagged in the result JSON).
 
+Seed-1 early abort (EXPERIMENT_GUIDE §5.E): if the first seed's mAP_50_95 AND f1 both drop
+> 0.002 below baseline.json, skip the remaining seed(s) and write the 1-seed result — a clear
+loser isn't worth a second seed (promote.py then rejects it as usual).
+
 Both accuracy metrics are averaged over seeds. Writes
 experiments/runs/<name>/candidate_result.json. Does NOT touch git or the ledger
 (that's promote.py). Whatever is in the working tree now IS the candidate, so check
@@ -124,6 +128,10 @@ def main():
     seeds = harness["seeds"]
     split = harness.get("eval_split", "test")
 
+    baseline_path = REPO / "experiments" / "baseline.json"
+    baseline = json.loads(baseline_path.read_text())["means"] if baseline_path.exists() else None
+    EARLY_ABORT_DROP = 0.002  # seed-1: both mAP & f1 dropping > this below baseline -> reject early
+
     run_root = REPO / args.runs_dir / args.name
     run_root.mkdir(parents=True, exist_ok=True)
     base_args = overrides_to_args(overrides)
@@ -170,14 +178,26 @@ def main():
             "lat_torch": lat.get("torch"),
             "lat_trt": lat.get("tensorrt"),
         }
+        # Seed-1 early abort (EXPERIMENT_GUIDE §5.E): both mAP & f1 down > 0.002 vs baseline -> skip rest
+        if baseline is not None and seed == seeds[0] and len(seeds) > 1 and f1 is not None:
+            d_map = baseline["mAP_50_95"] - per_seed[seed]["mAP_50_95"]
+            d_f1 = baseline["f1"] - f1
+            if d_map > EARLY_ABORT_DROP and d_f1 > EARLY_ABORT_DROP:
+                print(
+                    f"\n🛑 seed {seed} early-abort: mAP -{d_map:.4f} & f1 -{d_f1:.4f} both > "
+                    f"{EARLY_ABORT_DROP} below baseline — skipping remaining seeds (reject, keep best).",
+                    flush=True,
+                )
+                break
 
-    params_m = count_params(run_root / f"seed{seeds[0]}" / "model.pt")
+    ran = list(per_seed)
+    params_m = count_params(run_root / f"seed{ran[0]}" / "model.pt")
     trt_flagged = [
-        s for s in seeds if (g := per_seed[s]["trt_f1_gap"]) is not None and abs(g) > TRT_F1_GAP_TOL
+        s for s in ran if (g := per_seed[s]["trt_f1_gap"]) is not None and abs(g) > TRT_F1_GAP_TOL
     ]
 
     def agg(key):
-        m, s, n = mean_std([per_seed[s][key] for s in seeds])
+        m, s, n = mean_std([per_seed[s][key] for s in ran])
         return {"mean": m, "std": s, "n": n}
 
     result = {
@@ -187,6 +207,8 @@ def main():
         "config": args.config,
         "eval_split": split,
         "seeds": seeds,
+        "seeds_ran": ran,
+        "early_aborted": len(ran) < len(seeds),
         "walltime_min_per_seed": overrides.get("train.max_walltime_min"),
         "wall_total_min": round((time.time() - t0) / 60, 1),
         "params_M": params_m,
