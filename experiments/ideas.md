@@ -372,9 +372,13 @@ ablation), RT-DETRv2 2407.17140, RT-DETRv3 2409.08475, RT-DETRv4 2510.25257, DEI
 2509.20787, RF-DETR 2511.09554, LW-DETR 2406.03459, FasterNet 2303.03667, LowFormer 2409.03460, PCN
 2502.01303, StarNet 2403.19967, SPD-Conv 2208.03641, Rank-DETR 2310.08854, YOLOv9/GELAN 2402.13616.
 
-**Ranked run queue (user-steered).** **A7 KD (train-only, top priority)** → A1 (small-object, best
-evidence) → A3 (cheap, low-risk) → A2 (the one fair backbone probe) → A4 (free-at-deploy, speculative) →
-A5 (robustness, not accuracy) → A6 (train-only filler). **Segment track (separate `task: segment` eval,
+**Ranked run queue (user-steered).** **A7 KD (train-only, top priority)** → ~~A1~~ 🔴 (tried 2026-06-17,
+tie) → ~~A3~~ 🔴 (tried 2026-06-17, positive near-miss; RMSNorm-only ablation open) → A2 (the one fair
+backbone probe) → A4 (free-at-deploy, speculative) → A5 (robustness, not accuracy) → ~~A6~~ 🔴 (tried
+2026-06-17, regression). **Next remaining: A7 KD (top priority, needs a fair ImageNet-init teacher) or A2
+(backbone probe), user-steered.**
+**Autonomous arch trio (2026-06-17) COMPLETE — 0/3 promoted: ① A1 🔴 → ② A3 🔴 (near-miss) → ③ A6 🔴.
+Adan 0.2167/0.5635 holds. Light arch levers don't beat the converged point (Tier-3 meta-finding confirmed).** **Segment track (separate `task: segment` eval,
 later — NOT on the detect screen): A8 finer mask-head.** Read the paper, measure latency, run the TRT-row
 check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate research pass — user decision.)
 
@@ -407,7 +411,14 @@ check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate resear
   mask predictions too. **Expected:** highest-EV Tier-3 item, gated by (a) a fair teacher and (b) the
   walltime check — both must pass before trusting the screen number.
 
-### A1. SPD-Conv detail-preserving downsampling (small/dense; best small-object evidence) — ⬜ next
+### A1. SPD-Conv detail-preserving downsampling (small/dense; best small-object evidence) — 🔴 TRIED, REJECTED (tie/slight-neg, 2026-06-17)
+> Placement (a) tried (neck PAN SCDown → space-to-depth + 1x1). Result: test mAP_50_95 0.2173 (+0.0006 ≪
+> margin), f1 0.5615 (−0.0020), avg_gain −0.0007, lat 1.0, **params +0.387M**, seed42 TRT-gap −0.004. The
+> YOLO small-object win didn't transfer to the DETR neck: PAN stride 16/32 isn't where SPD's detail
+> preservation pays, and RepNCSPELAN4 + deformable decoder already fuse multi-scale context. Rejected
+> (simplicity: params↑ + faint Slice+Concat TRT-fragility for a tie). Code on exp/spd-conv (`3be4729`),
+> off-trunk. **Placement (b) — backbone-stem space-to-depth — remains an open larger arch bet** if revisited.
+> See lab notebook 2026-06-17. Section kept below for the (b) follow-up.
 - **Paper:** Sunkara & Luo, "No More Strided Convolutions or Pooling" (SPD-Conv, arXiv:2208.03641,
   ECML-PKDD'22). Replace a *strided/pooled* downsample with **parameter-free space-to-depth** — slice the
   map into 4 stride-2 sub-maps, concat → 4×C at H/2×W/2 — then a stride-1 conv. **COCO Table 4 (verified):**
@@ -454,7 +465,14 @@ check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate resear
   Nov'25). Run it as the *definitive* "is the backbone the bottleneck?" answer — cheap, one experiment,
   high information value either way. **Segment safety:** ✅ verify mask tap (128-ch stride-8).
 
-### A3. RMSNorm + SwiGLU decoder modernization (from DEIMv2) — ⬜
+### A3. RMSNorm + SwiGLU decoder modernization (from DEIMv2) — 🔴 TRIED, REJECTED (positive near-miss, 2026-06-17)
+> Result: test mAP_50_95 0.218 (+0.0013), f1 0.5645 (+0.0010), avg_gain +0.0011 < margin 0.003 — both up,
+> latency-neutral, **export TRT-clean** (RMSNorm→ONNX→TRT fine, no qk-norm footgun), but sub-margin + **+0.788M
+> params** (SwiGLU's doubled linear1) → simplicity-rule keep. Code on exp/rmsnorm-swiglu (`8dc49aa`), off-trunk.
+> **Open follow-ups (each a separate experiment):** (a) ablate which half drove it — **RMSNorm-only (zero
+> param cost)** vs SwiGLU-only; RMSNorm-only could be a free, simpler, promotable change. (b) param-matched
+> SwiGLU (dim_feedforward ×⅔). RMSNorm is now a known TRT-clean stability brick (issue-#64). See lab notebook
+> 2026-06-17. Section kept below for the ablation follow-up.
 - **Paper:** DEIMv2 "Real-Time Object Detection Meets DINOv3" (arXiv:2509.20787). Its "efficient decoder"
   keeps D-FINE's MSDeformableAttention + FDR + LQE + CDN **verbatim** and only swaps decoder
   **LayerNorm→RMSNorm** and the **ReLU-MLP FFN→SwiGLU**.
@@ -510,7 +528,13 @@ check. (A7 and A8 were merged in 2026-06-13 from a review of an alternate resear
   the offset predictor since rounding is non-diff) / ✅. **TRT:** the rare graph change that *reduces*
   fragility — still run the TRT-row fp16≈fp32 check.
 
-### A6. Rank-DETR high-order matching cost (HMC) — train-only filler, lower prior — ⬜
+### A6. Rank-DETR high-order matching cost (HMC) — 🔴 TRIED, REJECTED (regression, 2026-06-17)
+> Result (α=4): test mAP_50_95 0.2066 (−0.0101), f1 0.54 (−0.0235), both past 2× margin — worst of the arch
+> trio. IoU^4 is far too steep: it zeroes the class cost below near-perfect IoU, so early on (low IoU
+> everywhere) the matcher loses its class signal and assigns ~purely on bbox/giou — the churn PMC reduces,
+> amplified. **Class-cost-×-overlap family now dead here** (PMC ^0.5 tied, HMC ^4 regresses); a milder α=1-2
+> might recover toward the PMC tie but not beat it → no slot. Code on exp/hmc (`bc8bbe8`), off-trunk. See lab
+> notebook 2026-06-17. Section kept below for reference.
 - **Paper:** Rank-DETR (NeurIPS'23, arXiv:2310.08854): multiply the Hungarian **class cost by IoU^α**
   (α≈4) so matching favors jointly high-cls + well-localized queries. +0.6 mAP (AP75 +1.1) on
   H-DETR/DINO-R50 12e. **Train-only, zero inference/TRT cost.**
