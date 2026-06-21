@@ -56,3 +56,9 @@ Minor improvement - now pretrained weigts automatically download from HuggingFac
 - HGNetv2 stem conv is rewired for `in_channels=4`. Pretrained 3-channel weights are reused: stem is inflated to 4 channels by tiling the RGB filter mean, so COCO-pretrained fine-tuning still works out of the box.
 - All inference backends (torch, onnx, openvino, tensorrt, coreml, litert) auto-detect channel count from the exported model and preprocess accordingly.
 - `src/etl/m3fd_to_yolo.py` converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal benchmark (VOC XML + Vis/Ir PNGs) into the new layout as a reference example.
+
+## 2026-06-21 - Muon + Adan optimizers
+
+- New `src/d_fine/muon.py` (`MuonWithAuxAdam`): Muon (Jordan et al., 2024) routes the encoder/decoder attention/MLP weight matrices to Newton-Schulz-orthogonalized momentum, while backbone, norms, biases, embeddings, and det/mask heads stay on an AdamW aux path inside one optimizer. **On by default** (`train.use_muon: True`).
+- Adan (Xie et al., arXiv:2208.06677) is selectable for the aux groups via `train.aux_optimizer: adamw|adan`, with `train.adan_lr_mult` and `train.adan_betas` knobs.
+- Muon + Adan is the new best recipe on the VisDrone screen: +0.0078 mAP_50_95 over the AdamW-X reference, latency-neutral.
