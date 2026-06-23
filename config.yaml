@@ -149,6 +149,7 @@ export: # TensorRT must be done on the inference device
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
   formats: null # null = build all backends; list (e.g. [tensorrt]) restricts what is built
+  parity: True # after export, print cosine / max-abs-diff of each backend vs torch on one input
   ov_int8_max_drop: 0.02
   trt_int8_workspace_gb: 4
   trt_int8_validate: True

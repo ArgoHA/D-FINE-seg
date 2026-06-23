@@ -205,10 +205,17 @@ Produces, under `${train.path_to_save}`:
 - `model.xml` + `model.bin` — OpenVINO
 - `model.mlpackage` + `model_int8.mlpackage` — CoreML (converter runs on Linux + macOS; runtime/`make bench` on the CoreML backend is macOS-only)
 - `model.tflite` + `model_int8.tflite` — LiteRT
+- `parity.csv` — per-backend score cosine vs torch (see parity self-check below)
 
 Knobs under `export:` in `config.yaml`: `half` (FP16), `max_batch_size`, `dynamic_input`.
 
 ONNX has the D-FINE postprocessor fused into the graph; OpenVINO exports the raw head (postprocess separately).
+
+**Parity self-check** (`export.parity: True`, default on): after exporting, each backend runs on
+the same input as torch and one cosine per backend — over the sorted top-K detection scores — is
+printed and written to `parity.csv`. Scores are the reorder-stable, end-to-end signal; per-query
+boxes/masks are dominated by background queries that never clear conf filtering, so they aren't
+compared (bench covers surviving-box geometry). Warn-gated at cos ≥ 0.99 (≥ 0.90 for INT8).
 
 ### 10.1 INT8 quantization
 
