@@ -1,11 +1,15 @@
 import copy
+import platform
 from pathlib import Path
 
 import hydra
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from loguru import logger
 from omegaconf import DictConfig
+from tabulate import tabulate
 from torch import nn
 
 from src.d_fine.configs import base_cfg
@@ -449,6 +453,167 @@ def export_to_tensorrt(
     logger.info("TensorRT model exported")
 
 
+def _to_np(x) -> np.ndarray:
+    if isinstance(x, torch.Tensor):
+        return x.detach().float().cpu().numpy()
+    return np.asarray(x, dtype=np.float32)
+
+
+def _cosine(ref, out) -> float:
+    """Cosine similarity between two tensors, flattened."""
+    a = _to_np(ref).reshape(-1).astype(np.float64)
+    b = _to_np(out).reshape(-1).astype(np.float64)
+    if a.shape != b.shape:
+        return float("nan")
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b)) or 1.0
+    return float(a @ b / denom)
+
+
+def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
+    """Compare each exported backend's detection scores against torch on one input.
+
+    Scores (sorted top-K confidences) are the reorder-stable, end-to-end signal: they
+    flow through the whole network, so any silent export drift moves them. Per-query
+    boxes/logits/masks are dominated by background queries that never clear conf
+    filtering, so comparing them is just noise — bench covers surviving-box geometry.
+    """
+
+    # CoreML/LiteRT export move the shared model params to CPU in place, so run torch on its device
+    dev = next(raw_model.parameters()).device
+    x1 = x_test[:1].to(dev)
+    x_np = x1.detach().cpu().numpy().astype(np.float32)
+    with torch.no_grad():
+        ref = model(x1)[2]  # [1, K] sorted top-K confidences from the fused torch postproc
+
+    n_out = len(cfg.train.label_to_name)
+    n_queries = base_cfg["DFINETransformer"]["num_queries"]
+    conf, kr, dyn = cfg.train.conf_thresh, cfg.train.keep_ratio, cfg.export.dynamic_input
+    rows, low = [], []
+
+    def add(name, is_int8, scores):
+        cos = _cosine(ref, scores)
+        rows.append([name, round(cos, 6)])
+        if not cos >= (0.90 if is_int8 else 0.99):
+            low.append(f"{name} cos={cos:.4f}")
+
+    def raw_scores(outs):
+        # raw backends emit per-query logits; pick by shape (TFLite reorders outputs)
+        logits = next(np.asarray(o) for o in outs if np.ndim(o) == 3 and np.shape(o)[-1] != 4)
+        flat = torch.sigmoid(torch.from_numpy(logits)).flatten(1)
+        return torch.topk(flat, min(n_queries, flat.shape[1]), dim=-1).values
+
+    if want("onnx") and (models_path / "model.onnx").exists():
+        try:
+            from src.infer.onnx_model import ONNX_model
+
+            m = ONNX_model(
+                model_path=str(models_path / "model.onnx"),
+                n_outputs=n_out,
+                conf_thresh=conf,
+                rect=False,
+                keep_ratio=kr,
+                apply_nms=False,
+            )
+            add("ONNX", False, m._predict(x_np)[2])  # fused: scores at index 2
+        except Exception as e:
+            logger.warning(f"Parity skipped for ONNX: {e}")
+
+    ov_variants = [("OpenVINO", "model.xml", False), ("OpenVINO INT8", "model_int8.xml", True)]
+    for tag, fn, is8 in ov_variants:
+        if want("openvino") and (models_path / fn).exists():
+            try:
+                from src.infer.ov_model import OV_model
+
+                m = OV_model(
+                    model_path=str(models_path / fn),
+                    conf_thresh=conf,
+                    rect=dyn,
+                    half=cfg.export.half and platform.system() != "Darwin",
+                    keep_ratio=kr,
+                    max_batch_size=1,
+                    apply_nms=False,
+                )
+                add(tag, is8, raw_scores(m._predict(x_np)))
+            except Exception as e:
+                logger.warning(f"Parity skipped for {tag}: {e}")
+
+    litert_variants = [
+        ("LiteRT", "model.tflite", False),
+        ("LiteRT INT8", "model_int8.tflite", True),
+    ]
+    for tag, fn, is8 in litert_variants:
+        if want("litert") and (models_path / fn).exists():
+            try:
+                from src.infer.litert_model import LiteRT_model
+
+                m = LiteRT_model(
+                    model_path=str(models_path / fn),
+                    n_outputs=n_out,
+                    conf_thresh=conf,
+                    rect=False,
+                    keep_ratio=kr,
+                    apply_nms=False,
+                )
+                add(tag, is8, raw_scores(m._predict(x_np)))
+            except Exception as e:
+                logger.warning(f"Parity skipped for {tag}: {e}")
+
+    if platform.system() == "Darwin":
+        coreml_variants = [
+            ("CoreML", "model.mlpackage", False),
+            ("CoreML INT8", "model_int8.mlpackage", True),
+        ]
+        for tag, fn, is8 in coreml_variants:
+            if want("coreml") and (models_path / fn).exists():
+                try:
+                    from src.infer.coreml_model import CoreML_model
+
+                    m = CoreML_model(
+                        model_path=str(models_path / fn),
+                        n_outputs=n_out,
+                        conf_thresh=conf,
+                        rect=False,
+                        keep_ratio=kr,
+                        apply_nms=False,
+                    )
+                    add(tag, is8, m._predict(x_np)[2])  # fused: scores at index 2
+                except Exception as e:
+                    logger.warning(f"Parity skipped for {tag}: {e}")
+    else:
+        trt_variants = [
+            ("TensorRT", "model.engine", False),
+            ("TensorRT INT8", "model_int8.engine", True),
+        ]
+        for tag, fn, is8 in trt_variants:
+            if want("tensorrt") and (models_path / fn).exists():
+                try:
+                    from src.infer.trt_model import TRT_model
+
+                    m = TRT_model(
+                        model_path=str(models_path / fn),
+                        n_outputs=n_out,
+                        conf_thresh=conf,
+                        rect=False,
+                        keep_ratio=kr,
+                        apply_nms=False,
+                    )
+                    x_trt = x1.to(device=m._input_tensor.device, dtype=m._input_tensor.dtype)
+                    add(tag, is8, m._predict(x_trt.contiguous(), actual_batch=1)[2])  # scores idx 2
+                except Exception as e:
+                    logger.warning(f"Parity skipped for {tag}: {e}")
+
+    if not rows:
+        logger.info("Parity: no exported backends available to compare against torch")
+        return
+    headers = ["format", "scores_cosine"]
+    pd.DataFrame(rows, columns=headers).to_csv(models_path / "parity.csv", index=False)
+    print("\n" + tabulate(rows, headers=headers, tablefmt="pretty"))
+    if low:
+        logger.warning("Parity below threshold (vs torch): " + ", ".join(low))
+    else:
+        logger.info("Parity OK: exported backends match torch within threshold")
+
+
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg: DictConfig):
     input_name = "input"
@@ -528,6 +693,9 @@ def main(cfg: DictConfig):
         export_to_litert(raw_model, model_path, x_test)
 
     logger.info(f"Exports saved to: {model_path.parent}")
+
+    if cfg.export.get("parity", True):
+        run_parity(cfg, raw_model, model, x_test, want, model_path.parent)
 
 
 if __name__ == "__main__":
