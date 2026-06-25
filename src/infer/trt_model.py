@@ -455,11 +455,11 @@ class TRT_model:
         3-channel inputs already in RGB order (e.g., ``.npy`` read via
         ``read_image_hwc``); ignored for >3 channels.
         Output:
-            List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
+            List of BS length. Each element is a dict {"labels", "boxes", "scores"}, device = GPU
             labels: torch.Tensor of shape (N,), dtype int64
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
-            masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            masks: torch.Tensor of shape (N, H, W), dtype uint8. N = number of objects
         """
         # Run all GPU work on the model's dedicated stream so TRT can avoid the
         # extra default-stream synchronisations triggered by enqueueV3, then have
