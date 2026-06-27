@@ -48,7 +48,12 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-xdist>=3",
+    "ruff==0.15.20",
 ]
+
+[tool.ruff]
+line-length = 100
+# Lint uses ruff defaults (E4/E7/E9/F); line width is enforced by `ruff format`.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

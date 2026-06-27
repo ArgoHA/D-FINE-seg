@@ -16,8 +16,6 @@ import shutil
 from collections import defaultdict
 from pathlib import Path
 
-from tqdm import tqdm
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Split TACO dataset by batch numbers")
@@ -296,7 +294,7 @@ def main():
     train_count = total_images - val_count
     actual_val_ratio = val_count / total_images if total_images > 0 else 0
 
-    print(f"\nSplit Summary:")
+    print("\nSplit Summary:")
     print(
         f"  Train: {len(train_batches)} batches, {train_count} images ({100 - actual_val_ratio * 100:.1f}%)"
     )

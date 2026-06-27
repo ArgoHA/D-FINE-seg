@@ -138,8 +138,17 @@ def _is_muon_param(name, param):
 
 
 def build_optimizer(
-    model, lr, backbone_lr, betas, weight_decay, base_lr, use_muon=False, muon_lr=None,
-    aux_optimizer="adamw", respect_backbone_lr=False, adan_betas=(0.98, 0.92, 0.99),
+    model,
+    lr,
+    backbone_lr,
+    betas,
+    weight_decay,
+    base_lr,
+    use_muon=False,
+    muon_lr=None,
+    aux_optimizer="adamw",
+    respect_backbone_lr=False,
+    adan_betas=(0.98, 0.92, 0.99),
 ):
     backbone_exclude_norm = []
     backbone_norm = []
@@ -186,7 +195,9 @@ def build_optimizer(
         return optim.AdamW(param_groups, lr=lr, betas=betas, weight_decay=weight_decay)
 
     if aux_optimizer == "adan":
-        assert len(adan_betas) == 3, "adan requires exactly 3 betas (b1,b2,b3); see train.adan_betas"
+        assert len(adan_betas) == 3, (
+            "adan requires exactly 3 betas (b1,b2,b3); see train.adan_betas"
+        )
 
     # Muon path: same AdamW groups (use_muon=False, explicit betas/wd since the custom
     # optimizer has no top-level defaults) + a Muon group appended LAST so the scheduler's

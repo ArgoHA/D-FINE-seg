@@ -33,13 +33,13 @@ COCO80 = {i: str(i) for i in range(80)}
 
 def _require_fixtures() -> dict:
     if not BASELINE_PATH.exists():
-        pytest.skip(
-            "fixtures not generated; run `uv run python -m tests.generate_fixtures`"
-        )
+        pytest.skip("fixtures not generated; run `uv run python -m tests.generate_fixtures`")
     return json.loads(BASELINE_PATH.read_text())
 
 
-def _load_yolo_labels(label_path: Path, img_h: int, img_w: int) -> tuple[torch.Tensor, torch.Tensor]:
+def _load_yolo_labels(
+    label_path: Path, img_h: int, img_w: int
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Parse a YOLO-format .txt into (labels, xyxy boxes in absolute pixels)."""
     if not label_path.exists() or label_path.stat().st_size == 0:
         return torch.empty(0, dtype=torch.long), torch.empty((0, 4))
@@ -65,7 +65,8 @@ def test_pretrained_s_cpu_mAP_holds_baseline(coco_pretrained_path):
     # what the bootstrap writes, and it lets stray source images sit in the
     # folder without breaking the test.
     image_paths = [
-        p for p in sorted(ASSETS_DIR.iterdir())
+        p
+        for p in sorted(ASSETS_DIR.iterdir())
         if p.suffix.lower() in {".jpg", ".jpeg", ".png"} and p.with_suffix(".txt").exists()
     ]
     assert image_paths, f"no fixture images with labels found in {ASSETS_DIR}"
@@ -92,11 +93,13 @@ def test_pretrained_s_cpu_mAP_holds_baseline(coco_pretrained_path):
         # Drop sub-threshold detections from the eval set so the test stays
         # apples-to-apples with how the fixture labels were captured.
         keep = pred["scores"] >= baseline["conf_thresh"]
-        preds.append({
-            "labels": pred["labels"][keep].cpu(),
-            "boxes": pred["boxes"][keep].cpu(),
-            "scores": pred["scores"][keep].cpu(),
-        })
+        preds.append(
+            {
+                "labels": pred["labels"][keep].cpu(),
+                "boxes": pred["boxes"][keep].cpu(),
+                "scores": pred["scores"][keep].cpu(),
+            }
+        )
         gt_labels, gt_boxes = _load_yolo_labels(img_path.with_suffix(".txt"), img_h=h, img_w=w)
         gt.append({"labels": gt_labels, "boxes": gt_boxes})
 

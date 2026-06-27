@@ -7,7 +7,6 @@ the expensive setup happens at most once per pytest run.
 
 from __future__ import annotations
 
-import shutil
 from importlib import util as importlib_util
 from pathlib import Path
 from typing import Dict, List
@@ -32,8 +31,8 @@ def seeded():
 def tiny_image() -> np.ndarray:
     """128x128 RGB image with two painted rectangles (uint8 HWC)."""
     img = np.zeros((128, 128, 3), dtype=np.uint8)
-    img[20:60, 30:80] = (200, 50, 50)   # red box
-    img[70:110, 40:100] = (50, 200, 50) # green box
+    img[20:60, 30:80] = (200, 50, 50)  # red box
+    img[70:110, 40:100] = (50, 200, 50)  # green box
     return img
 
 
@@ -47,8 +46,7 @@ def synthetic_preds_gt() -> Dict[str, List[Dict[str, torch.Tensor]]]:
     gt = [
         {
             "labels": torch.tensor([0, 1], dtype=torch.long),
-            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0],
-                                   [60.0, 60.0, 100.0, 100.0]]),
+            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0], [60.0, 60.0, 100.0, 100.0]]),
         },
         {
             "labels": torch.tensor([0], dtype=torch.long),
@@ -58,14 +56,12 @@ def synthetic_preds_gt() -> Dict[str, List[Dict[str, torch.Tensor]]]:
     preds = [
         {
             "labels": torch.tensor([0, 1], dtype=torch.long),
-            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0],
-                                   [60.0, 60.0, 100.0, 100.0]]),
+            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0], [60.0, 60.0, 100.0, 100.0]]),
             "scores": torch.tensor([0.99, 0.95]),
         },
         {
             "labels": torch.tensor([0, 0], dtype=torch.long),
-            "boxes": torch.tensor([[5.0, 5.0, 40.0, 40.0],
-                                   [200.0, 200.0, 250.0, 250.0]]),
+            "boxes": torch.tensor([[5.0, 5.0, 40.0, 40.0], [200.0, 200.0, 250.0, 250.0]]),
             "scores": torch.tensor([0.9, 0.8]),
         },
     ]
@@ -88,6 +84,7 @@ def fixtures_dir() -> Path:
 
 
 # ---- Slow / heavy fixtures ---------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def coco_pretrained_path(tmp_path_factory) -> Path:

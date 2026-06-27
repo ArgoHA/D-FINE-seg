@@ -56,8 +56,7 @@ def test_loss_labels_focal_finite_and_nonnegative():
         {"labels": torch.tensor([1]), "boxes": torch.zeros(1, 4)},
         {"labels": torch.tensor([0, 3]), "boxes": torch.zeros(2, 4)},
     ]
-    indices = [(torch.tensor([0]), torch.tensor([0])),
-               (torch.tensor([0, 1]), torch.tensor([0, 1]))]
+    indices = [(torch.tensor([0]), torch.tensor([0])), (torch.tensor([0, 1]), torch.tensor([0, 1]))]
     losses = crit.loss_labels_focal(outputs, targets, indices=indices, num_boxes=3)
     val = losses["loss_focal"].item()
     assert val >= 0 and torch.isfinite(losses["loss_focal"])

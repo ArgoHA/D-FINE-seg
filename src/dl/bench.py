@@ -5,7 +5,6 @@ from pathlib import Path
 from shutil import rmtree
 from typing import Dict, Tuple
 
-import cv2
 import hydra
 import numpy as np
 import pandas as pd
