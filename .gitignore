@@ -28,3 +28,6 @@ notes.md
 .vscode/launch.json
 .vscode/settings.json
 .vscode/sftp.json
+
+# auto-downloaded weights (HF) — never commit
+pretrained/
