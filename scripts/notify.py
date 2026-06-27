@@ -74,7 +74,7 @@ def summarize(name: str) -> str:
         f"params {res['params_M']:.2f}M · {len(res['seeds'])} seeds · {res['wall_total_min']:.0f}min wall",
         f"{res['git']['sha']} @ {res['git']['branch']}",
     ]
-    return "\n".join(l for l in lines if l)
+    return "\n".join(line for line in lines if line)
 
 
 def send(text: str) -> bool:

@@ -5,7 +5,6 @@ writer — any silent change here corrupts both eval and exported labels.
 """
 
 import numpy as np
-import pytest
 import torch
 
 from src.dl.utils import (

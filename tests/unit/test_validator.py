@@ -15,7 +15,17 @@ from src.dl.validator import Validator
 
 LABEL_TO_NAME = {0: "cat", 1: "dog"}
 
-REQUIRED_KEYS_BBOX = {"f1", "precision", "recall", "iou", "TPs", "FPs", "FNs", "mAP_50", "mAP_50_95"}
+REQUIRED_KEYS_BBOX = {
+    "f1",
+    "precision",
+    "recall",
+    "iou",
+    "TPs",
+    "FPs",
+    "FNs",
+    "mAP_50",
+    "mAP_50_95",
+}
 
 
 def test_validator_returns_required_keys(synthetic_preds_gt):
@@ -25,23 +35,22 @@ def test_validator_returns_required_keys(synthetic_preds_gt):
         label_to_name=LABEL_TO_NAME,
     )
     metrics = v.compute_metrics()
-    assert REQUIRED_KEYS_BBOX.issubset(metrics.keys()), \
+    assert REQUIRED_KEYS_BBOX.issubset(metrics.keys()), (
         f"missing keys: {REQUIRED_KEYS_BBOX - metrics.keys()}"
+    )
 
 
 def test_validator_perfect_preds_score_one():
     gt = [
         {
             "labels": torch.tensor([0, 1], dtype=torch.long),
-            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0],
-                                   [60.0, 60.0, 100.0, 100.0]]),
+            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0], [60.0, 60.0, 100.0, 100.0]]),
         }
     ]
     preds = [
         {
             "labels": torch.tensor([0, 1], dtype=torch.long),
-            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0],
-                                   [60.0, 60.0, 100.0, 100.0]]),
+            "boxes": torch.tensor([[10.0, 10.0, 50.0, 50.0], [60.0, 60.0, 100.0, 100.0]]),
             "scores": torch.tensor([0.99, 0.99]),
         }
     ]
@@ -74,17 +83,21 @@ def test_validator_with_masks_emits_mask_keys():
     # Single image, one object: a 100x100 mask with a 20x20 filled patch.
     mask = torch.zeros((1, 100, 100), dtype=torch.uint8)
     mask[0, 20:40, 20:40] = 1
-    gt = [{
-        "labels": torch.tensor([0], dtype=torch.long),
-        "boxes": torch.tensor([[20.0, 20.0, 40.0, 40.0]]),
-        "masks": mask,
-    }]
-    preds = [{
-        "labels": torch.tensor([0], dtype=torch.long),
-        "boxes": torch.tensor([[20.0, 20.0, 40.0, 40.0]]),
-        "scores": torch.tensor([0.99]),
-        "masks": mask.clone(),
-    }]
+    gt = [
+        {
+            "labels": torch.tensor([0], dtype=torch.long),
+            "boxes": torch.tensor([[20.0, 20.0, 40.0, 40.0]]),
+            "masks": mask,
+        }
+    ]
+    preds = [
+        {
+            "labels": torch.tensor([0], dtype=torch.long),
+            "boxes": torch.tensor([[20.0, 20.0, 40.0, 40.0]]),
+            "scores": torch.tensor([0.99]),
+            "masks": mask.clone(),
+        }
+    ]
     v = Validator(gt=copy.deepcopy(gt), preds=copy.deepcopy(preds), label_to_name=LABEL_TO_NAME)
     metrics = v.compute_metrics()
     assert "mAP_50_mask" in metrics

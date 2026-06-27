@@ -78,7 +78,13 @@ def test_step_routes_muon_vs_adamw_differently():
     opt = MuonWithAuxAdam(
         [
             {"params": [p_m], "use_muon": True, "lr": 0.1, "weight_decay": 0.0},
-            {"params": [p_a], "use_muon": False, "lr": 0.1, "betas": (0.9, 0.999), "weight_decay": 0.0},
+            {
+                "params": [p_a],
+                "use_muon": False,
+                "lr": 0.1,
+                "betas": (0.9, 0.999),
+                "weight_decay": 0.0,
+            },
         ]
     )
     opt.step()

@@ -11,9 +11,7 @@ from src.d_fine.matcher import HungarianMatcher, dice_cost, sigmoid_focal_cost
 
 def _matcher(use_focal=True, weights=None):
     weights = weights or {"cost_class": 2, "cost_bbox": 5, "cost_giou": 2}
-    return HungarianMatcher(
-        weight_dict=weights, use_focal_loss=use_focal, alpha=0.25, gamma=2.0
-    )
+    return HungarianMatcher(weight_dict=weights, use_focal_loss=use_focal, alpha=0.25, gamma=2.0)
 
 
 def test_dice_cost_zero_when_pred_equals_target():

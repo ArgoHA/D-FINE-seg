@@ -18,7 +18,9 @@ def segment_model_n():
 
 
 def _opt_kwargs(**extra):
-    return dict(lr=1e-4, backbone_lr=1e-5, betas=(0.9, 0.999), weight_decay=1e-4, base_lr=1e-4, **extra)
+    return dict(
+        lr=1e-4, backbone_lr=1e-5, betas=(0.9, 0.999), weight_decay=1e-4, base_lr=1e-4, **extra
+    )
 
 
 def test_use_muon_false_is_plain_adamw(segment_model_n):
@@ -58,7 +60,13 @@ def test_mask_and_det_heads_never_in_muon_group(segment_model_n):
         assert "backbone" not in name  # backbone stays AdamW
         assert "encoder" in name or "decoder" in name  # only enc/dec matrices
     # Known 2D enc/dec params that must stay on AdamW (lack a token, or are mask head).
-    excluded = ("mask_decoder", "mask_head", "lqe_layers", "denoising_class_embed", "query_pos_head")
+    excluded = (
+        "mask_decoder",
+        "mask_head",
+        "lqe_layers",
+        "denoising_class_embed",
+        "query_pos_head",
+    )
     for name, p in segment_model_n.named_parameters():
         if any(tok in name for tok in excluded):
             assert id(p) not in muon_ids, name

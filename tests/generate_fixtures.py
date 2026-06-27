@@ -86,8 +86,9 @@ def _wipe_stale_labels(image_stems: set[str]) -> None:
             p.unlink()
 
 
-def _write_labels(image_path: Path, boxes_xyxy: np.ndarray, labels: np.ndarray,
-                  img_h: int, img_w: int) -> None:
+def _write_labels(
+    image_path: Path, boxes_xyxy: np.ndarray, labels: np.ndarray, img_h: int, img_w: int
+) -> None:
     label_path = image_path.with_suffix(".txt")
     if len(boxes_xyxy) == 0:
         label_path.write_text("")
@@ -161,14 +162,20 @@ def main() -> None:
         kept += 1
         print(f"  {img_path.name}: {n_det} detections ({w}x{h})")
 
-    BASELINE_PATH.write_text(json.dumps({
-        "mAP_50_min": 0.95,
-        "mAP_50_95_min": 0.70,
-        "n_images": kept,
-        "n_detections": total,
-        "conf_thresh": CONF_THRESH,
-        "max_long_side": MAX_LONG_SIDE,
-    }, indent=2) + "\n")
+    BASELINE_PATH.write_text(
+        json.dumps(
+            {
+                "mAP_50_min": 0.95,
+                "mAP_50_95_min": 0.70,
+                "n_images": kept,
+                "n_detections": total,
+                "conf_thresh": CONF_THRESH,
+                "max_long_side": MAX_LONG_SIDE,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     print(f"wrote baseline -> {BASELINE_PATH}")
 
 
