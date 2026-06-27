@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml"><img src="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <a href="https://arxiv.org/abs/2602.23043"><img src="https://img.shields.io/badge/arXiv-2602.23043-b31b1b.svg" alt="arXiv"></a>
   <a href="https://huggingface.co/ArgoSA/D-FINE-seg"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20Card-yellow.svg" alt="Hugging Face Model Card"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
@@ -31,6 +32,12 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 
 > [**Paper**](https://arxiv.org/abs/2602.23043): *D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment*
 
+<p align="center">
+  <img src="assets/det_benchmark.png" width="48%">
+  <img src="assets/seg_benchmark.png" width="48%">
+</p>
+
+
 ## Highlights
 
 - **Instance segmentation** via a lightweight mask head on top of D-FINE's HybridEncoder PAN outputs — fuses stride 8/16/32 features to 1/4 resolution, then dot-product between per-query mask embeddings (3-layer MLP) and shared mask features produces per-instance masks
@@ -39,11 +46,6 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 - **Mask-aware matching**: Hungarian matcher augmented with Dice overlap cost and sigmoid focal mask cost alongside classification, L1, and GIoU costs
 - **5 model sizes** — Nano, Small, Medium, Large, Extra-Large — with HGNetv2 backbones
 - **Production-ready**: export to ONNX / TensorRT / OpenVINO / CoreML / LiteRT and optimized inference backends
-
-<p align="center">
-  <img src="assets/det_benchmark.png" width="48%">
-  <img src="assets/seg_benchmark.png" width="48%">
-</p>
 
 ## Quick Start
 
@@ -57,7 +59,7 @@ uv sync
 
 This creates a `.venv/` with all dependencies pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
 
-Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) into `pretrained/` on first use, so no manual setup is needed. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also availible in the Hugging Face model card.
+Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) into `pretrained/` on first use, so no manual setup is needed. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
 
 ### Prepare Your Data
 
