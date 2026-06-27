@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-fast:
+    name: fast CPU suite (Linux, py3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # tensorrt is Linux-gated and GPU-only; the fast suite never imports it
+      # (gpu/slow tests skip on CI), so skip the ~GB+ install. --no-sync below
+      # keeps `uv run` from re-adding it.
+      - name: Install dependencies
+        run: >
+          uv sync
+          --no-install-package tensorrt
+          --no-install-package tensorrt-cu12
+          --no-install-package tensorrt-cu12-libs
+          --no-install-package tensorrt-cu12-bindings
+
+      - name: Run fast tests (no GPU, no pretrained weights)
+        run: uv run --no-sync pytest -q -m "not slow and not gpu"
