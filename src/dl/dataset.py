@@ -197,6 +197,10 @@ class CustomDataset(Dataset):
         self.norm = ([0.0] * self.in_channels, [1.0] * self.in_channels)
         self.debug_img_processing = debug_img_processing
         self.mode = mode
+
+        # Shared-memory flags: main process flips them, persistent workers read
+        # the change without a re-fork
+        self._shared_flags = torch.zeros(2).share_memory_()
         self.ignore_background = False
         self.label_to_name = cfg.train.label_to_name
         self.return_masks = str(cfg.task).lower() == "segment"
@@ -213,6 +217,22 @@ class CustomDataset(Dataset):
         self._init_augs(cfg)
 
         self.debug_img_path = Path(cfg.train.debug_img_path)
+
+    @property
+    def mosaic_prob(self) -> float:
+        return float(self._shared_flags[0])
+
+    @mosaic_prob.setter
+    def mosaic_prob(self, value: float) -> None:
+        self._shared_flags[0] = float(value)
+
+    @property
+    def ignore_background(self) -> bool:
+        return bool(self._shared_flags[1])
+
+    @ignore_background.setter
+    def ignore_background(self, value: bool) -> None:
+        self._shared_flags[1] = float(bool(value))
 
     def _init_augs(self, cfg) -> None:
         pad_color = tuple([114] * self.in_channels)
@@ -831,15 +851,6 @@ class Loader:
             self.train_sampler = sampler
 
         return dataloader
-
-    def rebuild_train_loader(self, train_dataset: Dataset, distributed: bool = False) -> DataLoader:
-        """Rebuild the train DataLoader around an existing dataset.
-
-        With persistent_workers=True the forked workers hold their own copy of the
-        dataset and won't see main-process mutations (e.g. close_mosaic). Calling
-        this after a mutation respawns workers so they fork a fresh copy.
-        """
-        return self._build_dataloader_impl(train_dataset, shuffle=True, distributed=distributed)
 
     def build_dataloaders(
         self, distributed: bool = False

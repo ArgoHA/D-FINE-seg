@@ -776,27 +776,16 @@ class Trainer:
                     use_wandb=self.use_wandb,
                 )
 
-            # Mutations to the train dataset must trigger a worker respawn so
-            # persistent_workers pick them up; otherwise forked workers keep
-            # running with stale dataset state.
-            train_dataset_changed = False
+            # close_mosaic / ignore_background write shared-memory flags
             if (
                 epoch >= self.epochs - self.no_mosaic_epochs
                 and self.train_loader.dataset.mosaic_prob
             ):
                 self.train_loader.dataset.close_mosaic()
-                train_dataset_changed = True
 
             if epoch == self.ignore_background_epochs:
                 self.train_loader.dataset.ignore_background = False
                 logger.info("Including background images")
-                train_dataset_changed = True
-
-            if train_dataset_changed:
-                self.train_loader = self.base_loader.rebuild_train_loader(
-                    self.train_loader.dataset, distributed=self.distributed
-                )
-                self.train_sampler = getattr(self.base_loader, "train_sampler", None)
 
             one_epoch_time = time.time() - epoch_start_time
 
