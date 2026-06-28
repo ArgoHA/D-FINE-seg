@@ -597,8 +597,14 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
                         keep_ratio=kr,
                         apply_nms=False,
                     )
-                    x_trt = x1.to(device=m._input_tensor.device, dtype=m._input_tensor.dtype)
-                    add(tag, is8, m._predict(x_trt.contiguous(), actual_batch=1)[2])  # scores idx 2
+                    # Mirror __call__: _predict enqueues on m._stream, but
+                    # _cosine's .cpu() read runs on the default stream — without
+                    # this wrapper the async execute races the output read.
+                    with torch.cuda.stream(m._stream):
+                        x_trt = x1.to(device=m._input_tensor.device, dtype=m._input_tensor.dtype)
+                        scores = m._predict(x_trt.contiguous(), actual_batch=1)[2]
+                    torch.cuda.default_stream(m.device).wait_stream(m._stream)
+                    add(tag, is8, scores)  # scores idx 2
                 except Exception as e:
                     logger.warning(f"Parity skipped for {tag}: {e}")
 
