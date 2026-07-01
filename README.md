@@ -209,8 +209,6 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 > **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
-> **TensorRT 11+** engines are strongly-typed: FP16 is baked into the exported ONNX (the DFL softmax stays FP32), not toggled by a builder flag. TensorRT INT8 is not currently supported on TRT 11.
-
 After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend — over the sorted top-K detection scores vs torch — to `parity.csv` next to the weights.
 
 ## Inference
