@@ -137,7 +137,14 @@ def prepare_model(cfg, device):
                 f"{ckpt} not found. Train first, or set export.from_pretrained=True "
                 "to export pretrained weights directly."
             )
-        model.load_state_dict(torch.load(ckpt, weights_only=True))
+        state = torch.load(ckpt, weights_only=True)
+        # decoder regenerates these from img_size; drop so re-export at another resolution works
+        for k in ("decoder.anchors", "decoder.valid_mask"):
+            state.pop(k, None)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        assert not unexpected and set(missing) <= {"decoder.anchors", "decoder.valid_mask"}, (
+            f"unexpected checkpoint mismatch: missing={missing}, unexpected={unexpected}"
+        )
     model.eval()
     return model
 

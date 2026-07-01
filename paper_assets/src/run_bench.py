@@ -42,7 +42,7 @@ TO_EXPORT = False
 PARALLEL_EXPORTS = 3
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[2]  # paper_assets/src/ -> D-FINE-seg root
 CONFIG_DIR = REPO_ROOT / "configs"
 CONFIG_YAML = REPO_ROOT / "config.yaml"
 LOG_DIR = REPO_ROOT / "logs" / "bench_pipeline"
