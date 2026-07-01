@@ -130,7 +130,7 @@ def main():
     print(f"Prompt : '{prompt}'")
     print(f"Score threshold: {score_threshold}")
 
-    model = SAM3_model(prompt=prompt, conf_thresh=score_threshold, binarize_masks=False)
+    model = SAM3_model(prompt=prompt, conf_thresh=score_threshold)
 
     total_detections = 0
     with tqdm(image_files, unit="img") as pbar:
