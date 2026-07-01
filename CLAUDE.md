@@ -211,6 +211,8 @@ Knobs under `export:` in `config.yaml`: `half` (FP16), `max_batch_size`, `dynami
 
 ONNX has the D-FINE postprocessor fused into the graph; OpenVINO exports the raw head (postprocess separately).
 
+**TensorRT ≥ 11 is strong-typed** (pinned `tensorrt==11.1`). Precision is authored into the ONNX, not chosen by a builder flag: with `export.half`, the TRT branch fp16-converts the ONNX (via `onnxconverter_common`) while keeping the DFL `Softmax` fp32 — it's precision-sensitive — then builds a strong-typed engine (no `BuilderFlag.FP16`). If a future model has another precision-sensitive op, add it to the `op_block_list` in `export_to_tensorrt`.
+
 **Parity self-check** (`export.parity: True`, default on): after exporting, each backend runs on
 the same input as torch and one cosine per backend — over the sorted top-K detection scores — is
 printed and written to `parity.csv`. Scores are the reorder-stable, end-to-end signal; per-query
@@ -221,10 +223,12 @@ compared (bench covers surviving-box geometry). Warn-gated at cos ≥ 0.99 (≥ 
 
 ```bash
 make ov_int8      # OpenVINO INT8 via NNCF, accuracy-aware (can take hours)
-make trt_int8     # TensorRT INT8 calibration
+make trt_int8     # TensorRT INT8 — raises on TRT 11 (see note)
 ```
 
 OpenVINO path respects `ov_int8_max_drop` (default 0.02 F1 drop allowed).
+
+**`make trt_int8` is broken on TensorRT 11** and raises loudly: TRT 11 removed the PTQ calibrator API it used (`IInt8EntropyCalibrator2`, `BuilderFlag.INT8`, `ILayer.precision`). TRT INT8 now needs a ModelOpt Q/DQ ONNX fed to a strong-typed build — not yet implemented. Other INT8 backends (OpenVINO/CoreML/LiteRT) are unaffected.
 
 ## 11. Testing
 
