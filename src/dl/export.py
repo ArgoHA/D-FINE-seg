@@ -501,7 +501,20 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
 
     # CoreML/LiteRT export move the shared model params to CPU in place, so run torch on its device
     dev = next(raw_model.parameters()).device
-    x1 = x_test[:1].to(dev)
+    # a real training image anchors parity on true detections (randn has none)
+    img_dir = Path(cfg.train.data_path) / "images"
+    imgs = sorted(img_dir.glob("*.jpg")) or sorted(img_dir.glob("*.png"))
+    if imgs:
+        import cv2
+
+        h, w = cfg.train.img_size
+        img = cv2.resize(cv2.imread(str(imgs[0])), (w, h))[:, :, ::-1]  # BGR->RGB
+        x1 = torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1), np.float32) / 255.0)[
+            None
+        ]
+        x1 = x1.to(dev)
+    else:
+        x1 = x_test[:1].to(dev)
     x_np = x1.detach().cpu().numpy().astype(np.float32)
     with torch.no_grad():
         ref = model(x1)[2]  # [1, K] sorted top-K confidences from the fused torch postproc
