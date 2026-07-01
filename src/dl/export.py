@@ -372,32 +372,12 @@ def export_to_tensorrt(
 
     opt_bs = min(opt_bs, max_batch_size)
 
-    # TRT 11 is strong-typed: precision must be authored into the ONNX, so build the
-    # engine from an fp16 ONNX with the DFL Softmax kept fp32 (precision-sensitive).
-    # TRT 10: use BuilderFlag.FP16 on an FP32 ONNX (autotuner picks fp16 where safe).
-    is_trt11 = not hasattr(trt.BuilderFlag, "FP16")
-    parse_onnx_path = onnx_file_path
-    if half and is_trt11:
-        from onnxconverter_common import float16
-
-        m = onnx.load(str(onnx_file_path))
-        m = float16.convert_float_to_float16(
-            m, keep_io_types=True, op_block_list=[*float16.DEFAULT_OP_BLOCK_LIST, "Softmax"]
-        )
-        parse_onnx_path = onnx_file_path.with_suffix(".fp16.onnx")
-        onnx.save(m, str(parse_onnx_path))
-        logger.info("ONNX converted to fp16 (Softmax kept fp32) for strong-typed TRT")
-
     tr_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(tr_logger)
-    if is_trt11:
-        network = builder.create_network()  # strongly typed by default in TRT 11
-    else:
-        net_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        network = builder.create_network(net_flags)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
     parser = trt.OnnxParser(network, tr_logger)
 
-    with open(parse_onnx_path, "rb") as model:
+    with open(onnx_file_path, "rb") as model:
         if not parser.parse(model.read()):
             print("ERROR: Failed to parse the ONNX file.")
             for error in range(parser.num_errors):
@@ -405,10 +385,9 @@ def export_to_tensorrt(
             return
 
     config = builder.create_builder_config()
+    # Increase workspace memory to help with larger batch sizes
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)  # 2GB
-    if hasattr(config, "builder_optimization_level"):
-        config.builder_optimization_level = 3
-    if half and not is_trt11:
+    if half:
         config.set_flag(trt.BuilderFlag.FP16)
 
     if max_batch_size > 1:
@@ -417,7 +396,7 @@ def export_to_tensorrt(
         input_name = input_tensor.name
 
         # Load ONNX model to get the actual input shape information
-        onnx_model = onnx.load(str(parse_onnx_path))
+        onnx_model = onnx.load(str(onnx_file_path))
 
         # Find the input by name to ensure we get the correct one
         input_shape_proto = None
