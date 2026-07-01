@@ -331,18 +331,6 @@ def main(cfg: DictConfig):
     Build a TensorRT INT8 engine from the ONNX model using the val set for calibration.
     Expects the ONNX file at <save_dir>/model.onnx (the raw one exported by export.py).
     """
-    import tensorrt as trt
-
-    # TRT 11 removed IInt8EntropyCalibrator2, BuilderFlag.INT8, and ILayer.precision —
-    # the whole PTQ-calibration workflow this script relied on. INT8 now needs explicit
-    # Q/DQ nodes via ModelOpt quantization (python -m modelopt.onnx.quantization).
-    if not hasattr(trt, "IInt8EntropyCalibrator2"):
-        raise RuntimeError(
-            f"TensorRT {trt.__version__} dropped the INT8 calibrator API this script uses. "
-            "Use `python -m modelopt.onnx.quantization` to generate a Q/DQ ONNX, then build "
-            "a strongly-typed engine from it."
-        )
-
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
     save_dir = Path(cfg.train.path_to_save)
 
