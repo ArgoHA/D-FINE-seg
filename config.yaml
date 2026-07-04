@@ -58,6 +58,7 @@ train:
   debug_img_processing: True # save images after preprocessing
 
   amp_enabled: True # use automatic mixed precision
+  amp_dtype: bfloat16 # bfloat16/float16
   clip_max_norm: 0.1 # gradient clipping
 
   batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1

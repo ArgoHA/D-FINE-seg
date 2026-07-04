@@ -108,6 +108,14 @@ class Trainer:
         self.path_to_save = Path(cfg.train.path_to_save)
         self.to_visualize_eval = cfg.train.to_visualize_eval
         self.amp_enabled = cfg.train.amp_enabled
+        # bfloat16 has fp32's dynamic range: immune to the fp16 overflow behind issue #64
+        self.amp_dtype = (
+            torch.float16 if cfg.train.get("amp_dtype") == "float16" else torch.bfloat16
+        )
+        if self.amp_enabled and self.amp_dtype is torch.bfloat16 and self.device.type == "cuda":
+            assert torch.cuda.is_bf16_supported(), (
+                "bf16 AMP not supported on this GPU; set train.amp_dtype=float16"
+            )
         self.clip_max_norm = cfg.train.clip_max_norm
         self.b_accum_steps = max(cfg.train.b_accum_steps, 1)
         self.keep_ratio = cfg.train.keep_ratio
@@ -266,7 +274,8 @@ class Trainer:
             )
 
         if self.amp_enabled:
-            self.scaler = GradScaler()
+            # bf16 needs no loss scaling; disabled scaler makes scale/unscale/step passthrough
+            self.scaler = GradScaler(enabled=self.amp_dtype == torch.float16)
 
     def init_dirs(self):
         for path in [self.debug_img_path, self.eval_preds_path]:
@@ -426,7 +435,7 @@ class Trainer:
             for idx, (inputs, targets, img_paths) in enumerate(eval_iter):
                 inputs = inputs.to(self.device)
                 if self.amp_enabled:
-                    with autocast(str(self.device), cache_enabled=True):
+                    with autocast(str(self.device), dtype=self.amp_dtype, cache_enabled=True):
                         raw_res = model(inputs)
                 else:
                     raw_res = model(inputs)
@@ -673,7 +682,7 @@ class Trainer:
                 lr = self.optimizer.param_groups[-1]["lr"]
 
                 if self.amp_enabled:
-                    with autocast(str(self.device), cache_enabled=True):
+                    with autocast(str(self.device), dtype=self.amp_dtype, cache_enabled=True):
                         output = self.model(inputs, targets=targets)
                     with autocast(str(self.device), enabled=False):
                         loss_dict = self.loss_fn(output, targets)
