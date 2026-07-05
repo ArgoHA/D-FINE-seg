@@ -4,7 +4,7 @@ Reference for AI agents working in this repo. Keep it open and follow it literal
 
 ## 1. What this repo is
 
-D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` / `segment` / `sem_seg`) switches between object detection, instance segmentation, and semantic segmentation (dense per-pixel classes; full pipeline — train/infer/export/bench; status + gotchas in [SEM_SEG_PROGRESS.md](SEM_SEG_PROGRESS.md)).
+D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` / `segment` / `sem_seg`) switches between object detection, instance segmentation, and semantic segmentation (dense per-pixel classes; full pipeline — train/infer/export/bench).
 
 Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in `pretrained/`: detection (`dfine_<size>_coco.pt`, `dfine_<size>_obj2coco.pt`) and instance segmentation (`dfine_seg_<size>_coco.pt` — includes trained `MaskDecoder` weights).
 
@@ -96,8 +96,7 @@ the mask fill for pad-introducing augs. `label_to_name` covers **every** pixel c
 (including background). `make split` works unchanged. Init from
 `pretrained/dfine_seg_<size>_coco.pt` (transfers the trained `MaskDecoder` fuser). Decision
 metric is forced to `mIoU` (protocol: pixel confusion matrix at original image resolution).
-`keep_ratio: True` and `coco_dataset: True` are rejected for sem_seg. Full design:
-[SEM_SEG_PLAN.md](SEM_SEG_PLAN.md).
+`keep_ratio: True` and `coco_dataset: True` are rejected for sem_seg.
 
 ### 5.2 COCO layout
 
