@@ -63,6 +63,28 @@ def test_forward_shapes_cpu_segment(model_n_segment_cpu):
     assert masks.max().item() <= 1.0 + 1e-4
 
 
+def test_forward_shapes_cpu_sem_seg():
+    """sem_seg on nano also exercises the low-level 1/8 feat path."""
+    model = build_model(
+        model_name="n",
+        num_classes=23,
+        enable_mask_head=False,
+        device="cpu",
+        img_size=[640, 640],
+        task="sem_seg",
+    )
+    x = torch.randn(1, 3, 640, 640)
+    model.train()
+    out = model(x)
+    assert out["sem_seg_logits"].shape == (1, 23, 640, 640)
+    assert out["sem_seg_logits_aux"].shape == (1, 23, 640, 640)
+    model.eval()
+    with torch.no_grad():
+        out = model(x)
+    assert "sem_seg_logits_aux" not in out
+    assert torch.isfinite(out["sem_seg_logits"]).all()
+
+
 def test_cpu_forward_latency_smoke(model_n_detect_cpu):
     """Loose ceiling: catches O(N^2) regressions, not microbenchmarks.
 

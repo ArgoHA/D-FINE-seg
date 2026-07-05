@@ -4,9 +4,9 @@ Reference for AI agents working in this repo. Keep it open and follow it literal
 
 ## 1. What this repo is
 
-D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` or `task: segment`) switches between object detection and instance segmentation.
+D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` / `segment` / `sem_seg`) switches between object detection, instance segmentation, and semantic segmentation (dense per-pixel classes; **training only for now** — export/bench/infer land later, see [SEM_SEG_PROGRESS.md](SEM_SEG_PROGRESS.md)).
 
-Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in `pretrained/` (`dfine_<size>_coco.pt` and `dfine_<size>_obj2coco.pt`).
+Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in `pretrained/`: detection (`dfine_<size>_coco.pt`, `dfine_<size>_obj2coco.pt`) and instance segmentation (`dfine_seg_<size>_coco.pt` — includes trained `MaskDecoder` weights).
 
 ## 2. Layout
 
@@ -26,7 +26,7 @@ src/
 - Python 3.11–3.13, PyTorch 2.9, CUDA 12.x. Dependencies live in [pyproject.toml](pyproject.toml); [uv.lock](uv.lock) is the source of truth for versions.
 - Install with `uv sync` (creates `.venv/`). All Makefile targets shell out via `uv run`, so no manual activation is needed for `make train` / `make bench` / etc. For ad-hoc commands either prefix with `uv run` or activate the venv (`source .venv/bin/activate`).
 - Platform-specific deps are gated by markers in `pyproject.toml`: `tensorrt` installs on Linux only. `coremltools` ships wheels for both platforms (Linux can run the converter for `make export`, even though the CoreML runtime itself is macOS-only). `uv.lock` covers both so the same lockfile works on the dev mac and the lab box.
-- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
+- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt` or `dfine_seg_<size>_coco.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
 
 ## 4. Configuration model
 
@@ -43,7 +43,7 @@ Key top-level fields in [config.yaml](config.yaml):
 | `project_name` | WandB project name |
 | `exp_name` | Experiment name (outputs nest under `<exp_name>_<date>`) |
 | `model_name` | `n` / `s` / `m` / `l` / `x` |
-| `task` | `detect` or `segment` |
+| `task` | `detect`, `segment`, or `sem_seg` |
 | `train.root` | Absolute project root (dataset + outputs live here) |
 | `train.data_path` | Dataset dir — `${train.root}/data/dataset` by default |
 | `train.coco_dataset` | `False` → YOLO-style; `True` → COCO JSON |
@@ -82,6 +82,22 @@ make split        # == python -m src.etl.split
 ```
 
 Produces `train.csv`, `val.csv` (and `test.csv` if `split.val_split < 1 - split.train_split`) inside `train.data_path`. Ratios live under the top-level `split:` section in `config.yaml`.
+
+### 5.1.1 sem_seg layout
+
+```
+<train.data_path>/
+  images/   # .jpg/.png/.jpeg/.npy
+  masks/    # .png — same stem, single channel uint8, pixel value = class id
+```
+
+`train.sem_seg.ignore_index` (default 255) pixels are excluded from loss + mIoU and used as
+the mask fill for pad-introducing augs. `label_to_name` covers **every** pixel class
+(including background). `make split` works unchanged. Init from
+`pretrained/dfine_seg_<size>_coco.pt` (transfers the trained `MaskDecoder` fuser). Decision
+metric is forced to `mIoU` (protocol: pixel confusion matrix at original image resolution).
+`keep_ratio: True` and `coco_dataset: True` are rejected for sem_seg. Full design:
+[SEM_SEG_PLAN.md](SEM_SEG_PLAN.md).
 
 ### 5.2 COCO layout
 

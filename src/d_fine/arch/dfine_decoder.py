@@ -390,6 +390,66 @@ class MaskDecoder(nn.Module):
         return x  # (B, out_ch, H/4, W/4)
 
 
+def conv_gn_act(in_ch, out_ch):
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
+        nn.GroupNorm(32, out_ch),
+        nn.ReLU(inplace=True),
+    )
+
+
+class SemSegDecoder(nn.Module):
+    """Dense per-pixel head for task=sem_seg: MaskDecoder fuser -> seg neck -> classifier.
+
+    Plugs into the DFINE "decoder" slot, bypassing the whole query/matcher path.
+    Attr name "mask_decoder" keeps keys aligned with dfine_seg_<size>_coco.pt so the
+    pretrained fuser weights transfer (neck/classifier/aux train from scratch).
+    Logits are produced at 1/4 scale and bilinearly upsampled x4 to input resolution.
+    """
+
+    def __init__(
+        self,
+        num_classes,
+        feat_channels,
+        mask_dim=256,
+        mask_low_level_ch=None,
+        neck_dim=128,
+        dropout=0.1,
+        aux=True,
+    ):
+        super().__init__()
+        in_chs = list(feat_channels)
+        if mask_low_level_ch is not None:  # nano: prepend backbone 1/8 feat
+            in_chs = [mask_low_level_ch] + in_chs
+        self.mask_decoder = MaskDecoder(in_chs=in_chs, out_ch=mask_dim)
+        self.neck = nn.Sequential(conv_gn_act(mask_dim, neck_dim), conv_gn_act(neck_dim, neck_dim))
+        self.dropout = nn.Dropout2d(dropout)
+        self.classifier = nn.Conv2d(neck_dim, num_classes, 1)
+        # train-only deep supervision on the finest PAN feature (stride 8; 16 for nano)
+        self.aux_head = (
+            nn.Sequential(
+                conv_gn_act(feat_channels[0], neck_dim),
+                nn.Dropout2d(dropout),
+                nn.Conv2d(neck_dim, num_classes, 1),
+            )
+            if aux
+            else None
+        )
+
+    def forward(self, feats, targets=None, low_level_feat=None):
+        mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
+        x = self.mask_decoder(mask_feats)  # (B, mask_dim, H/4, W/4)
+        logits = self.classifier(self.dropout(self.neck(x)))  # (B, C, H/4, W/4)
+        logits = F.interpolate(logits, scale_factor=4.0, mode="bilinear", align_corners=False)
+        out = {"sem_seg_logits": logits}  # (B, C, H, W)
+        if self.training and self.aux_head is not None:
+            aux = self.aux_head(feats[0])
+            out["sem_seg_logits_aux"] = F.interpolate(
+                aux, size=logits.shape[-2:], mode="bilinear", align_corners=False
+            )
+        return out
+
+
 class TransformerDecoder(nn.Module):
     """
     Transformer Decoder implementing Fine-grained Distribution Refinement (FDR).

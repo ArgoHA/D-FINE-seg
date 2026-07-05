@@ -7,9 +7,11 @@ from pathlib import Path
 from shutil import rmtree
 from typing import Dict, List, Tuple
 
+import cv2
 import hydra
 import numpy as np
 import torch
+import torch.nn.functional as F
 import wandb
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
@@ -49,9 +51,10 @@ from src.dl.utils import (
     save_metrics,
     set_seeds,
     visualize,
+    visualize_sem_seg,
     wandb_logger,
 )
-from src.dl.validator import Validator
+from src.dl.validator import SemSegValidator, Validator
 
 
 class ModelEMA:
@@ -122,9 +125,12 @@ class Trainer:
         self.use_wandb = cfg.train.use_wandb
         self.label_to_name = cfg.train.label_to_name
         self.num_labels = len(cfg.train.label_to_name)
-        self.task = cfg.task  # detect/segment
+        self.task = cfg.task  # detect/segment/sem_seg
         self.mask_batch_size = cfg.train.mask_batch_size
         enable_mask_head = self.task == "segment"
+        self.ignore_index = (
+            int(cfg.train.sem_seg.ignore_index) if self.task == "sem_seg" else None
+        )
 
         self.debug_img_path = Path(self.cfg.train.debug_img_path)
         self.eval_preds_path = Path(self.cfg.train.eval_preds_path)
@@ -135,7 +141,9 @@ class Trainer:
         if self.is_main:
             self.init_dirs()
 
-        if enable_mask_head:
+        if self.task == "sem_seg":
+            self.decision_metrics = ["mIoU"]  # dense seg has no box metrics
+        elif enable_mask_head:
             for i, metric in enumerate(self.decision_metrics):
                 if metric == "mAP_50":
                     self.decision_metrics[i] = "mAP_50_mask"
@@ -195,6 +203,7 @@ class Trainer:
             in_channels=cfg.train.in_channels,
             pretrained_model_path=cfg.train.pretrained_model_path,
             pretrained_backbone=cfg.train.get("imagenet_backbone", False),
+            task=self.task,
         )
         if self.distributed:
             if torch.cuda.is_available():
@@ -221,6 +230,9 @@ class Trainer:
             self.num_labels,
             label_smoothing=cfg.train.label_smoothing,
             enable_mask_head=enable_mask_head,
+            task=self.task,
+            ignore_index=self.ignore_index,
+            class_weights=cfg.train.sem_seg.class_weights if self.task == "sem_seg" else None,
         )
 
         use_muon = cfg.train.get("use_muon", False)
@@ -473,6 +485,76 @@ class Trainer:
 
         return all_gt, all_preds
 
+    @torch.no_grad()
+    def evaluate_sem_seg(
+        self, val_loader: DataLoader, path_to_save: Path, extended: bool, mode: str = None
+    ) -> Dict[str, float]:
+        """Streaming sem_seg eval: pixel confusion matrix at ORIGINAL resolution.
+
+        Pred argmax is upsampled to the original size with NEAREST and compared
+        against the original-res GT PNG re-read from masks/ (the batch-level
+        resized GT is only used for the loss).
+        """
+        model = self.ema_model.model if self.ema_model else self.model
+        model.eval()
+        validator = SemSegValidator(self.num_labels, self.label_to_name, self.ignore_index)
+        masks_dir = Path(self.cfg.train.data_path) / "masks"
+        n_vis = 0
+
+        eval_iter = val_loader
+        if self.is_main:
+            eval_iter = tqdm(val_loader, desc="Evaluating", unit="batch", leave=False)
+
+        with torch.inference_mode():
+            for inputs, targets, img_paths in eval_iter:
+                if inputs is None:
+                    continue
+                inputs = inputs.to(self.device)
+                if self.amp_enabled:
+                    with autocast(str(self.device), dtype=self.amp_dtype, cache_enabled=True):
+                        outputs = model(inputs)
+                else:
+                    outputs = model(inputs)
+                preds = outputs["sem_seg_logits"].argmax(1)  # (B, h, w) at input res
+
+                for b, img_path in enumerate(img_paths):
+                    gt = cv2.imread(
+                        str(masks_dir / f"{Path(img_path).stem}.png"), cv2.IMREAD_GRAYSCALE
+                    )
+                    if gt is None:
+                        logger.warning(f"No GT mask for {img_path}, skipping in eval")
+                        continue
+                    gt_t = torch.from_numpy(gt).to(self.device)
+                    pred_full = F.interpolate(
+                        preds[b][None, None].float(), size=gt_t.shape, mode="nearest"
+                    )[0, 0].long()
+                    validator.update(pred_full, gt_t)
+
+                    if self.is_main and self.to_visualize_eval and n_vis < 20:
+                        visualize_sem_seg(
+                            img_path,
+                            gt_map=gt,
+                            pred_map=preds[b].cpu().numpy().astype(np.uint8),
+                            dataset_path=Path(self.cfg.train.data_path) / "images",
+                            path_to_save=self.eval_preds_path,
+                            n_classes=self.num_labels,
+                            ignore_index=self.ignore_index,
+                        )
+                        n_vis += 1
+
+        if self.distributed:
+            cm = validator.cm.to(self.device)
+            torch.distributed.all_reduce(cm)
+            validator.cm = cm.cpu()
+            synchronize()
+
+        metrics = None
+        if self.is_main:
+            metrics = validator.compute_metrics(extended=extended)
+            if path_to_save:
+                validator.save_plots(path_to_save / "plots" / mode)
+        return metrics
+
     def evaluate(
         self,
         val_loader: DataLoader,
@@ -482,6 +564,9 @@ class Trainer:
         extended: bool,
         mode: str = None,
     ) -> Dict[str, float]:
+        if self.task == "sem_seg":
+            return self.evaluate_sem_seg(val_loader, path_to_save, extended, mode)
+
         # All ranks perform inference on their portion of the data
         local_gt, local_preds = self.get_preds_and_gt(val_loader=val_loader)
 
@@ -784,6 +869,7 @@ def main(cfg: DictConfig) -> None:
                 cfg.train.device,
                 img_size=cfg.train.img_size,
                 in_channels=cfg.train.in_channels,
+                task=cfg.task,
             )
             model.load_state_dict(
                 torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True)

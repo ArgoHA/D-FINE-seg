@@ -1,16 +1,17 @@
-project_name: vis_drone # for wandb
-exp_name: test # experiment name
+project_name: aerial_sem_seg # for wandb
+exp_name: zero # experiment name
 
 exp: ${exp_name}_${now_dir}
 
 model_name: s # model size (n, s, m, l, x)
-task: detect
+task: sem_seg # detect | segment | sem_seg (dense per-pixel classes; decision metric = mIoU)
 
 train:
   ### Paths ###
-  root: /home/argo/Desktop/Projects/vis_drone # project root with dataset and outputs
+  root: /home/argo/Desktop/Projects/aerial_sem_seg # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
-  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt
+  # sem_seg/segment: use dfine_seg_* (ships trained MaskDecoder fuser); detect: dfine_${model_name}_${train.pretrained_dataset}.pt
+  pretrained_model_path: pretrained/dfine_seg_${model_name}_coco.pt
 
   imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
   coco_dataset: False # set True when annotations are in COCO JSON format (train/val/test)
@@ -27,26 +28,45 @@ train:
   ### Configs ###
   use_wandb: True
   device: cuda
-  label_to_name: # dataset's classes
-    0: pedestrian
-    1: people
-    2: bicycle
-    3: car
-    4: van
-    5: truck
-    6: tricycle
-    7: awning-tricycle
-    8: bus
-    9: motor
+  label_to_name: # dataset's classes (sem_seg: every pixel value is a class id from this map)
+    0: unlabeled
+    1: paved-area
+    2: dirt
+    3: grass
+    4: gravel
+    5: water
+    6: rocks
+    7: pool
+    8: vegetation
+    9: roof
+    10: wall
+    11: window
+    12: door
+    13: fence
+    14: fence-pole
+    15: person
+    16: dog
+    17: car
+    18: bicycle
+    19: tree
+    20: bald-tree
+    21: ar-marker
+    22: obstacle
 
   use_one_class: False
+
+  # sem_seg only: masks live in <data_path>/masks/<stem>.png, 1 channel, pixel value = class id
+  sem_seg:
+    ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
+    class_weights: null # optional per-class CE weights for imbalance
+    scale_jitter: null # e.g. [0.75, 1.5] -> RandomScale+Pad+RandomCrop after resize (mosaic replacement)
 
   ### Distributed Training (DDP) ###
   ddp:
     enabled: False  # set to true to use multi-GPU
     n_gpus: 2  # how many GPUs / processes per node for torchrun
 
-  decision_metrics: # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask
+  decision_metrics: # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask; sem_seg overrides to [mIoU] at runtime
   - f1
   - mAP_50 # will be swapped with mask version for task = segment
   - iou
@@ -160,10 +180,10 @@ bench:
   formats: # which backends to bench
     - torch
     - tensorrt
-    - onnx
-    - openvino
-    - coreml
-    - litert
+    # - onnx
+    # - openvino
+    # - coreml
+    # - litert
 
 
 infer:

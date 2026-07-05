@@ -23,9 +23,11 @@ from src.dl.utils import (
     get_mosaic_coordinate,
     norm_poly_to_abs,
     norm_xywh_to_abs_xyxy,
+    overlay_sem_seg,
     poly_abs_to_mask,
     random_affine,
     seed_worker,
+    sem_seg_palette,
     vis_one_box,
 )
 
@@ -53,6 +55,28 @@ def read_image_hwc(path) -> Optional[np.ndarray]:
             img = img[..., None]
         return img
     return cv2.imread(str(path))
+
+
+def read_image_rgb(path, in_channels: int) -> Optional[np.ndarray]:
+    """Load an image as HWC with channels in RGB(+extras) order.
+
+    Delegates to ``read_image_hwc`` (cv2 default for non-.npy, np.load for
+    .npy) and applies the project conventions on top: cv2 sources need a
+    BGR->RGB swap; ``.npy`` sources are stored RGB(+extras) and need none.
+    ``.npy`` was chosen over multi-channel TIFF because
+    ``cv2.imread(IMREAD_UNCHANGED)`` mangles 4-channel TIFFs from non-cv2
+    producers (alpha pre-multiplication + photometric-tag swap).
+
+    Returns ``None`` if the file cannot be decoded.
+    Raises ``ValueError`` when the channel count doesn't match in_channels."""
+    image = read_image_hwc(path)
+    if image is None:
+        return None
+    if Path(path).suffix.lower() != ".npy":
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    if image.shape[2] != in_channels:
+        raise ValueError(f"Expected {in_channels} channels at {path}, got {image.shape[2]}")
+    return image
 
 
 def parse_yolo_label_file(path: Path):
@@ -362,27 +386,7 @@ class CustomDataset(Dataset):
         cv2.imwrite(str(save_path), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
 
     def _read_image(self, path) -> Optional[np.ndarray]:
-        """Load an image as HWC with channels in RGB(+extras) order.
-
-        Delegates to ``read_image_hwc`` (cv2 default for non-.npy, np.load for
-        .npy) and applies the project conventions on top: cv2 sources need a
-        BGR->RGB swap; ``.npy`` sources are stored RGB(+extras) and need none.
-        ``.npy`` was chosen over multi-channel TIFF because
-        ``cv2.imread(IMREAD_UNCHANGED)`` mangles 4-channel TIFFs from non-cv2
-        producers (alpha pre-multiplication + photometric-tag swap).
-
-        Returns ``None`` if the file cannot be decoded.
-        Raises ``ValueError`` when the channel count doesn't match in_channels."""
-        image = read_image_hwc(path)
-        if image is None:
-            return None
-        if Path(path).suffix.lower() != ".npy":
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        if image.shape[2] != self.in_channels:
-            raise ValueError(
-                f"Expected {self.in_channels} channels at {path}, got {image.shape[2]}"
-            )
-        return image
+        return read_image_rgb(path, self.in_channels)
 
     def _get_data(self, idx) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -685,6 +689,165 @@ class CustomDataset(Dataset):
         return len(self.split)
 
 
+class SemSegDataset(Dataset):
+    """Dense per-pixel labels for task=sem_seg.
+
+    Layout: images/<stem>.<ext> + masks/<stem>.png (single channel uint8,
+    pixel value = class id; ignore_index excluded from loss and metrics).
+    Masks always use NEAREST interpolation (LINEAR corrupts integer class ids)
+    and every pad-introducing aug fills the mask with ignore_index.
+    """
+
+    def __init__(
+        self,
+        img_size: Tuple[int, int],  # h, w
+        root_path: Path,
+        split: pd.DataFrame,
+        debug_img_processing: bool,
+        mode: str,
+        cfg: DictConfig,
+    ) -> None:
+        self.root_path = root_path
+        self.split = split
+        self.target_h, self.target_w = img_size
+        self.in_channels = int(cfg.train.in_channels)
+        self.norm = ([0.0] * self.in_channels, [1.0] * self.in_channels)
+        self.debug_img_processing = debug_img_processing
+        self.debug_img_path = Path(cfg.train.debug_img_path)
+        self.mode = mode
+        self.label_to_name = cfg.train.label_to_name
+        self.ignore_index = int(cfg.train.sem_seg.ignore_index)
+        self.cases_to_debug = 20
+        # train-loop compat: mosaic/background hooks are box-path only
+        self.mosaic_prob = 0.0
+        self.ignore_background = False
+        if cfg.train.keep_ratio:
+            raise ValueError(
+                "task=sem_seg supports keep_ratio: False only (plain resize); "
+                "LetterboxRect has no ignore_index mask fill yet"
+            )
+        self._init_augs(cfg)
+
+    def _init_augs(self, cfg) -> None:
+        pad_color = tuple([114] * self.in_channels)
+        resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_LINEAR)]
+        norm = [A.Normalize(mean=self.norm[0], std=self.norm[1]), ToTensorV2()]
+
+        if self.mode == "train":
+            augs = [
+                A.CoarseDropout(
+                    num_holes_range=(1, 2),
+                    hole_height_range=(0.05, 0.15),
+                    hole_width_range=(0.05, 0.15),
+                    fill_mask=self.ignore_index,  # don't supervise classes under occluders
+                    p=cfg.train.augs.coarse_dropout,
+                ),
+                A.RandomBrightnessContrast(p=cfg.train.augs.brightness),
+                A.RandomGamma(p=cfg.train.augs.gamma),
+                A.Blur(p=cfg.train.augs.blur),
+                A.GaussNoise(p=cfg.train.augs.noise, std_range=(0.1, 0.2)),
+                A.Affine(rotate=[90, 90], p=cfg.train.augs.rotate_90, fit_output=True),
+                A.HorizontalFlip(p=cfg.train.augs.left_right_flip),
+                A.VerticalFlip(p=cfg.train.augs.up_down_flip),
+                A.Rotate(
+                    limit=cfg.train.augs.rotation_degree,
+                    p=cfg.train.augs.rotation_p,
+                    interpolation=cv2.INTER_LINEAR,
+                    border_mode=cv2.BORDER_CONSTANT,
+                    fill=pad_color,
+                    fill_mask=self.ignore_index,
+                ),
+            ]
+            if self.in_channels == 3:
+                augs.insert(5, A.ToGray(p=cfg.train.augs.to_gray))
+
+            # scale-jitter + crop after the deployment-identical resize (mosaic replacement)
+            jitter = cfg.train.sem_seg.scale_jitter
+            post_resize = []
+            if jitter:
+                lo, hi = float(jitter[0]), float(jitter[1])
+                post_resize = [
+                    A.RandomScale(scale_limit=(lo - 1.0, hi - 1.0), p=1.0),
+                    A.PadIfNeeded(
+                        min_height=self.target_h,
+                        min_width=self.target_w,
+                        border_mode=cv2.BORDER_CONSTANT,
+                        fill=pad_color,
+                        fill_mask=self.ignore_index,
+                        position="random",
+                    ),
+                    A.RandomCrop(self.target_h, self.target_w),
+                ]
+            self.transform = A.Compose(
+                augs + resize + post_resize + norm, mask_interpolation=cv2.INTER_NEAREST
+            )
+        elif self.mode in ["val", "test", "bench"]:
+            self.transform = A.Compose(resize + norm, mask_interpolation=cv2.INTER_NEAREST)
+        else:
+            raise ValueError(
+                f"Unknown mode: {self.mode}, choose from ['train', 'val', 'test', 'bench']"
+            )
+
+    def _debug_image(self, idx, image: torch.Tensor, sem_mask: torch.Tensor, img_path: Path):
+        mean = np.array(self.norm[0]).reshape(-1, 1, 1)
+        std = np.array(self.norm[1]).reshape(-1, 1, 1)
+        image_np = image.cpu().numpy() * std + mean
+        image_np = np.transpose(image_np, (1, 2, 0))[:, :, :3]
+        image_np = np.ascontiguousarray(np.clip(image_np * 255.0, 0, 255).astype(np.uint8))
+        image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+
+        palette = sem_seg_palette(len(self.label_to_name))
+        image_np = overlay_sem_seg(
+            image_np,
+            sem_mask.cpu().numpy().astype(np.uint8),
+            palette,
+            ignore_index=self.ignore_index,
+        )
+        save_dir = self.debug_img_path / self.mode
+        save_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(save_dir / f"{idx}_idx_{img_path.stem}_debug.jpg"), image_np)
+
+    def __getitem__(self, idx: int):
+        """returns (image CHW float, sem_mask (H,W) long, image_path, orig_size (H,W))"""
+        image_path = Path(self.split.iloc[idx].values[0])
+        full_path = self.root_path / "images" / f"{image_path}"
+        try:
+            image = read_image_rgb(full_path, self.in_channels)
+        except ValueError as e:
+            logger.warning(f"Skipping {full_path}: {e}")
+            image = None
+        if image is None:
+            return None
+
+        mask_path = self.root_path / "masks" / f"{image_path.stem}.png"
+        sem_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if sem_mask is None:
+            logger.warning(f"Skipping {full_path}: can't read mask {mask_path}")
+            return None
+
+        orig_size = torch.tensor(image.shape[:2])
+        transformed = self.transform(image=image, mask=sem_mask)
+        image_t = transformed["image"]
+        sem_mask_t = transformed["mask"].long()
+
+        if self.debug_img_processing and idx <= self.cases_to_debug:
+            self._debug_image(idx, image_t, sem_mask_t, image_path)
+        return image_t, sem_mask_t, image_path, orig_size
+
+    def __len__(self):
+        return len(self.split)
+
+
+def sem_seg_collate_fn(batch):
+    batch = [item for item in batch if item is not None]
+    if len(batch) == 0:
+        return None, None, None
+    images = torch.stack([item[0] for item in batch], dim=0)
+    targets = [{"sem_mask": item[1], "orig_size": item[3]} for item in batch]
+    img_paths = [item[2] for item in batch]
+    return images, targets, img_paths
+
+
 class Loader:
     def __init__(
         self,
@@ -700,8 +863,11 @@ class Loader:
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.cfg = cfg
+        self.task = str(cfg.task).lower()
         self.use_one_class = cfg.train.use_one_class
         self.coco_dataset = cfg.train.get("coco_dataset", False)
+        if self.task == "sem_seg" and self.coco_dataset:
+            raise ValueError("task=sem_seg expects PNG masks (masks/), not COCO JSON")
         self.debug_img_processing = debug_img_processing
         self.coco_annotations = {"train": None, "val": None, "test": None}
         self._get_splits()
@@ -817,6 +983,8 @@ class Loader:
         collate_fn = self.val_collate_fn
         if dataset.mode == "train":
             collate_fn = self.train_collate_fn
+        if self.task == "sem_seg":
+            collate_fn = sem_seg_collate_fn
 
         sampler = None
         shuffle_flag = shuffle
@@ -852,27 +1020,31 @@ class Loader:
 
         return dataloader
 
+    def _make_dataset(self, mode: str) -> Dataset:
+        if self.task == "sem_seg":
+            return SemSegDataset(
+                self.img_size,
+                self.root_path,
+                self.splits[mode],
+                self.debug_img_processing,
+                mode=mode,
+                cfg=self.cfg,
+            )
+        return CustomDataset(
+            self.img_size,
+            self.root_path,
+            self.splits[mode],
+            self.debug_img_processing,
+            mode=mode,
+            cfg=self.cfg,
+            coco_annotations=self.coco_annotations[mode],
+        )
+
     def build_dataloaders(
         self, distributed: bool = False
     ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-        train_ds = CustomDataset(
-            self.img_size,
-            self.root_path,
-            self.splits["train"],
-            self.debug_img_processing,
-            mode="train",
-            cfg=self.cfg,
-            coco_annotations=self.coco_annotations["train"],
-        )
-        val_ds = CustomDataset(
-            self.img_size,
-            self.root_path,
-            self.splits["val"],
-            self.debug_img_processing,
-            mode="val",
-            cfg=self.cfg,
-            coco_annotations=self.coco_annotations["val"],
-        )
+        train_ds = self._make_dataset("train")
+        val_ds = self._make_dataset("val")
 
         train_loader = self._build_dataloader_impl(train_ds, shuffle=True, distributed=distributed)
         val_loader = self._build_dataloader_impl(val_ds, shuffle=False, distributed=distributed)
@@ -880,15 +1052,7 @@ class Loader:
         test_loader = None
         test_ds = []
         if len(self.splits["test"]):
-            test_ds = CustomDataset(
-                self.img_size,
-                self.root_path,
-                self.splits["test"],
-                self.debug_img_processing,
-                mode="test",
-                cfg=self.cfg,
-                coco_annotations=self.coco_annotations["test"],
-            )
+            test_ds = self._make_dataset("test")
             test_loader = self._build_dataloader_impl(
                 test_ds, shuffle=False, distributed=distributed
             )
@@ -897,14 +1061,15 @@ class Loader:
             logger.info(
                 f"Images in train: {len(train_ds)}, val: {len(val_ds)}, test: {len(test_ds)}"
             )
-            obj_stats = self._get_label_stats()
-            sorted_obj_stats = dict(
-                sorted(obj_stats.items(), key=lambda item: item[1], reverse=True)
-            )
-            logger.info(
-                f"Objects count: {', '.join(f'{key}: {value}' for key, value in sorted_obj_stats.items())}"
-            )
-            logger.info(f"Background images: {self._get_amount_of_background()}")
+            if self.task != "sem_seg":  # object/background stats are box-label based
+                obj_stats = self._get_label_stats()
+                sorted_obj_stats = dict(
+                    sorted(obj_stats.items(), key=lambda item: item[1], reverse=True)
+                )
+                logger.info(
+                    f"Objects count: {', '.join(f'{key}: {value}' for key, value in sorted_obj_stats.items())}"
+                )
+                logger.info(f"Background images: {self._get_amount_of_background()}")
         return train_loader, val_loader, test_loader
 
     def _collate_fn(self, batch) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:

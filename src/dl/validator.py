@@ -665,6 +665,66 @@ class Validator:
         return self.optimal_thresh
 
 
+class SemSegValidator:
+    """Streaming validator for task=sem_seg: a [C, C] pixel confusion matrix
+    (rows = GT, cols = pred) accumulated at ORIGINAL image resolution — nothing
+    dense is stored. GT pixels equal to ignore_index never enter the matrix.
+    """
+
+    def __init__(self, num_classes: int, label_to_name: Dict[int, str], ignore_index: int = 255):
+        self.num_classes = num_classes
+        self.label_to_name = label_to_name
+        self.ignore_index = ignore_index
+        self.cm = torch.zeros((num_classes, num_classes), dtype=torch.int64)
+
+    @torch.no_grad()
+    def update(self, pred: torch.Tensor, gt: torch.Tensor) -> None:
+        """pred/gt: (H, W) integer tensors at the same (original) resolution."""
+        valid = gt != self.ignore_index
+        idx = gt[valid].long() * self.num_classes + pred[valid].long()
+        cm = torch.bincount(idx, minlength=self.num_classes**2)
+        self.cm += cm.reshape(self.num_classes, self.num_classes).cpu()
+
+    def compute_metrics(self, extended: bool = False) -> Dict[str, float]:
+        cm = self.cm.double()
+        diag = cm.diag()
+        union = cm.sum(1) + cm.sum(0) - diag
+        present = cm.sum(1) > 0  # classes with GT pixels
+        iou = diag / union.clamp(min=1)
+        miou = iou[present].mean().item() if present.any() else 0.0
+        acc = (diag.sum() / cm.sum().clamp(min=1)).item()
+        metrics = {"mIoU": round(miou, 4), "pixel_acc": round(acc, 4)}
+        if extended:
+            metrics["extended_metrics"] = {
+                f"iou_{self.label_to_name[c]}": round(iou[c].item(), 4)
+                for c in range(self.num_classes)
+                if present[c]
+            }
+        return metrics
+
+    def save_plots(self, path_to_save) -> None:
+        """Row-normalized pixel confusion matrix."""
+        path_to_save = Path(path_to_save)
+        path_to_save.mkdir(parents=True, exist_ok=True)
+
+        cm = self.cm.double()
+        cm_norm = (cm / cm.sum(1, keepdim=True).clamp(min=1)).numpy()
+        class_labels = [str(self.label_to_name[c]) for c in range(self.num_classes)]
+
+        plt.figure(figsize=(max(8, self.num_classes * 0.5), max(6, self.num_classes * 0.45)))
+        plt.imshow(cm_norm, interpolation="nearest", cmap=plt.cm.Blues, vmin=0, vmax=1)
+        plt.title("Pixel Confusion Matrix (row-normalized)")
+        plt.colorbar()
+        tick_marks = np.arange(self.num_classes)
+        plt.xticks(tick_marks, class_labels, rotation=90)
+        plt.yticks(tick_marks, class_labels)
+        plt.ylabel("True class")
+        plt.xlabel("Predicted class")
+        plt.tight_layout()
+        plt.savefig(path_to_save / "confusion_matrix.png")
+        plt.close()
+
+
 def to_uint8_bool(arr):
     return torch.tensor(arr, dtype=torch.uint8)
 
