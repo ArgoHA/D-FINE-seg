@@ -175,3 +175,17 @@ def test_rotate_fills_mask_with_ignore(tmp_path):
     for _ in range(8):
         ids |= set(np.unique(ds.transform(image=img, mask=mask)["mask"].numpy()))
     assert ids <= {3, 255} and 255 in ids  # rotate corners -> ignore, never class 0
+
+
+def test_torch_model_process_sem_seg():
+    """Wrapper postprocess: argmax -> NEAREST to original size, uint8, per-image dicts."""
+    from src.infer.torch_model import Torch_model
+
+    logits = torch.full((1, 4, 8, 8), -5.0)
+    logits[:, 2, :4] = 5.0  # top half -> class 2, bottom half -> class 0
+    logits[:, 0, 4:] = 5.0
+    out = Torch_model.process_sem_seg(logits, [(8, 8)], [(32, 16)], keep_ratio=False)
+    m = out[0]["sem_seg"]
+    assert m.shape == (32, 16) and m.dtype == torch.uint8
+    assert set(torch.unique(m).tolist()) == {0, 2}
+    assert (m[:16] == 2).all() and (m[16:] == 0).all()  # NEAREST keeps the hard boundary

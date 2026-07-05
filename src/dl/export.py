@@ -118,6 +118,26 @@ class ExportWrapper(nn.Module):
         return self.postprocessor(outputs, self.input_h, self.input_w)
 
 
+class SemSegExportWrapper(nn.Module):
+    """sem_seg export graph: fused argmax -> int32 [B, H, W] label map ("sem_seg").
+
+    int32 keeps TRT happy (no int64 output) and H*W int32 beats C*H*W fp16 logits
+    on output bandwidth. One fused graph serves every backend.
+    """
+
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        logits = self.model(x)["sem_seg_logits"]  # [B, C, H, W]
+        return logits.argmax(1).to(torch.int32)
+
+    def deploy(self):
+        self.model.deploy()
+        return self
+
+
 def prepare_model(cfg, device):
     model = build_model(
         cfg.model_name,
@@ -126,6 +146,7 @@ def prepare_model(cfg, device):
         device=device,
         img_size=cfg.train.img_size,
         in_channels=cfg.train.in_channels,
+        task=cfg.task,
     )
     if cfg.export.from_pretrained:
         # Export the COCO/obj2coco pretrained weights directly (no trained model.pt).
@@ -339,6 +360,8 @@ def export_to_litert(
 
         def forward(self, x):
             outputs = self.inner(x)
+            if not isinstance(outputs, dict):  # sem_seg fused wrapper already returns a tensor
+                return outputs
             result = (outputs["pred_logits"], outputs["pred_boxes"])
             pred_masks = outputs.get("pred_masks", None)
             if pred_masks is not None:
@@ -476,18 +499,11 @@ def _cosine(ref, out) -> float:
     return float(a @ b / denom)
 
 
-def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
-    """Compare each exported backend's detection scores against torch on one input.
-
-    Scores (sorted top-K confidences) are the reorder-stable, end-to-end signal: they
-    flow through the whole network, so any silent export drift moves them. Per-query
-    boxes/logits/masks are dominated by background queries that never clear conf
-    filtering, so comparing them is just noise — bench covers surviving-box geometry.
-    """
-
+def _parity_input(cfg, raw_model, x_test) -> tuple:
+    """One real training image (fallback: x_test) as (torch [1,C,H,W], numpy) pair."""
     # CoreML/LiteRT export move the shared model params to CPU in place, so run torch on its device
     dev = next(raw_model.parameters()).device
-    # a real training image anchors parity on true detections (randn has none)
+    # a real training image anchors parity on true predictions (randn has none)
     img_dir = Path(cfg.train.data_path) / "images"
     imgs = sorted(img_dir.glob("*.jpg")) or sorted(img_dir.glob("*.png"))
     if imgs:
@@ -501,7 +517,19 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
         x1 = x1.to(dev)
     else:
         x1 = x_test[:1].to(dev)
-    x_np = x1.detach().cpu().numpy().astype(np.float32)
+    return x1, x1.detach().cpu().numpy().astype(np.float32)
+
+
+def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
+    """Compare each exported backend's detection scores against torch on one input.
+
+    Scores (sorted top-K confidences) are the reorder-stable, end-to-end signal: they
+    flow through the whole network, so any silent export drift moves them. Per-query
+    boxes/logits/masks are dominated by background queries that never clear conf
+    filtering, so comparing them is just noise — bench covers surviving-box geometry.
+    """
+
+    x1, x_np = _parity_input(cfg, raw_model, x_test)
     with torch.no_grad():
         ref = model(x1)[2]  # [1, K] sorted top-K confidences from the fused torch postproc
 
@@ -640,11 +668,132 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
         logger.info("Parity OK: exported backends match torch within threshold")
 
 
+def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
+    """Per-pixel argmax agreement of each exported backend vs torch on one input.
+
+    Every sem_seg export is the same fused graph (single int label-map output), so
+    the comparison is end-to-end and reorder-free by construction; disagreement is
+    confined to class-boundary pixels where near-tied logits flip under precision.
+    """
+    x1, x_np = _parity_input(cfg, raw_model, x_test)
+    with torch.no_grad():
+        ref = model(x1)[0].cpu().numpy()  # [H, W] int32 label map
+
+    n_out = len(cfg.train.label_to_name)
+    conf, kr = cfg.train.conf_thresh, cfg.train.keep_ratio
+    rows, low = [], []
+
+    def add(name, is_int8, label_map):
+        m = _to_np(label_map).reshape(ref.shape)
+        agree = float((m == ref).mean())
+        rows.append([name, round(agree, 6)])
+        if not agree >= (0.90 if is_int8 else 0.99):
+            low.append(f"{name} agreement={agree:.4f}")
+
+    if want("onnx") and (models_path / "model.onnx").exists():
+        try:
+            from src.infer.onnx_model import ONNX_model
+
+            m = ONNX_model(
+                model_path=str(models_path / "model.onnx"),
+                n_outputs=n_out,
+                conf_thresh=conf,
+                rect=False,
+                keep_ratio=kr,
+            )
+            add("ONNX", False, m._predict(x_np)[0][0])
+        except Exception as e:
+            logger.warning(f"Parity skipped for ONNX: {e}")
+
+    for tag, fn, is8 in [("OpenVINO", "model.xml", False), ("OpenVINO INT8", "model_int8.xml", True)]:
+        if want("openvino") and (models_path / fn).exists():
+            try:
+                from src.infer.ov_model import OV_model
+
+                m = OV_model(
+                    model_path=str(models_path / fn),
+                    conf_thresh=conf,
+                    rect=cfg.export.dynamic_input,
+                    half=cfg.export.half and platform.system() != "Darwin",
+                    keep_ratio=kr,
+                    max_batch_size=1,
+                )
+                add(tag, is8, m._predict(x_np)[0][0])
+            except Exception as e:
+                logger.warning(f"Parity skipped for {tag}: {e}")
+
+    for tag, fn, is8 in [("LiteRT", "model.tflite", False), ("LiteRT INT8", "model_int8.tflite", True)]:
+        if want("litert") and (models_path / fn).exists():
+            try:
+                from src.infer.litert_model import LiteRT_model
+
+                m = LiteRT_model(
+                    model_path=str(models_path / fn),
+                    n_outputs=n_out,
+                    conf_thresh=conf,
+                    rect=False,
+                    keep_ratio=kr,
+                )
+                add(tag, is8, m._predict(x_np)[0][0])
+            except Exception as e:
+                logger.warning(f"Parity skipped for {tag}: {e}")
+
+    if platform.system() == "Darwin":
+        for tag, fn, is8 in [("CoreML", "model.mlpackage", False), ("CoreML INT8", "model_int8.mlpackage", True)]:
+            if want("coreml") and (models_path / fn).exists():
+                try:
+                    from src.infer.coreml_model import CoreML_model
+
+                    m = CoreML_model(
+                        model_path=str(models_path / fn),
+                        n_outputs=n_out,
+                        conf_thresh=conf,
+                        rect=False,
+                        keep_ratio=kr,
+                    )
+                    add(tag, is8, m._predict(x_np)[0][0])
+                except Exception as e:
+                    logger.warning(f"Parity skipped for {tag}: {e}")
+    else:
+        for tag, fn, is8 in [("TensorRT", "model.engine", False), ("TensorRT INT8", "model_int8.engine", True)]:
+            if want("tensorrt") and (models_path / fn).exists():
+                try:
+                    from src.infer.trt_model import TRT_model
+
+                    m = TRT_model(
+                        model_path=str(models_path / fn),
+                        n_outputs=n_out,
+                        conf_thresh=conf,
+                        rect=False,
+                        keep_ratio=kr,
+                    )
+                    # same stream discipline as the detection parity (see run_parity)
+                    with torch.cuda.stream(m._stream):
+                        x_trt = x1.to(device=m._input_tensor.device, dtype=m._input_tensor.dtype)
+                        label_map = m._predict(x_trt.contiguous(), actual_batch=1)[0][0]
+                    torch.cuda.default_stream(m.device).wait_stream(m._stream)
+                    add(tag, is8, label_map)
+                except Exception as e:
+                    logger.warning(f"Parity skipped for {tag}: {e}")
+
+    if not rows:
+        logger.info("Parity: no exported backends available to compare against torch")
+        return
+    headers = ["format", "pixel_agreement"]
+    pd.DataFrame(rows, columns=headers).to_csv(models_path / "parity.csv", index=False)
+    print("\n" + tabulate(rows, headers=headers, tablefmt="pretty"))
+    if low:
+        logger.warning("Parity below threshold (vs torch): " + ", ".join(low))
+    else:
+        logger.info("Parity OK: exported backends match torch within threshold")
+
+
 @hydra.main(version_base=None, config_path="../../", config_name="config")
 def main(cfg: DictConfig):
     input_name = "input"
-    output_names = ["labels", "boxes", "scores"]
+    sem_seg = cfg.task == "sem_seg"
     enable_mask_head = cfg.task == "segment"
+    output_names = ["sem_seg"] if sem_seg else ["labels", "boxes", "scores"]
     if enable_mask_head:
         output_names.append("masks")
 
@@ -655,13 +804,16 @@ def main(cfg: DictConfig):
 
     raw_model = prepare_model(cfg, device)
 
-    # Wrap model with fused postprocessor
-    postprocessor = DFINEPostProcessor(
-        num_classes=len(cfg.train.label_to_name),
-        num_top_queries=base_cfg["DFINETransformer"]["num_queries"],
-        use_focal_loss=base_cfg["matcher"]["use_focal_loss"],
-    )
-    model = ExportWrapper(raw_model, postprocessor, input_size=cfg.train.img_size)
+    if sem_seg:
+        model = SemSegExportWrapper(raw_model)
+    else:
+        # Wrap model with fused postprocessor
+        postprocessor = DFINEPostProcessor(
+            num_classes=len(cfg.train.label_to_name),
+            num_top_queries=base_cfg["DFINETransformer"]["num_queries"],
+            use_focal_loss=base_cfg["matcher"]["use_focal_loss"],
+        )
+        model = ExportWrapper(raw_model, postprocessor, input_size=cfg.train.img_size)
     model.eval()
     raw_model.eval()
 
@@ -674,20 +826,21 @@ def main(cfg: DictConfig):
     formats = cfg.export.get("formats", None)
     want = (lambda f: True) if formats is None else (lambda f: f in formats)
 
-    # Openvino currently doesn't supprort some operations in postprocessor
+    # Openvino currently doesn't supprort some operations in the detection postprocessor,
+    # so it gets the raw head; sem_seg's fused argmax graph is OV-supported as-is.
     if want("openvino"):
         raw_output_names = ["logits", "boxes"]
         if enable_mask_head:
             raw_output_names.append("masks")
         raw_onnx_path = export_to_onnx(
-            raw_model,
+            model if sem_seg else raw_model,
             model_path,
             x_test,
             cfg.export.max_batch_size,
             half=False,
             dynamic_input=False,
             input_name=input_name,
-            output_names=raw_output_names,
+            output_names=output_names if sem_seg else raw_output_names,
         )
         export_to_openvino(raw_onnx_path, x_test, cfg.export.dynamic_input, max_batch_size=1)
 
@@ -716,12 +869,14 @@ def main(cfg: DictConfig):
         )
 
     if want("litert"):
-        export_to_litert(raw_model, model_path, x_test)
+        # sem_seg ships the fused wrapper (adapter passes non-dict outputs through)
+        export_to_litert(model if sem_seg else raw_model, model_path, x_test)
 
     logger.info(f"Exports saved to: {model_path.parent}")
 
     if cfg.export.get("parity", True):
-        run_parity(cfg, raw_model, model, x_test, want, model_path.parent)
+        parity_fn = run_parity_sem_seg if sem_seg else run_parity
+        parity_fn(cfg, raw_model, model, x_test, want, model_path.parent)
 
 
 if __name__ == "__main__":

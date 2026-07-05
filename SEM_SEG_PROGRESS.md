@@ -1,7 +1,8 @@
 # SEM_SEG_PROGRESS.md — sem_seg implementation status & findings
 
-Companion to [SEM_SEG_PLAN.md](SEM_SEG_PLAN.md). Phase 1 (core training pipeline) is **done**;
-phases 2–3 (inference, export/bench) are **not started**. Read this before working on them.
+Companion to [SEM_SEG_PLAN.md](SEM_SEG_PLAN.md). **All three phases are done**: training
+(Phase 1), inference (Phase 2), export/bench (Phase 3). Verified end-to-end on the
+Semantic Drone Dataset — parity + bench numbers below.
 
 ## Done (Phase 1 — training pipeline)
 
@@ -21,6 +22,47 @@ Verified end-to-end on the Semantic Drone Dataset (400 imgs, 6000×4000, 23 clas
 339/61 split): weight transfer from `dfine_seg_s_coco.pt` leaves exactly the 13 new
 neck/classifier/aux keys random (`unmatched: []`), mIoU improves monotonically, overlays and
 per-class CSVs look right.
+
+## Done (Phase 2 — inference, Phase 3 — export/bench)
+
+| Piece | Where | Notes |
+|---|---|---|
+| `Torch_model` sem_seg path | `src/infer/torch_model.py` | ctor takes `task=` ("sem_seg" overrides `enable_mask_head`); `process_sem_seg` = argmax → NEAREST to original size (letterbox pads cropped if keep_ratio); output `[{"sem_seg": uint8 (H,W)}]` per image |
+| `infer.py` branch | `src/dl/infer.py` | `run_images_sem_seg` (palette overlay jpg + GT-style grayscale PNG under `masks/` + `labels.txt`), `run_videos_sem_seg` (`<stem>_sem_seg.mp4` overlay); crops/YOLO txt/tracking skipped (box-based) |
+| Export graph | `src/dl/export.py` `SemSegExportWrapper` | **one fused-argmax graph for every backend** (incl. OpenVINO, which gets the raw head for detection): single int32 output `sem_seg` `[B,H,W]` at input res; no detection postproc/NMS; `deploy()` passthrough for the LiteRT reparam path |
+| Parity swap | `src/dl/export.py` `run_parity_sem_seg` | per-pixel argmax agreement vs torch, same warn gates (≥0.99 fp / ≥0.90 int8), written to `parity.csv` (`pixel_agreement` column) |
+| Backend wrappers | `src/infer/{onnx,ov,trt,litert,coreml}_model.py` | auto-detect sem_seg by the single-output invariant; `_postprocess_sem_seg` = uint8 cast → NEAREST resize to orig size; TRT does it on-device via `F.interpolate`; same `{"sem_seg": ...}` contract as torch |
+| `bench.py` branch | `src/dl/bench.py` | `BenchLoader` dispatches `SemSegDataset` (mode="bench"); `test_model_sem_seg` feeds `SemSegValidator` at **original resolution** (re-reads GT PNGs, same protocol as training eval) + latency; first 20 GT\|pred overlays per backend |
+| tests | `tests/unit/test_sem_seg.py`, `tests/integration/test_cpu_forward.py` | `process_sem_seg` NEAREST/uint8/shape; `SemSegExportWrapper` (1,640,640) int32 on nano CPU. `make test-fast`: 99 passed |
+
+## Export + bench numbers (baseline `semseg_s_base_2026-07-05`, s @ 640², RTX 5070 Ti)
+
+Parity (per-pixel argmax agreement vs torch, one real image — disagreement is boundary
+pixels flipping under precision):
+
+| format | pixel_agreement |
+|---|---|
+| ONNX | 0.9982 |
+| OpenVINO | 0.9982 |
+| LiteRT | 1.0 |
+| LiteRT INT8 | 0.9920 |
+| TensorRT (fp16) | 0.9981 |
+
+Bench (61 val images, original-resolution mIoU protocol; latency = full `__call__`
+ms/image incl. resize-to-24MP postprocess; GPU backends CUDA-synced):
+
+| backend | mIoU | pixel_acc | latency (ms) |
+|---|---|---|---|
+| PyTorch (cuda, fp32) | 0.644 | 0.894 | 10.3 |
+| ONNX (cpu) | 0.643 | 0.894 | 183.2 |
+| OpenVINO (cpu) | 0.643 | 0.894 | 166.2 |
+| LiteRT (cpu) | 0.644 | 0.894 | 730.3 |
+| LiteRT INT8 (cpu) | 0.644 | 0.894 | 736.5 |
+| TensorRT (fp16) | 0.642 | 0.894 | 2.9 |
+
+Every backend reproduces the training-eval val mIoU 0.6437 (±0.002); TRT fp16 costs
+−0.002 mIoU for a 3.5× speedup over torch. CoreML converts on this Linux box but the
+runtime (and its bench/parity rows) is macOS-only — untested here.
 
 ## Training results (dev dataset)
 
@@ -58,18 +100,32 @@ per-class CSVs look right.
    scheduler changes needed.
 8. **`out_stride: 2` knob (plan §1.1) is not implemented** — only 1/4 output exists. Same for
    OHEM CE. Both are explicitly later knobs.
-9. **Model output contract** (already consumed by train/eval): train mode
+9. **Model output contract**: train mode
    `{"sem_seg_logits": (B,C,H,W), "sem_seg_logits_aux": (B,C,H,W)}`; eval mode logits only.
-   Phase 2/3 must key on `sem_seg_logits` and argmax; the planned wrapper output key is
-   `out["sem_seg"]` (plan §4).
+   Wrappers/export key on `sem_seg_logits`; wrapper output key is `out["sem_seg"]` (plan §4).
+10. **Single-output invariant**: the `/infer` wrappers detect a sem_seg artifact by
+    "graph has exactly one output" (detection graphs have ≥2). Any future export that adds
+    a second sem_seg output (e.g. a logits debug head) must revisit `_read_*_metadata` in
+    all five wrappers.
+11. **OpenVINO gets the fused graph for sem_seg** — unlike detection, where OV can't run the
+    fused `DFINEPostProcessor` and ships the raw head. Argmax is OV-supported, so sem_seg
+    exports one ONNX for everything (`model.onnx` is the same graph OV converts from).
+12. **Parity ≠ 1.0 is expected**: fp16/precision flips argmax only on near-tied boundary
+    pixels (~0.2% here). Bench mIoU is the accuracy signal; parity just catches gross
+    export drift.
+13. **Bench latency includes the resize-to-original postprocess** — on this 24MP dataset
+    that flatters GPU backends (interpolate on device) vs CPU ones (cv2 resize of a 24MP
+    map). Comparable within a column, not with detection latency numbers.
+14. **LiteRT INT8 is weight-only** — 3.6× smaller file, same speed on XNNPACK, mIoU intact
+    (0.644). Don't expect a latency win from it.
 
-## Not touched (phases 2–3)
+## Not touched
 
-- `src/infer/*` (all backends), `src/dl/infer.py` — no sem_seg path; `Torch_model` ctor is
-  still `enable_mask_head`-bool based (plan: make it task-aware).
-- `src/dl/export.py` — would currently fuse `DFINEPostProcessor` and fail on missing
-  `pred_logits`; needs the skip + fused-argmax int32 output + parity swap (plan §6).
-- `src/dl/bench.py`, `test_batching.py`, `check_errors.py`, `ov_int8.py` / `trt_int8` — untouched.
+- `src/dl/test_batching.py`, `check_errors.py` — detection-only (batched postprocess / FP-FN
+  dumps are box-based); would need their own sem_seg branches if ever wanted.
+- `src/dl/ov_int8.py` / `make trt_int8` — accuracy-aware INT8 drives on detection F1 via
+  `Validator`; not wired for sem_seg (would need mIoU-based drop gating). `model_int8.tflite`
+  (weight-only) is the only INT8 artifact produced for sem_seg.
 - `src/etl/split.py` `ignore_negatives` still checks `labels/` (plan open question: should
   check `masks/` for sem_seg). Harmless with `ignore_negatives: False`.
 - Gradio `demo/` — detection/instance only.

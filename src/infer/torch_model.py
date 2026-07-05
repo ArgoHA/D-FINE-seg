@@ -29,6 +29,7 @@ class Torch_model:
         mask_threshold: float = 0.5,
         device: str = None,
         channels: int = 3,
+        task: str = None,  # detect | segment | sem_seg; overrides enable_mask_head
     ):
         self.input_size = (input_height, input_width)
         self.n_outputs = n_outputs
@@ -39,7 +40,8 @@ class Torch_model:
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
         self.labels_to_use = labels_to_use or []
-        self.enable_mask_head = enable_mask_head
+        self.task = task or ("segment" if enable_mask_head else "detect")
+        self.enable_mask_head = self.task == "segment"
         self.channels = channels
         self.debug_mode = False
         self.binarize_masks = binarize_masks
@@ -72,6 +74,7 @@ class Torch_model:
             self.device,
             img_size=None,
             in_channels=self.channels,
+            task=self.task,
         )
         self.model.load_state_dict(
             torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu")),
@@ -153,6 +156,32 @@ class Torch_model:
         if single:
             return [out[0]]
         return out
+
+    @staticmethod
+    def process_sem_seg(
+        logits,  # [B, C, H, W] at input resolution
+        processed_sizes,
+        original_sizes,
+        keep_ratio: bool,
+    ) -> List[Dict[str, torch.Tensor]]:
+        """argmax -> per-image NEAREST resize to original size (letterbox pads cropped first).
+
+        Returns list of length B with {"sem_seg": uint8 [H0, W0] label map}.
+        """
+        maps = logits.argmax(1, keepdim=True).float()  # [B, 1, H, W]
+        results = []
+        for b in range(maps.shape[0]):
+            m = maps[b : b + 1]
+            H0, W0 = int(original_sizes[b][0]), int(original_sizes[b][1])
+            if keep_ratio:
+                proc_h, proc_w = int(processed_sizes[b][0]), int(processed_sizes[b][1])
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+                m = m[..., max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)]
+            m = torch.nn.functional.interpolate(m, size=(H0, W0), mode="nearest")[0, 0]
+            results.append({"sem_seg": m.to(torch.uint8)})
+        return results
 
     def _preds_postprocess(
         self,
@@ -324,6 +353,10 @@ class Torch_model:
         processed_sizes: List[Tuple[int, int]],
         original_sizes: List[Tuple[int, int]],
     ):
+        if self.task == "sem_seg":
+            return self.process_sem_seg(
+                preds["sem_seg_logits"], processed_sizes, original_sizes, self.keep_ratio
+            )
         return self._preds_postprocess(preds, processed_sizes, original_sizes)
 
     @torch.no_grad()
@@ -340,6 +373,7 @@ class Torch_model:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            task=sem_seg instead returns {"sem_seg": uint8 (H, W) dense label map} per image.
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)

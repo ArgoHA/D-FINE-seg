@@ -5,6 +5,7 @@ from pathlib import Path
 from shutil import rmtree
 from typing import Dict, Tuple
 
+import cv2
 import hydra
 import numpy as np
 import pandas as pd
@@ -15,44 +16,109 @@ from tabulate import tabulate
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dl.dataset import CustomDataset, Loader, read_image_hwc
+from src.dl.dataset import CustomDataset, Loader, SemSegDataset, read_image_hwc
 from src.dl.utils import (
     encode_sample_masks_to_rle,
     get_latest_experiment_name,
     poly_abs_to_mask,
     process_boxes,
     visualize,
+    visualize_sem_seg,
 )
-from src.dl.validator import Validator
+from src.dl.validator import SemSegValidator, Validator
 
 IS_MACOS = platform.system() == "Darwin"
 
 
 class BenchLoader(Loader):
-    def build_dataloaders(self) -> Tuple[DataLoader, DataLoader, DataLoader]:
-        val_ds = CustomDataset(
+    def _bench_dataset(self, split):
+        ds_cls = SemSegDataset if self.task == "sem_seg" else CustomDataset
+        return ds_cls(
             self.img_size,
             self.root_path,
-            self.splits["val"],
+            split,
             self.debug_img_processing,
             mode="bench",
             cfg=self.cfg,
         )
 
+    def build_dataloaders(self) -> Tuple[DataLoader, DataLoader, DataLoader]:
+        val_ds = self._bench_dataset(self.splits["val"])
+
         test_loader = None
         if len(self.splits["test"]):
-            test_ds = CustomDataset(
-                self.img_size,
-                self.root_path,
-                self.splits["test"],
-                self.debug_img_processing,
-                mode="bench",
-                cfg=self.cfg,
-            )
-            test_loader = self._build_dataloader_impl(test_ds)
+            test_loader = self._build_dataloader_impl(self._bench_dataset(self.splits["test"]))
 
         val_loader = self._build_dataloader_impl(val_ds)
         return val_loader, test_loader
+
+
+def test_model_sem_seg(
+    test_loader: DataLoader,
+    data_path: Path,
+    output_path: Path,
+    model,
+    name: str,
+    num_classes: int,
+    ignore_index: int,
+    label_to_name: Dict[int, str],
+    to_visualize: bool,
+    max_vis: int = 20,
+):
+    """mIoU/pixel_acc at original resolution (same protocol as training eval) + latency."""
+    logger.info(f"Testing {name} model")
+    validator = SemSegValidator(num_classes, label_to_name, ignore_index)
+    latency = []
+
+    if to_visualize:
+        output_path = output_path / name
+        output_path.mkdir(exist_ok=True, parents=True)
+
+    # Warmup iterations
+    first_batch = next(iter(test_loader))
+    warmup_path = first_batch[2][0]
+    warmup_img = read_image_hwc(data_path / "images" / warmup_path)
+    warmup_is_npy = Path(warmup_path).suffix.lower() == ".npy"
+    for _ in range(10):
+        _ = model(warmup_img, bgr=not warmup_is_npy)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+    n_vis = 0
+    for _, _, img_paths in tqdm(test_loader, total=len(test_loader)):
+        for img_path in img_paths:
+            img = read_image_hwc(data_path / "images" / img_path)
+            is_npy = Path(img_path).suffix.lower() == ".npy"
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            preds = model(img, bgr=not is_npy)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            latency.append((time.perf_counter() - t0) * 1000)
+
+            pred_map = preds[0]["sem_seg"].cpu()
+            gt = cv2.imread(
+                str(data_path / "masks" / f"{Path(img_path).stem}.png"), cv2.IMREAD_GRAYSCALE
+            )
+            validator.update(pred_map, torch.from_numpy(gt))
+
+            if to_visualize and n_vis < max_vis:
+                visualize_sem_seg(
+                    img_path,
+                    gt,
+                    pred_map.numpy(),
+                    dataset_path=data_path / "images",
+                    path_to_save=output_path,
+                    n_classes=num_classes,
+                    ignore_index=ignore_index,
+                )
+                n_vis += 1
+
+    metrics = validator.compute_metrics()
+    metrics["latency"] = round(np.mean(latency[1:]), 1)
+    return metrics
 
 
 def test_model(
@@ -220,9 +286,9 @@ def main(cfg: DictConfig):
             conf_thresh=conf_thresh,
             rect=cfg.export.dynamic_input,
             keep_ratio=cfg.train.keep_ratio,
-            enable_mask_head=cfg.task == "segment",
             apply_nms=nms,
             channels=cfg.train.in_channels,
+            task=cfg.task,
         )
 
     if IS_MACOS:
@@ -382,22 +448,35 @@ def main(cfg: DictConfig):
 
     for model_name in list(models.keys()):
         model = models.pop(model_name)  # drop ref so backend frees after its run
-        all_metrics[model_name] = test_model(
-            loader_to_use,
-            data_path,
-            Path(cfg.train.bench_img_path),
-            model,
-            model_name,
-            conf_thresh,
-            iou_thresh,
-            to_visualize=to_visualize,
-            processed_size=tuple(cfg.train.img_size),
-            keep_ratio=cfg.train.keep_ratio,
-            device=cfg.train.device,
-            label_to_name=cfg.train.label_to_name,
-            compute_maps=compute_maps,
-            to_draw_gt=to_draw_gt,
-        )
+        if cfg.task == "sem_seg":
+            all_metrics[model_name] = test_model_sem_seg(
+                loader_to_use,
+                data_path,
+                Path(cfg.train.bench_img_path),
+                model,
+                model_name,
+                num_classes=len(cfg.train.label_to_name),
+                ignore_index=int(cfg.train.sem_seg.ignore_index),
+                label_to_name=cfg.train.label_to_name,
+                to_visualize=to_visualize,
+            )
+        else:
+            all_metrics[model_name] = test_model(
+                loader_to_use,
+                data_path,
+                Path(cfg.train.bench_img_path),
+                model,
+                model_name,
+                conf_thresh,
+                iou_thresh,
+                to_visualize=to_visualize,
+                processed_size=tuple(cfg.train.img_size),
+                keep_ratio=cfg.train.keep_ratio,
+                device=cfg.train.device,
+                label_to_name=cfg.train.label_to_name,
+                compute_maps=compute_maps,
+                to_draw_gt=to_draw_gt,
+            )
         del model
         gc.collect()
         if torch.cuda.is_available():

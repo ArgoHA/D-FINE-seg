@@ -82,6 +82,8 @@ class TRT_model:
             name = self.engine.get_tensor_name(i)
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
                 n_outputs += 1
+        # single output = sem_seg fused-argmax graph; detection engines have >= 3
+        self.sem_seg = n_outputs == 1
         self.has_masks = n_outputs > 3
 
     @staticmethod
@@ -392,6 +394,25 @@ class TRT_model:
         # downstream postprocessing doesn't iterate empty rows. Cheap (no copy).
         return [o[:batch] for o in self._outputs]
 
+    def _postprocess_sem_seg(
+        self, outputs, processed_sizes, original_sizes
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Fused-argmax graph: NEAREST-resize each label map to its original size (on device)."""
+        maps = outputs[0]  # [B, H, W] int32
+        results = []
+        for b in range(maps.shape[0]):
+            m = maps[b][None, None].float()  # [1, 1, H, W]
+            H0, W0 = int(original_sizes[b][0]), int(original_sizes[b][1])
+            if self.keep_ratio:
+                proc_h, proc_w = int(processed_sizes[b][0]), int(processed_sizes[b][1])
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+                m = m[..., max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)]
+            m = F.interpolate(m, size=(H0, W0), mode="nearest")[0, 0]
+            results.append({"sem_seg": m.to(torch.uint8)})
+        return results
+
     def _postprocess(
         self,
         outputs: List[torch.Tensor],
@@ -401,6 +422,8 @@ class TRT_model:
         """
         returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
         """
+        if self.sem_seg:
+            return self._postprocess_sem_seg(outputs, processed_sizes, original_sizes)
         labels = outputs[0]  # [B, K]
         boxes = outputs[1]  # [B, K, 4], absolute xyxy in input_size space
         scores = outputs[2]  # [B, K]
@@ -460,6 +483,7 @@ class TRT_model:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype uint8. N = number of objects
+            sem_seg engines instead return {"sem_seg": uint8 (H, W) dense label map} per image.
         """
         # Run all GPU work on the model's dedicated stream so TRT can avoid the
         # extra default-stream synchronisations triggered by enqueueV3, then have

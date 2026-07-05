@@ -4,7 +4,7 @@ Reference for AI agents working in this repo. Keep it open and follow it literal
 
 ## 1. What this repo is
 
-D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` / `segment` / `sem_seg`) switches between object detection, instance segmentation, and semantic segmentation (dense per-pixel classes; **training only for now** — export/bench/infer land later, see [SEM_SEG_PROGRESS.md](SEM_SEG_PROGRESS.md)).
+D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` / `segment` / `sem_seg`) switches between object detection, instance segmentation, and semantic segmentation (dense per-pixel classes; full pipeline — train/infer/export/bench; status + gotchas in [SEM_SEG_PROGRESS.md](SEM_SEG_PROGRESS.md)).
 
 Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in `pretrained/`: detection (`dfine_<size>_coco.pt`, `dfine_<size>_obj2coco.pt`) and instance segmentation (`dfine_seg_<size>_coco.pt` — includes trained `MaskDecoder` weights).
 
@@ -191,6 +191,12 @@ Outputs land under `${train.infer_path}`:
 - `<stem>_tracked.mp4` — for videos, when `infer.to_track: True` (default): persistent IDs via ByteTrack ([src/infer/byte_track.py](src/infer/byte_track.py)). Defaults are baked into [src/dl/infer.py](src/dl/infer.py); override any of them via a top-level `track:` block (e.g. `track.track_buffer=60`). A fresh tracker is instantiated per video so IDs don't bleed across clips.
 - `labels.txt` — classes seen across the run
 
+For `task: sem_seg` the outputs are `images/` (palette overlays) + `masks/` (GT-style grayscale
+PNG label maps, pixel value = class id) + `labels.txt`; crops/YOLO txt/tracking are box-based and
+skipped (videos get `<stem>_sem_seg.mp4` overlays instead). Wrapper output contract: instance
+masks live under `out["masks"]` `[N,H,W]`; sem_seg returns `out["sem_seg"]` — a uint8 `[H,W]`
+dense label map at original resolution.
+
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [src/infer/torch_model.py](src/infer/torch_model.py).
 
 For interactive threshold tweaking, the Gradio UI in [demo/](demo/) exposes a threshold slider.
@@ -203,7 +209,7 @@ Important to note: inference wrappers under /infer are standalone scripts that a
 make bench        # == python -m src.dl.bench
 ```
 
-Runs the val/test set through each backend listed in `formats_to_bench` inside [src/dl/bench.py](src/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT. Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
+Runs the val/test set through each backend listed in `formats_to_bench` inside [src/dl/bench.py](src/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT — for `task: sem_seg`, mIoU + pixel_acc instead (original-resolution protocol, same as training eval). Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
 
 Related:
 - `python -m src.dl.test_batching` — sweeps batch sizes, writes `batched_infer.csv`
@@ -227,11 +233,16 @@ Knobs under `export:` in `config.yaml`: `half` (FP16), `max_batch_size`, `dynami
 
 ONNX has the D-FINE postprocessor fused into the graph; OpenVINO exports the raw head (postprocess separately).
 
+For `task: sem_seg` every backend gets the **same fused-argmax graph**: single int32 output
+`sem_seg` `[B,H,W]` (label map at input resolution; no detection postprocessor, no NMS). The
+`/infer` wrappers auto-detect it (single-output graph) and NEAREST-resize to original size.
+
 **Parity self-check** (`export.parity: True`, default on): after exporting, each backend runs on
 the same input as torch and one cosine per backend — over the sorted top-K detection scores — is
 printed and written to `parity.csv`. Scores are the reorder-stable, end-to-end signal; per-query
 boxes/masks are dominated by background queries that never clear conf filtering, so they aren't
 compared (bench covers surviving-box geometry). Warn-gated at cos ≥ 0.99 (≥ 0.90 for INT8).
+sem_seg swaps the metric to per-pixel argmax agreement (same gates).
 
 ### 10.1 INT8 quantization
 
