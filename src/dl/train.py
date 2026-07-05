@@ -1,4 +1,3 @@
-import collections
 import gc
 import math
 import time
@@ -563,40 +562,21 @@ class Trainer:
         ema_iter = 0
         self.early_stopping_steps = 0
         one_epoch_time = None
-        skip_counter = 0
-        # Reload last.pt after this many consecutive non-finite steps as a recovery.
-        # One-offs are expected and handled by skipping; a run of skips implies
-        # weights are already corrupted.
-        max_consecutive_skips = 10
-        # GradScaler picks its loss scale by overflowing for the first few steps,
-        # so non-finite grads/loss are expected noise during warmup.
-        nan_warn_warmup_iters = 100
 
-        def optimizer_step(step_scheduler: bool) -> bool:
+        def optimizer_step(step_scheduler: bool):
             """
-            Clip grads, optimizer step, scheduler step, zero grad, EMA model update.
-            Returns True if optimizer stepped, False if skipped due to non-finite grads.
+            Clip grads, optimizer step, scheduler step, zero grad, EMA model update
             """
             nonlocal ema_iter
             if self.amp_enabled:
-                self.scaler.unscale_(self.optimizer)
-            max_norm = self.clip_max_norm if self.clip_max_norm else float("inf")
-            total_norm = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), max_norm, error_if_nonfinite=False
-            )
-
-            if not torch.isfinite(total_norm):
-                self.optimizer.zero_grad()
-                if self.amp_enabled:
-                    self.scaler.update()
-                if step_scheduler and self.scheduler:
-                    self.scheduler.step()
-                return False
-
-            if self.amp_enabled:
+                if self.clip_max_norm:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_max_norm)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
+                if self.clip_max_norm:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_max_norm)
                 self.optimizer.step()
 
             if step_scheduler and self.scheduler:
@@ -606,37 +586,12 @@ class Trainer:
             if self.ema_model:
                 ema_iter += 1
                 self.ema_model.update(ema_iter, self.model)
-            return True
-
-        def reload_last_checkpoint() -> bool:
-            ckpt_path = self.path_to_save / "last.pt"
-            if not ckpt_path.exists():
-                if self.is_main:
-                    logger.error(
-                        f"{max_consecutive_skips} consecutive non-finite steps but "
-                        f"{ckpt_path} not found; cannot recover"
-                    )
-                return False
-            if self.is_main:
-                logger.warning(
-                    f"{max_consecutive_skips} consecutive non-finite steps; "
-                    f"reloading weights from {ckpt_path}"
-                )
-            state = torch.load(ckpt_path, map_location=self.device, weights_only=True)
-            target = self.model.module if isinstance(self.model, DDP) else self.model
-            target.load_state_dict(state)
-            if self.ema_model:
-                self.ema_model.model.load_state_dict(state)
-            # Drop Adam m/v buffers
-            self.optimizer.state = collections.defaultdict(dict)
-            self.optimizer.zero_grad()
-            return True
 
         def force_grad_sync() -> None:
-            """Manually average param grads across DDP ranks. Used as a fallback
-            when an accumulation window's final micro-step was skipped (non-finite
-            loss) so DDP's own all-reduce never fired and earlier no_sync'd grads
-            would otherwise stay un-synced across ranks."""
+            """Manually average param grads across DDP ranks. A trailing incomplete
+            accumulation window has no boundary micro-step, so every backward in it
+            ran under no_sync and DDP's own all-reduce never fired; sync before the
+            final optimizer step, else ranks diverge."""
             # Coalesce into one collective: flatten all grads into a single buffer,
             # one all_reduce(AVG), then copy results back.
             grads = [p.grad for p in self.model.parameters() if p.grad is not None]
@@ -655,8 +610,6 @@ class Trainer:
             self.model.train()
             self.loss_fn.train()
             losses = []
-            had_backward_in_window = False
-            had_synced_backward_in_window = False
 
             data_iter = self.train_loader
             if self.is_main:
@@ -692,52 +645,22 @@ class Trainer:
                     loss_dict = self.loss_fn(output, targets)
                     loss = sum(loss_dict.values()) / self.b_accum_steps
 
-                # In DDP, any rank's backward() triggers gradient all-reduce; if one rank
-                # skips backward because of a local NaN, the others hang. Sync the decision.
-                loss_finite_t = torch.isfinite(loss.detach()).to(torch.int32)
-                if self.distributed:
-                    torch.distributed.all_reduce(loss_finite_t, op=torch.distributed.ReduceOp.MIN)
-                loss_finite = bool(loss_finite_t.item())
-
                 is_accum_boundary = (batch_idx + 1) % self.b_accum_steps == 0
                 # Suppress DDP's per-backward all-reduce on non-final micro-steps;
                 # the boundary backward syncs all accumulated grads in one shot.
                 use_no_sync = self.distributed and self.b_accum_steps > 1 and not is_accum_boundary
                 sync_cm = self.model.no_sync() if use_no_sync else nullcontext()
 
-                if loss_finite:
-                    with sync_cm:
-                        if self.amp_enabled:
-                            self.scaler.scale(loss).backward()
-                        else:
-                            loss.backward()
-                    had_backward_in_window = True
-                    if not use_no_sync:
-                        had_synced_backward_in_window = True
-                    losses.append(loss.item())
-                elif self.is_main and cur_iter > nan_warn_warmup_iters:
-                    logger.warning(
-                        f"Skipping batch at iter {cur_iter} (epoch {epoch}, "
-                        f"batch {batch_idx}): non-finite loss"
-                    )
+                with sync_cm:
+                    if self.amp_enabled:
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
 
                 if is_accum_boundary:
-                    if had_backward_in_window:
-                        if self.distributed and not had_synced_backward_in_window:
-                            force_grad_sync()
-                        stepped = optimizer_step(step_scheduler=True)
-                        skip_counter = 0 if stepped else skip_counter + 1
-                    else:
-                        # Nothing to step, but keep the LR schedule aligned with wall time.
-                        if self.scheduler:
-                            self.scheduler.step()
-                        skip_counter += 1
-                    had_backward_in_window = False
-                    had_synced_backward_in_window = False
+                    optimizer_step(step_scheduler=True)
 
-                    if skip_counter >= max_consecutive_skips:
-                        reload_last_checkpoint()
-                        skip_counter = 0
+                losses.append(loss.item())
 
                 if self.is_main:
                     data_iter.set_postfix(
@@ -753,13 +676,13 @@ class Trainer:
                         vram=f"{get_vram_usage()}%",
                     )
 
-            # Final update for any leftover gradients from an incomplete accumulation step
-            if (batch_idx + 1) % self.b_accum_steps != 0 and had_backward_in_window:
-                if self.distributed and not had_synced_backward_in_window:
+            # Final update for leftover grads from an incomplete accumulation step.
+            # has_grads guards an all-None trailing window (grads None post zero_grad).
+            has_grads = any(p.grad is not None for p in self.model.parameters())
+            if (batch_idx + 1) % self.b_accum_steps != 0 and has_grads:
+                if self.distributed:
                     force_grad_sync()
                 optimizer_step(step_scheduler=False)
-                had_backward_in_window = False
-                had_synced_backward_in_window = False
 
             if self.use_wandb and self.is_main:
                 wandb.log({"lr": lr, "epoch": epoch})
