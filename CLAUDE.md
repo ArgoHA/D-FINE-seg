@@ -126,7 +126,7 @@ make train
 
 Under `${train.path_to_save}` (= `${train.root}/output/models/<exp>`):
 - `model.pt` — **best** checkpoint by `train.decision_metrics` (use this for inference/export)
-- `last.pt` — last-epoch checkpoint, used only for NaN recovery
+- `last.pt` — last-epoch checkpoint (nothing reads it automatically; `model.pt` is the one to use)
 - `config.yaml` — frozen snapshot of the run's config
 - `train_log.txt` — loguru log
 - Confusion matrices, per-class metric CSVs, F1-vs-threshold plots, and eval visualizations
@@ -152,7 +152,7 @@ python -m src.dl.train \
 
 i.e. point `pretrained_model_path` at any `.pt` with matching architecture. Weights load non-strictly (`strict=False`), so head mismatches (e.g., fine-tuning a COCO-pretrained model on your own classes) are tolerated.
 
-**Automatic NaN recovery** is built in: if 10 consecutive batches produce non-finite loss, the run reloads `last.pt` and continues. If NaNs persist, apply the recipe in section 11.
+**AMP dtype defaults to bf16** (`train.amp_dtype: bfloat16`), which has fp32's dynamic range and so avoids the fp16-overflow NaNs behind the old instability. The training loop has no NaN guard — a non-finite loss propagates. If a bf16 run still diverges, apply the recipe in section 12. (`train.amp_dtype: float16` re-enables the loss-scaled fp16 path if ever needed.)
 
 ## 8. Inference
 
@@ -273,14 +273,14 @@ uv run python -m tests.generate_fixtures
 5. **`label_to_name` must be 0-indexed and contiguous.**
 6. **`task: segment` disables mosaic-friendliness.** Mosaic augmentation is not recommended for segmentation — lower `mosaic_augs.mosaic_prob` toward 0 if masks look wrong.
 7. **Decision metrics swap for segment.** `mAP_50` becomes `mAP_50_mask` automatically when `task: segment`.
-8. **NaN recipe** (from [notes.txt](notes.txt), applied when auto-recovery keeps firing):
+8. **NaN recipe** (from [notes.txt](notes.txt), applied if a bf16 run still diverges to non-finite loss):
    - Lower both `backbone_lr` and `base_lr`
    - `train.weight_decay: 0.000125` (or even `0.00025`)
    - `train.betas: [0.9, 0.98]`
    - `train.label_smoothing: 0.1`
    - `train.mosaic_augs.mosaic_scale: [0.5, 1.4]` if dataset is object-sparse
 9. **DDP rank-0 writes everything.** Don't assume per-rank directories; logs, checkpoints, and WandB calls are gated to rank 0.
-10. **`model.pt` is best, `last.pt` is for recovery only.** Always use `model.pt` for inference, export, and bench.
+10. **`model.pt` is best, `last.pt` is the last epoch.** `model.pt` is the best checkpoint by `train.decision_metrics` — use it for inference, export, and bench. `last.pt` is just the final-epoch snapshot; nothing reads it automatically.
 11. **Multi-channel images live in `.npy`, not TIFF.** `cv2.imread(IMREAD_UNCHANGED)` is not byte-faithful for 4-channel TIFFs — it treats channel 4 as alpha, swaps the first three per the photometric tag, and pre-multiplies values, so any TIFF from a non-cv2 writer is silently mangled. `.npy` is byte-faithful and ~25× faster to read.
 12. **Stem freeze auto-bypassed for inflated stems.** `freeze_at >= 0` in [src/d_fine/configs.py](src/d_fine/configs.py) only freezes the stem when `train.in_channels == 3`; for `in_channels > 3` the freeze is skipped so the inflated extra-channel weights can train.
 
