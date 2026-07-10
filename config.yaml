@@ -1,5 +1,5 @@
-project_name: aerial_sem_seg # for wandb
-exp_name: zero # experiment name
+project_name: cityscapes # for wandb
+exp_name: baseline # experiment name
 
 exp: ${exp_name}_${now_dir}
 
@@ -8,7 +8,7 @@ task: sem_seg # detect | segment | sem_seg (dense per-pixel classes; decision me
 
 train:
   ### Paths ###
-  root: /home/argo/Desktop/Projects/aerial_sem_seg # project root with dataset and outputs
+  root: /home/argo/Desktop/Projects/cityscapes # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
   # sem_seg/segment: use dfine_seg_* (ships trained MaskDecoder fuser); detect: dfine_${model_name}_${train.pretrained_dataset}.pt
   pretrained_model_path: pretrained/dfine_seg_${model_name}_coco.pt
@@ -16,7 +16,7 @@ train:
   imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
   coco_dataset: False # set True when annotations are in COCO JSON format (train/val/test)
 
-  data_path: ${train.root}/data/dataset # path to dataset
+  data_path: ${train.root}/data # path to dataset (images/, masks/, train.csv, val.csv)
   path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script
   path_to_save: ${train.root}/output/models/${exp} # where to save output
 
@@ -28,30 +28,26 @@ train:
   ### Configs ###
   use_wandb: True
   device: cuda
-  label_to_name: # dataset's classes (sem_seg: every pixel value is a class id from this map)
-    0: unlabeled
-    1: paved-area
-    2: dirt
-    3: grass
-    4: gravel
-    5: water
-    6: rocks
-    7: pool
+  label_to_name: # Cityscapes 19 eval classes (trainIds 0-18; all other pixels = 255 ignore)
+    0: road
+    1: sidewalk
+    2: building
+    3: wall
+    4: fence
+    5: pole
+    6: traffic-light
+    7: traffic-sign
     8: vegetation
-    9: roof
-    10: wall
-    11: window
-    12: door
-    13: fence
-    14: fence-pole
-    15: person
-    16: dog
-    17: car
+    9: terrain
+    10: sky
+    11: person
+    12: rider
+    13: car
+    14: truck
+    15: bus
+    16: train
+    17: motorcycle
     18: bicycle
-    19: tree
-    20: bald-tree
-    21: ar-marker
-    22: obstacle
 
   use_one_class: False
 
@@ -60,6 +56,7 @@ train:
     ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
     class_weights: null # optional per-class CE weights for imbalance
     scale_jitter: null # e.g. [0.75, 1.5] -> RandomScale+Pad+RandomCrop after resize (mosaic replacement)
+    mosaic_prob: 0.5 # 4-image mosaic for dense masks (own knob; independent of box-path mosaic_augs)
 
   ### Distributed Training (DDP) ###
   ddp:
