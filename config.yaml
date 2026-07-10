@@ -55,8 +55,6 @@ train:
   sem_seg:
     ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
     class_weights: null # optional per-class CE weights for imbalance
-    scale_jitter: null # e.g. [0.75, 1.5] -> RandomScale+Pad+RandomCrop after resize (mosaic replacement)
-    mosaic_prob: 0.5 # 4-image mosaic for dense masks (own knob; independent of box-path mosaic_augs)
 
   ### Distributed Training (DDP) ###
   ddp:
@@ -109,8 +107,8 @@ train:
   label_smoothing: 0.0
 
   ### Augs ###
-  mosaic_augs: # not recommended for segmentation
-    mosaic_prob: 0.8 # set to 0 to disable
+  mosaic_augs: # all tasks
+    mosaic_prob: 0.5 # set to 0 to disable. Recommended: 0.8 for det, 0.5 for sem_seg
     no_mosaic_epochs: 5
     mosaic_scale: [0.5, 1.5]
     degrees: 0.0 # not recommended if bbox precision is critical
@@ -120,7 +118,8 @@ train:
   augs:
     rotation_degree: 10 # maximum +- rotation
     rotation_p: 0.05 # probability of the rotation (with above degree)
-    multiscale_prob: 0.0
+    multiscale_prob: 0.0 # ignored for sem_seg (box-collate multiscale)
+    scale_jitter: null # only for sem_seg:, e.g. [0.75, 1.5]
     rotate_90: 0.05
     left_right_flip: 0.3
     up_down_flip: 0.0

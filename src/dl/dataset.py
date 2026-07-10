@@ -21,6 +21,7 @@ from src.dl.utils import (
     abs_xyxy_to_norm_xywh,
     clip_polygon_to_rect,
     get_mosaic_coordinate,
+    get_transform_matrix,
     norm_poly_to_abs,
     norm_xywh_to_abs_xyxy,
     overlay_sem_seg,
@@ -63,9 +64,6 @@ def read_image_rgb(path, in_channels: int) -> Optional[np.ndarray]:
     Delegates to ``read_image_hwc`` (cv2 default for non-.npy, np.load for
     .npy) and applies the project conventions on top: cv2 sources need a
     BGR->RGB swap; ``.npy`` sources are stored RGB(+extras) and need none.
-    ``.npy`` was chosen over multi-channel TIFF because
-    ``cv2.imread(IMREAD_UNCHANGED)`` mangles 4-channel TIFFs from non-cv2
-    producers (alpha pre-multiplication + photometric-tag swap).
 
     Returns ``None`` if the file cannot be decoded.
     Raises ``ValueError`` when the channel count doesn't match in_channels."""
@@ -718,8 +716,14 @@ class SemSegDataset(Dataset):
         self.label_to_name = cfg.train.label_to_name
         self.ignore_index = int(cfg.train.sem_seg.ignore_index)
         self.cases_to_debug = 20
-        # dense-mask 4-image mosaic (own knob; default 0 = off). background hook is box-path only.
-        self.mosaic_prob = float(cfg.train.sem_seg.get("mosaic_prob", 0.0)) if mode == "train" else 0.0
+        # dense-mask mosaic shares the box path's mosaic_augs knobs (affine warps img+mask)
+        self.mosaic_scale = cfg.train.mosaic_augs.mosaic_scale
+        self.degrees = cfg.train.mosaic_augs.degrees
+        self.translate = cfg.train.mosaic_augs.translate
+        self.shear = cfg.train.mosaic_augs.shear
+        # shared-memory so close_mosaic() reaches persistent workers (mirrors CustomDataset)
+        self._shared_flags = torch.zeros(1).share_memory_()
+        self.mosaic_prob = float(cfg.train.mosaic_augs.mosaic_prob) if mode == "train" else 0.0
         self.ignore_background = False
         if cfg.train.keep_ratio:
             raise ValueError(
@@ -727,6 +731,14 @@ class SemSegDataset(Dataset):
                 "LetterboxRect has no ignore_index mask fill yet"
             )
         self._init_augs(cfg)
+
+    @property
+    def mosaic_prob(self) -> float:
+        return float(self._shared_flags[0])
+
+    @mosaic_prob.setter
+    def mosaic_prob(self, value: float) -> None:
+        self._shared_flags[0] = float(value)
 
     def _init_augs(self, cfg) -> None:
         pad_color = tuple([114] * self.in_channels)
@@ -761,8 +773,8 @@ class SemSegDataset(Dataset):
             if self.in_channels == 3:
                 augs.insert(5, A.ToGray(p=cfg.train.augs.to_gray))
 
-            # scale-jitter + crop after the deployment-identical resize (mosaic replacement)
-            jitter = cfg.train.sem_seg.scale_jitter
+            # scale-jitter + crop after the deployment-identical resize (mosaic alternative)
+            jitter = cfg.train.augs.scale_jitter
             post_resize = []
             if jitter:
                 lo, hi = float(jitter[0]), float(jitter[1])
@@ -780,6 +792,11 @@ class SemSegDataset(Dataset):
                 ]
             self.transform = A.Compose(
                 augs + resize + post_resize + norm, mask_interpolation=cv2.INTER_NEAREST
+            )
+            # mosaic already emits a target-size affine crop -> augs + resize (snaps any aug size
+            # drift back to target, e.g. Affine fit_output) + norm; skips scale_jitter (affine's job)
+            self.mosaic_transform = A.Compose(
+                augs + resize + norm, mask_interpolation=cv2.INTER_NEAREST
             )
         elif self.mode in ["val", "test", "bench"]:
             self.transform = A.Compose(resize + norm, mask_interpolation=cv2.INTER_NEAREST)
@@ -829,8 +846,9 @@ class SemSegDataset(Dataset):
     def _load_mosaic(self, idx: int):
         """4-image mosaic for dense masks: mirrors the box-path mosaic but tiles the label map
         alongside the image (NEAREST, ignore_index fill) — no polygons needed since the mask is
-        just a second image plane. Tiles into a 2H x 2W canvas at a jittered junction; the
-        Compose's A.Resize then downscales it to target (the usual mosaic multi-scale effect)."""
+        just a second image plane. Tiles into a 2H x 2W canvas at a jittered junction, then affine-
+        warps a target-size window out of it (scale/translate/shear from mosaic_augs; image
+        LINEAR/114, mask NEAREST/ignore_index) — the scale jitter + crop the box path gets."""
         H, W = self.target_h, self.target_w
         yc = int(random.uniform(H * 0.6, H * 1.4))
         xc = int(random.uniform(W * 0.6, W * 1.4))
@@ -852,6 +870,16 @@ class SemSegDataset(Dataset):
             )
             img4[ly1:ly2, lx1:lx2] = img[sy1:sy2, sx1:sx2]
             mask4[ly1:ly2, lx1:lx2] = mask[sy1:sy2, sx1:sx2]
+        M, _ = get_transform_matrix(
+            img4.shape[:2], (W, H), self.degrees, self.mosaic_scale, self.shear, self.translate
+        )
+        img4 = cv2.warpAffine(
+            img4, M[:2], dsize=(W, H), flags=cv2.INTER_LINEAR,
+            borderValue=tuple([114] * self.in_channels),
+        )
+        mask4 = cv2.warpAffine(
+            mask4, M[:2], dsize=(W, H), flags=cv2.INTER_NEAREST, borderValue=self.ignore_index
+        )
         return img4, mask4
 
     def close_mosaic(self):
@@ -867,14 +895,15 @@ class SemSegDataset(Dataset):
                 return None
             image, sem_mask = mosaic
             orig_size = torch.tensor([self.target_h, self.target_w])  # train-only; orig res unused
+            transformed = self.mosaic_transform(image=image, mask=sem_mask)  # already target-size
         else:
             r = self._load_image_mask(idx)
             if r is None:
                 return None
             image, sem_mask = r
             orig_size = torch.tensor(image.shape[:2])
+            transformed = self.transform(image=image, mask=sem_mask)
 
-        transformed = self.transform(image=image, mask=sem_mask)
         image_t = transformed["image"]
         sem_mask_t = transformed["mask"].long()
 
