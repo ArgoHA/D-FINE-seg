@@ -718,8 +718,8 @@ class SemSegDataset(Dataset):
         self.label_to_name = cfg.train.label_to_name
         self.ignore_index = int(cfg.train.sem_seg.ignore_index)
         self.cases_to_debug = 20
-        # train-loop compat: mosaic/background hooks are box-path only
-        self.mosaic_prob = 0.0
+        # dense-mask 4-image mosaic (own knob; default 0 = off). background hook is box-path only.
+        self.mosaic_prob = float(cfg.train.sem_seg.get("mosaic_prob", 0.0)) if mode == "train" else 0.0
         self.ignore_background = False
         if cfg.train.keep_ratio:
             raise ValueError(
@@ -807,25 +807,73 @@ class SemSegDataset(Dataset):
         save_dir.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(save_dir / f"{idx}_idx_{img_path.stem}_debug.jpg"), image_np)
 
-    def __getitem__(self, idx: int):
-        """returns (image CHW float, sem_mask (H,W) long, image_path, orig_size (H,W))"""
+    def _load_image_mask(self, idx: int):
+        """Load one (image HWC, mask HW) pair at native resolution, or None if unreadable."""
         image_path = Path(self.split.iloc[idx].values[0])
         full_path = self.root_path / "images" / f"{image_path}"
         try:
             image = read_image_rgb(full_path, self.in_channels)
         except ValueError as e:
             logger.warning(f"Skipping {full_path}: {e}")
-            image = None
+            return None
         if image is None:
             return None
-
-        mask_path = self.root_path / "masks" / f"{image_path.stem}.png"
-        sem_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        if sem_mask is None:
-            logger.warning(f"Skipping {full_path}: can't read mask {mask_path}")
+        mask = cv2.imread(
+            str(self.root_path / "masks" / f"{image_path.stem}.png"), cv2.IMREAD_GRAYSCALE
+        )
+        if mask is None:
+            logger.warning(f"Skipping {full_path}: can't read mask")
             return None
+        return image, mask
 
-        orig_size = torch.tensor(image.shape[:2])
+    def _load_mosaic(self, idx: int):
+        """4-image mosaic for dense masks: mirrors the box-path mosaic but tiles the label map
+        alongside the image (NEAREST, ignore_index fill) — no polygons needed since the mask is
+        just a second image plane. Tiles into a 2H x 2W canvas at a jittered junction; the
+        Compose's A.Resize then downscales it to target (the usual mosaic multi-scale effect)."""
+        H, W = self.target_h, self.target_w
+        yc = int(random.uniform(H * 0.6, H * 1.4))
+        xc = int(random.uniform(W * 0.6, W * 1.4))
+        indices = [idx] + [random.randint(0, len(self.split) - 1) for _ in range(3)]
+        img4 = np.full((H * 2, W * 2, self.in_channels), 114, dtype=np.uint8)
+        mask4 = np.full((H * 2, W * 2), self.ignore_index, dtype=np.uint8)
+        for i, m_idx in enumerate(indices):
+            r, retries = self._load_image_mask(m_idx), 0
+            while r is None and retries < 3:
+                r = self._load_image_mask(random.randint(0, len(self.split) - 1))
+                retries += 1
+            if r is None:
+                return None
+            img, mask = r
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
+            mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
+            (lx1, ly1, lx2, ly2), (sx1, sy1, sx2, sy2) = get_mosaic_coordinate(
+                img4, i, xc, yc, W, H, H, W
+            )
+            img4[ly1:ly2, lx1:lx2] = img[sy1:sy2, sx1:sx2]
+            mask4[ly1:ly2, lx1:lx2] = mask[sy1:sy2, sx1:sx2]
+        return img4, mask4
+
+    def close_mosaic(self):
+        self.mosaic_prob = 0.0
+        logger.info("Closing mosaic")
+
+    def __getitem__(self, idx: int):
+        """returns (image CHW float, sem_mask (H,W) long, image_path, orig_size (H,W))"""
+        image_path = Path(self.split.iloc[idx].values[0])
+        if self.mosaic_prob and random.random() < self.mosaic_prob:
+            mosaic = self._load_mosaic(idx)
+            if mosaic is None:
+                return None
+            image, sem_mask = mosaic
+            orig_size = torch.tensor([self.target_h, self.target_w])  # train-only; orig res unused
+        else:
+            r = self._load_image_mask(idx)
+            if r is None:
+                return None
+            image, sem_mask = r
+            orig_size = torch.tensor(image.shape[:2])
+
         transformed = self.transform(image=image, mask=sem_mask)
         image_t = transformed["image"]
         sem_mask_t = transformed["mask"].long()

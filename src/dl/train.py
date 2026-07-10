@@ -136,7 +136,10 @@ class Trainer:
         self.eval_preds_path = Path(self.cfg.train.eval_preds_path)
         self.decision_metrics = cfg.train.decision_metrics
 
-        self.annotations_format = "COCO" if cfg.train.coco_dataset else "YOLO"
+        if self.task == "sem_seg":
+            self.annotations_format = "PNG masks"
+        else:
+            self.annotations_format = "COCO" if cfg.train.coco_dataset else "YOLO"
 
         if self.is_main:
             self.init_dirs()
