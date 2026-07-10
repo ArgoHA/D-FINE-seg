@@ -176,10 +176,10 @@ bench:
   formats: # which backends to bench
     - torch
     - tensorrt
-    # - onnx
-    # - openvino
-    # - coreml
-    # - litert
+    - onnx
+    - openvino
+    - coreml
+    - litert
 
 
 infer:
