@@ -41,10 +41,10 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 ## Highlights
 
 - **Instance segmentation** via a lightweight mask head on top of D-FINE's HybridEncoder PAN outputs — fuses stride 8/16/32 features to 1/4 resolution, then dot-product between per-query mask embeddings (3-layer MLP) and shared mask features produces per-instance masks
-- **New losses**: box-cropped BCE + Dice mask losses computed only inside GT boxes and normalized by ROI area
+- **Semantic segmentation** (`task: sem_seg`): dense per-pixel head reusing the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier — no queries, no NMS
+- **New losses**: box-cropped BCE + Dice mask losses (instance seg, computed only inside GT boxes and normalized by ROI area); cross-entropy + multi-class soft Dice with `ignore_index` masking (semantic seg)
 - **Mask-aware denoising**: contrastive denoising training extended with mask supervision for faster convergence (adds no inference cost)
 - **Mask-aware matching**: Hungarian matcher augmented with Dice overlap cost and sigmoid focal mask cost alongside classification, L1, and GIoU costs
-- **Semantic segmentation** (`task: sem_seg`): dense per-pixel classification head reusing the pretrained mask fuser — no queries, no NMS; trained and evaluated with mIoU at original image resolution
 - **5 model sizes** — Nano, Small, Medium, Large, Extra-Large — with HGNetv2 backbones
 - **Production-ready**: export to ONNX / TensorRT / OpenVINO / CoreML / LiteRT and optimized inference backends
 
@@ -85,7 +85,7 @@ data/dataset/
 ``` bash
 data/dataset/
 ├── images/    # same as YOLO layout
-└── masks/     # one single-channel uint8 .png per image (same stem), pixel value = class id
+└── labels/    # one single-channel uint8 .png per image (same stem), pixel value = class id
 ```
 
 Every pixel gets a class from `label_to_name` (background included). Pixels with value `train.sem_seg.ignore_index` (default 255) are excluded from loss and metrics. `make split` works unchanged; `coco_dataset: True` and `keep_ratio: True` are not supported for this task.
@@ -377,6 +377,18 @@ Note: although D-FINE does not require NMS, it still provides a small accuracy b
 > AP computed with confidence threshold 0.01, max 100 detections per image. D-FINE-seg wins on 4 of 5 mask AP sizes (YOLO26 leads at M) and all 5 box AP sizes.
 
 </details>
+
+#### Semantic Segmentation
+
+Cityscapes dataset. Unet with EfficientNet is shown for the reference.
+
+| Framework | Model | Res | mIoU | pixel_acc | TRT fp16 (ms) |
+|---|---|---|---|---|---|
+| EfficientNet-Unet | b3 | 640 | 0.720 | 0.948 | 3.3 |
+| D-FINE-seg | **S** | 640 | 0.728 | 0.95 | **2.0** |
+| D-FINE-seg | **M** | 640 | 0.753 | 0.954 | 2.5 |
+| EfficientNet-Unet | b7 | 960 | 0.747 | 0.958 | 11.3 |
+| D-FINE-seg | **X** | 960 | 0.802 | 0.963 | 7.2 |
 
 #### Format Comparisons
 
