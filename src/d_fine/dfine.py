@@ -5,9 +5,10 @@ import torch.nn as nn
 import torch.optim as optim
 
 from src.d_fine.dfine_criterion import DFINECriterion
+from src.d_fine.sem_seg_criterion import SemSegCriterion
 from src.d_fine.utils import ensure_pretrained
 
-from .arch.dfine_decoder import DFINETransformer
+from .arch.dfine_decoder import DFINETransformer, SemSegDecoder
 from .arch.hgnetv2 import HGNetv2
 from .arch.hybrid_encoder import HybridEncoder
 from .configs import models
@@ -67,6 +68,7 @@ def build_model(
     in_channels: int = 3,
     pretrained_model_path=None,
     pretrained_backbone=False,
+    task=None,  # "sem_seg" swaps DFINETransformer for SemSegDecoder; else by enable_mask_head
 ):
     if int(in_channels) not in (3, 4):
         raise ValueError(
@@ -81,10 +83,11 @@ def build_model(
     model_cfg["DFINETransformer"]["eval_spatial_size"] = img_size
     model_cfg["DFINETransformer"]["enable_mask_head"] = enable_mask_head
 
-    # For models without 1/8 stride (nano), when mask head is enabled,
+    # For models without 1/8 stride (nano), when a mask-producing head is enabled,
     # pass the backbone 1/8 feature as a low-level input for MaskDecoder
+    sem_seg = task == "sem_seg"
     enc_strides = model_cfg["HybridEncoder"]["feat_strides"]
-    if enable_mask_head and 8 not in enc_strides:
+    if (enable_mask_head or sem_seg) and 8 not in enc_strides:
         return_idx = model_cfg["HGNetv2"]["return_idx"]
         if 1 not in return_idx:  # stage index 1 = stride 8
             model_cfg["HGNetv2"]["return_idx"] = [1] + return_idx
@@ -94,7 +97,16 @@ def build_model(
 
     backbone = HGNetv2(in_channels=in_channels, **model_cfg["HGNetv2"])
     encoder = HybridEncoder(**model_cfg["HybridEncoder"])
-    decoder = DFINETransformer(num_classes=num_classes, **model_cfg["DFINETransformer"])
+    if sem_seg:
+        dec_cfg = model_cfg["DFINETransformer"]
+        decoder = SemSegDecoder(
+            num_classes=num_classes,
+            feat_channels=dec_cfg["feat_channels"],
+            mask_dim=dec_cfg["mask_dim"],
+            mask_low_level_ch=dec_cfg.get("mask_low_level_ch"),
+        )
+    else:
+        decoder = DFINETransformer(num_classes=num_classes, **model_cfg["DFINETransformer"])
 
     model = DFINE(backbone, encoder, decoder)
 
@@ -106,10 +118,26 @@ def build_model(
     return model.to(device)
 
 
-def build_loss(model_name, num_classes, label_smoothing, enable_mask_head):
+def build_loss(
+    model_name,
+    num_classes,
+    label_smoothing,
+    enable_mask_head,
+    task=None,
+    ignore_index=255,
+    class_weights=None,
+):
     # deepcopy so appending "masks" mutates a private copy, not the shared
     # global `models` config — build_loss may be called more than once per run.
     model_cfg = deepcopy(models[model_name])
+    if task == "sem_seg":
+        return SemSegCriterion(
+            model_cfg["SemSegCriterion"]["weight_dict"],
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            class_weights=class_weights,
+            label_smoothing=label_smoothing,
+        )
     if enable_mask_head and "masks" not in model_cfg["DFINECriterion"]["losses"]:
         model_cfg["DFINECriterion"]["losses"].append("masks")
     matcher = HungarianMatcher(**model_cfg["matcher"])

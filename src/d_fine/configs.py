@@ -39,6 +39,9 @@ base_cfg = {
         "gamma": 2.0,
         "reg_max": 32,
     },
+    "SemSegCriterion": {
+        "weight_dict": {"loss_ce": 1, "loss_dice": 1, "loss_aux": 0.4},
+    },
     "matcher": {
         "weight_dict": {
             "cost_class": 2,

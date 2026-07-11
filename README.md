@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">D-FINE-seg</h1>
   <p align="center">
-    <strong>Real-Time Object Detection and Instance Segmentation</strong>
+    <strong>Real-Time Object Detection, Instance and Semantic Segmentation</strong>
   </p>
   <p align="center">
     <a href="#quick-start">Quick Start</a> •
@@ -26,7 +26,7 @@
 
 **D-FINE-seg** extends the [D-FINE](https://arxiv.org/abs/2410.13842) real-time transformer based object detector with instance segmentation. It adds a lightweight mask head, segmentation-aware training (box-cropped BCE and dice mask losses, auxiliary and denoising mask supervision), and mask-aware Hungarian matching. On the TACO and VisDrone datasets, D-FINE-seg improves F1-score over Ultralytics YOLO26 under a unified TensorRT FP16 end-to-end benchmarking protocol, while maintaining competitive latency.
 
-The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) to optimized multi-backend inference for both **object detection** and **instance segmentation** tasks.
+The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) to optimized multi-backend inference — for **object detection**, **instance segmentation**, and **semantic segmentation** tasks, switched by a single `task` config flag.
 
 This is **not** a fork. The detection core is based on the [original D-FINE paper](https://github.com/Peterande/D-FINE); everything else — segmentation head, training pipeline, export, inference, augmentations — was reimplemented from scratch.
 
@@ -41,7 +41,8 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 ## Highlights
 
 - **Instance segmentation** via a lightweight mask head on top of D-FINE's HybridEncoder PAN outputs — fuses stride 8/16/32 features to 1/4 resolution, then dot-product between per-query mask embeddings (3-layer MLP) and shared mask features produces per-instance masks
-- **New losses**: box-cropped BCE + Dice mask losses computed only inside GT boxes and normalized by ROI area
+- **Semantic segmentation** (`task: sem_seg`): dense per-pixel head reusing the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier — no queries, no NMS
+- **New losses**: box-cropped BCE + Dice mask losses (instance seg, computed only inside GT boxes and normalized by ROI area); cross-entropy + multi-class soft Dice with `ignore_index` masking (semantic seg)
 - **Mask-aware denoising**: contrastive denoising training extended with mask supervision for faster convergence (adds no inference cost)
 - **Mask-aware matching**: Hungarian matcher augmented with Dice overlap cost and sigmoid focal mask cost alongside classification, L1, and GIoU costs
 - **5 model sizes** — Nano, Small, Medium, Large, Extra-Large — with HGNetv2 backbones
@@ -63,7 +64,7 @@ Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.c
 
 ### Prepare Your Data
 
-Two annotation formats are supported: **YOLO** (default) and **COCO JSON**.
+Two annotation formats are supported: **YOLO** (default) and **COCO JSON**. Semantic segmentation uses **PNG masks** instead (see below).
 
 #### YOLO format (default)
 
@@ -78,6 +79,16 @@ data/dataset/
 **Segmentation labels**: `class_id x1 y1 x2 y2 ... xN yN` (normalized polygon coordinates)
 
 **Input types & channel order**: 3-channel `.jpg`/`.png` (BGR, read via `cv2.imread`), 3-channel `.npy` (RGB, read via `np.load`), or 4-channel `.npy` (RGB+extras, e.g. RGB+thermal).
+
+#### Semantic segmentation masks (`task: sem_seg`)
+
+``` bash
+data/dataset/
+├── images/    # same as YOLO layout
+└── labels/    # one single-channel uint8 .png per image (same stem), pixel value = class id
+```
+
+Every pixel gets a class from `label_to_name` (background included). Pixels with value `train.sem_seg.ignore_index` (default 255) are excluded from loss and metrics. `make split` works unchanged; `coco_dataset: True` and `keep_ratio: True` are not supported for this task.
 
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
 
@@ -127,7 +138,7 @@ Enable COCO mode by setting `coco_dataset: True` in your config (see below). No 
 Edit `config.yaml` — key settings:
 
 ```yaml
-task: detect  # "detect" or "segment"
+task: detect  # detect | segment | sem_seg
 exp_name: my_exp  # experiment name (used in output paths)
 model_name: s  # n / s / m / l / x
 
@@ -211,6 +222,8 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend — over the sorted top-K detection scores vs torch — to `parity.csv` next to the weights.
 
+For `task: sem_seg` every backend gets the same fused-argmax graph: a single int32 `sem_seg` output `[B, H, W]` (label map at input resolution, no detection postprocessor), and parity compares per-pixel argmax agreement instead of score cosine.
+
 ## Inference
 
 ### Backends
@@ -225,6 +238,8 @@ Six inference backends in `src/infer/`:
 | **ONNX Runtime** | `.onnx` | CUDA, CPU |
 | **CoreML** | `.mlpackage` | macOS (GPU), iOS |
 | **LiteRT** | `.tflite` | CPU, mobile / edge (Android) |
+
+Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`); sem_seg wrappers return a single `sem_seg` `[H, W]` label map at original image resolution. For sem_seg, `make infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
 
 Also provided:
 
@@ -244,6 +259,19 @@ uv run python -m demo.demo
 A web UI for uploading images and running inference interactively.
 
 ## Benchmarks
+
+### Metrics
+
+**Detection / instance segmentation** — GT objects and predictions are matched one-to-one: a prediction is a TP if IoU > 0.5 (box for `detect`, mask for `segment`) and the class matches; only the highest-IoU prediction per GT counts, extra overlapping ones are FPs; a class mismatch is one FP + one FN.
+
+- **F1 / Precision / Recall** — computed from those TP/FP/FN counts at `train.conf_thresh`.
+- **IoU** (penalized) — mean IoU over all outcomes: TPs contribute their IoU, FPs and FNs contribute 0 (= sum of TP IoUs / (TPs + FPs + FNs)).
+- **mAP_50 / mAP_50_95** — COCO-style average precision (mask versions for `segment`).
+
+**Semantic segmentation** — all metrics come from one pixel confusion matrix accumulated over the whole eval set at original image resolution (`ignore_index` pixels excluded). A pixel of class *i* predicted as *j* counts as an FN for *i* and an FP for *j* — each confused pixel penalizes both classes.
+
+- **mIoU** (decision metric) — macro-averaged: per-class pixel IoU = TP / (TP + FP + FN), averaged over classes present in GT, so every class has equal weight regardless of pixel count.
+- **pixel_acc** — micro: fraction of all valid pixels classified correctly, so it is dominated by large classes.
 
 ### VisDrone - object detection
 
@@ -350,6 +378,18 @@ Note: although D-FINE does not require NMS, it still provides a small accuracy b
 
 </details>
 
+#### Semantic Segmentation
+
+Cityscapes dataset. Unet with EfficientNet is shown for the reference.
+
+| Framework | Model | Res | mIoU | pixel_acc | TRT fp16 (ms) |
+|---|---|---|---|---|---|
+| EfficientNet-Unet | b3 | 640 | 0.720 | 0.948 | 3.3 |
+| D-FINE-seg | **S** | 640 | 0.728 | 0.95 | **2.0** |
+| D-FINE-seg | **M** | 640 | 0.753 | 0.954 | 2.5 |
+| EfficientNet-Unet | b7 | 960 | 0.747 | 0.958 | 11.3 |
+| D-FINE-seg | **X** | 960 | 0.802 | 0.963 | 7.2 |
+
 #### Format Comparisons
 
 Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessing + inference + postprocessing.
@@ -412,7 +452,7 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 | Debug images | `output/debug_images/` | Preprocessed training images (with augmentations) |
 | Eval predictions | `output/eval_preds/` | Val set predictions with GT (green) and preds (blue) |
 | Bench images | `output/bench_imgs/` | Predictions from all exported models |
-| Infer | `output/infer/` | Visualizations + YOLO txt annotations |
+| Infer | `output/infer/` | Visualizations + YOLO txt annotations (sem_seg: overlays + PNG label maps) |
 | Check errors | `output/check_errors/` | FP and FN only — for finding mislabeled samples |
 
 ## Result examples

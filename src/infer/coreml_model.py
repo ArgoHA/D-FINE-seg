@@ -68,7 +68,8 @@ class CoreML_model:
         else:
             raise ValueError(f"Unexpected input shape: {list(shape)}")
 
-        # Fused model outputs: labels, boxes, scores, [masks]
+        # Fused model outputs: labels, boxes, scores, [masks]; single output = sem_seg argmax graph
+        self.sem_seg = len(self._output_names) == 1
         self.has_masks = len(self._output_names) > 3
 
     def _test_pred(self) -> None:
@@ -191,6 +192,25 @@ class CoreML_model:
         result = self.model.predict({self._input_name: img})
         return [result[name] for name in self._output_names]
 
+    def _postprocess_sem_seg(
+        self, outputs, processed_sizes, original_sizes
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Fused-argmax graph: NEAREST-resize each label map to its original size."""
+        maps = np.asarray(outputs[0])  # [B, H, W] int
+        results = []
+        for b in range(maps.shape[0]):
+            m = maps[b].astype(np.uint8)
+            H0, W0 = int(original_sizes[b][0]), int(original_sizes[b][1])
+            if self.keep_ratio:
+                proc_h, proc_w = int(processed_sizes[b][0]), int(processed_sizes[b][1])
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+                m = m[max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)]
+            m = cv2.resize(m, (W0, H0), interpolation=cv2.INTER_NEAREST)
+            results.append({"sem_seg": torch.from_numpy(m)})
+        return results
+
     def _postprocess(
         self,
         outputs: List[np.ndarray],
@@ -200,6 +220,8 @@ class CoreML_model:
         """
         returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
         """
+        if self.sem_seg:
+            return self._postprocess_sem_seg(outputs, processed_sizes, original_sizes)
         labels = torch.from_numpy(outputs[0]).long()  # [B, K]
         boxes = torch.from_numpy(outputs[1]).float()  # [B, K, 4], absolute xyxy in input_size space
         scores = torch.from_numpy(outputs[2]).float()  # [B, K]
@@ -262,6 +284,7 @@ class CoreML_model:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            sem_seg models instead return {"sem_seg": uint8 (H, W) dense label map} per image.
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)

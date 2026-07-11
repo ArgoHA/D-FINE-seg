@@ -9,7 +9,13 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.dl.dataset import read_image_hwc
-from src.dl.utils import Visualizer, abs_xyxy_to_norm_xywh, get_latest_experiment_name
+from src.dl.utils import (
+    Visualizer,
+    abs_xyxy_to_norm_xywh,
+    get_latest_experiment_name,
+    overlay_sem_seg,
+    sem_seg_palette,
+)
 from src.infer.byte_track import ByteTrack, Detection
 from src.infer.torch_model import Torch_model
 
@@ -148,6 +154,73 @@ def run_images(
     with open(output_path / "labels.txt", "w") as f:
         for class_id in labels:
             f.write(f"{label_to_name[int(class_id)]}\n")
+
+
+def run_images_sem_seg(torch_model, folder_path, output_path, label_to_name):
+    """Overlay + raw label-map PNG per image; crops/YOLO txt are box-based -> skipped."""
+    palette = sem_seg_palette(len(label_to_name))
+    (output_path / "images").mkdir(parents=True, exist_ok=True)
+    (output_path / "labels").mkdir(parents=True, exist_ok=True)
+    labels = set()
+    img_paths = [img.name for img in folder_path.iterdir() if not img.name.startswith(".")]
+    for img_path in tqdm(img_paths):
+        img = read_image_hwc(folder_path / img_path)
+        if img is None:
+            logger.warning(f"Skipping unreadable image: {img_path}")
+            continue
+        is_npy = Path(img_path).suffix.lower() == ".npy"
+        label_map = torch_model(img, bgr=not is_npy)[0]["sem_seg"].cpu().numpy()
+
+        vis_img = img[:, :, :3] if img.shape[2] > 3 else img
+        if is_npy:
+            vis_img = np.ascontiguousarray(vis_img[..., ::-1])
+        cv2.imwrite(
+            str(output_path / "images" / f"{Path(img_path).stem}.jpg"),
+            overlay_sem_seg(vis_img, label_map, palette),
+        )
+        # GT-style output: grayscale PNG, pixel value = class id
+        cv2.imwrite(str(output_path / "labels" / f"{Path(img_path).stem}.png"), label_map)
+        labels.update(np.unique(label_map).tolist())
+
+    with open(output_path / "labels.txt", "w") as f:
+        for class_id in sorted(labels):
+            f.write(f"{label_to_name[int(class_id)]}\n")
+
+
+def run_videos_sem_seg(torch_model, folder_path, output_path, label_to_name):
+    """Per-frame overlay written to <stem>_sem_seg.mp4; tracking is box-based -> skipped."""
+    palette = sem_seg_palette(len(label_to_name))
+    output_path.mkdir(parents=True, exist_ok=True)
+    video_files = sorted(
+        f
+        for f in folder_path.iterdir()
+        if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith(".")
+    )
+    for video_path in video_files:
+        vid = cv2.VideoCapture(str(video_path))
+        if not vid.isOpened():
+            logger.warning(f"Could not open {video_path}, skipping")
+            continue
+        fps = vid.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(vid.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+        width = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        out_path = output_path / f"{video_path.stem}_sem_seg.mp4"
+        out_vid = cv2.VideoWriter(
+            str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+        )
+
+        pbar = tqdm(total=total_frames, desc=video_path.name, unit="frame")
+        success, frame = vid.read()
+        while success:
+            label_map = torch_model(frame)[0]["sem_seg"].cpu().numpy()
+            out_vid.write(overlay_sem_seg(frame, label_map, palette))
+            pbar.update(1)
+            success, frame = vid.read()
+        pbar.close()
+        vid.release()
+        out_vid.release()
+        logger.info(f"Output video saved: {out_path}")
 
 
 def run_videos(
@@ -313,8 +386,8 @@ def main(cfg: DictConfig):
     folder_path = Path(str(cfg.train.path_to_test_data))
     data_type = figure_input_type(folder_path)
 
-    # Tracking only applies to videos.
-    use_tracking = to_track and data_type == "video"
+    # Tracking only applies to videos (and is box-based, so never for sem_seg).
+    use_tracking = to_track and data_type == "video" and cfg.task != "sem_seg"
 
     if use_tracking:
         # ByteTrack defaults — picked to exercise the two-stage association.
@@ -344,8 +417,8 @@ def main(cfg: DictConfig):
         input_height=cfg.train.img_size[0],
         conf_thresh=cfg.train.conf_thresh,
         rect=cfg.export.dynamic_input,
-        enable_mask_head=cfg.task == "segment",
         channels=cfg.train.in_channels,
+        task=cfg.task,
     )
 
     if data_type == "video" and cfg.train.in_channels != 3:
@@ -358,17 +431,26 @@ def main(cfg: DictConfig):
         rmtree(output_path)
 
     if data_type == "image":
-        run_images(
-            torch_model,
-            folder_path,
-            output_path,
-            label_to_name=cfg.train.label_to_name,
-            to_crop=to_crop,
-            paddings=paddings,
-            conf_thresh=cfg.train.conf_thresh,
-        )
+        if cfg.task == "sem_seg":
+            run_images_sem_seg(
+                torch_model, folder_path, output_path, label_to_name=cfg.train.label_to_name
+            )
+        else:
+            run_images(
+                torch_model,
+                folder_path,
+                output_path,
+                label_to_name=cfg.train.label_to_name,
+                to_crop=to_crop,
+                paddings=paddings,
+                conf_thresh=cfg.train.conf_thresh,
+            )
     elif data_type == "video":
-        if use_tracking:
+        if cfg.task == "sem_seg":
+            run_videos_sem_seg(
+                torch_model, folder_path, output_path, label_to_name=cfg.train.label_to_name
+            )
+        elif use_tracking:
             run_videos_tracked(
                 torch_model,
                 folder_path,

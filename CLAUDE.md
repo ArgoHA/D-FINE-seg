@@ -4,9 +4,9 @@ Reference for AI agents working in this repo. Keep it open and follow it literal
 
 ## 1. What this repo is
 
-D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` or `task: segment`) switches between object detection and instance segmentation.
+D-FINE-seg is a detection + instance segmentation framework built on D-FINE. A single config (`config.yaml`, Hydra-based) drives the whole pipeline: dataset split → train → export → bench → infer. One task flag (`task: detect` / `segment` / `sem_seg`) switches between object detection, instance segmentation, and semantic segmentation (dense per-pixel classes; full pipeline — train/infer/export/bench).
 
-Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in `pretrained/` (`dfine_<size>_coco.pt` and `dfine_<size>_obj2coco.pt`).
+Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in `pretrained/`: detection (`dfine_<size>_coco.pt`, `dfine_<size>_obj2coco.pt`) and instance segmentation (`dfine_seg_<size>_coco.pt` — includes trained `MaskDecoder` weights).
 
 ## 2. Layout
 
@@ -26,7 +26,7 @@ src/
 - Python 3.11–3.13, PyTorch 2.9, CUDA 12.x. Dependencies live in [pyproject.toml](pyproject.toml); [uv.lock](uv.lock) is the source of truth for versions.
 - Install with `uv sync` (creates `.venv/`). All Makefile targets shell out via `uv run`, so no manual activation is needed for `make train` / `make bench` / etc. For ad-hoc commands either prefix with `uv run` or activate the venv (`source .venv/bin/activate`).
 - Platform-specific deps are gated by markers in `pyproject.toml`: `tensorrt` installs on Linux only. `coremltools` ships wheels for both platforms (Linux can run the converter for `make export`, even though the CoreML runtime itself is macOS-only). `uv.lock` covers both so the same lockfile works on the dev mac and the lab box.
-- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
+- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt` or `dfine_seg_<size>_coco.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
 
 ## 4. Configuration model
 
@@ -43,7 +43,7 @@ Key top-level fields in [config.yaml](config.yaml):
 | `project_name` | WandB project name |
 | `exp_name` | Experiment name (outputs nest under `<exp_name>_<date>`) |
 | `model_name` | `n` / `s` / `m` / `l` / `x` |
-| `task` | `detect` or `segment` |
+| `task` | `detect`, `segment`, or `sem_seg` |
 | `train.root` | Absolute project root (dataset + outputs live here) |
 | `train.data_path` | Dataset dir — `${train.root}/data/dataset` by default |
 | `train.coco_dataset` | `False` → YOLO-style; `True` → COCO JSON |
@@ -82,6 +82,21 @@ make split        # == python -m src.etl.split
 ```
 
 Produces `train.csv`, `val.csv` (and `test.csv` if `split.val_split < 1 - split.train_split`) inside `train.data_path`. Ratios live under the top-level `split:` section in `config.yaml`.
+
+### 5.1.1 sem_seg layout
+
+```
+<train.data_path>/
+  images/   # .jpg/.png/.jpeg/.npy
+  labels/   # .png — same stem, single channel uint8, pixel value = class id
+```
+
+`train.sem_seg.ignore_index` (default 255) pixels are excluded from loss + mIoU and used as
+the mask fill for pad-introducing augs. `label_to_name` covers **every** pixel class
+(including background). `make split` works unchanged. Init from
+`pretrained/dfine_seg_<size>_coco.pt` (transfers the trained `MaskDecoder` fuser). Decision
+metric is forced to `mIoU` (protocol: pixel confusion matrix at original image resolution).
+`keep_ratio: True` and `coco_dataset: True` are rejected for sem_seg.
 
 ### 5.2 COCO layout
 
@@ -175,6 +190,12 @@ Outputs land under `${train.infer_path}`:
 - `<stem>_tracked.mp4` — for videos, when `infer.to_track: True` (default): persistent IDs via ByteTrack ([src/infer/byte_track.py](src/infer/byte_track.py)). Defaults are baked into [src/dl/infer.py](src/dl/infer.py); override any of them via a top-level `track:` block (e.g. `track.track_buffer=60`). A fresh tracker is instantiated per video so IDs don't bleed across clips.
 - `labels.txt` — classes seen across the run
 
+For `task: sem_seg` the outputs are `images/` (palette overlays) + `labels/` (GT-style grayscale
+PNG label maps, pixel value = class id) + `labels.txt`; crops/YOLO txt/tracking are box-based and
+skipped (videos get `<stem>_sem_seg.mp4` overlays instead). Wrapper output contract: instance
+masks live under `out["masks"]` `[N,H,W]`; sem_seg returns `out["sem_seg"]` — a uint8 `[H,W]`
+dense label map at original resolution.
+
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [src/infer/torch_model.py](src/infer/torch_model.py).
 
 For interactive threshold tweaking, the Gradio UI in [demo/](demo/) exposes a threshold slider.
@@ -187,7 +208,7 @@ Important to note: inference wrappers under /infer are standalone scripts that a
 make bench        # == python -m src.dl.bench
 ```
 
-Runs the val/test set through each backend listed in `formats_to_bench` inside [src/dl/bench.py](src/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT. Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
+Runs the val/test set through each backend listed in `formats_to_bench` inside [src/dl/bench.py](src/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT — for `task: sem_seg`, mIoU + pixel_acc instead (original-resolution protocol, same as training eval). Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
 
 Related:
 - `python -m src.dl.test_batching` — sweeps batch sizes, writes `batched_infer.csv`
@@ -211,11 +232,25 @@ Knobs under `export:` in `config.yaml`: `half` (FP16), `max_batch_size`, `dynami
 
 ONNX has the D-FINE postprocessor fused into the graph; OpenVINO exports the raw head (postprocess separately).
 
+For `task: sem_seg` every backend gets the **same fused-argmax graph**: single int32 output
+`sem_seg` `[B,H,W]` (label map at input resolution; no detection postprocessor, no NMS). The
+`/infer` wrappers auto-detect it (single-output graph) and NEAREST-resize to original size.
+
+Postprocess pipeline (deliberate):
+1. Model produces logits at H/4, W/4 (MaskDecoder output).
+2. Bilinearly upsamples logits x4 to input resolution (640×640) — fused in the export graph.
+3. Argmax → label map at input resolution (fused → int32 output).
+4. `/infer` wrappers NEAREST-resize the label map to the original image size.
+
+Bilinear-upsampling the logits to original size *before* argmax (steps 3-4 swapped) gives smoother
+edges (+0.004 mIoU on Cityscapes) but ~+20% TRT latency (2.65→3.19 ms, m@640) — not worth it.
+
 **Parity self-check** (`export.parity: True`, default on): after exporting, each backend runs on
 the same input as torch and one cosine per backend — over the sorted top-K detection scores — is
 printed and written to `parity.csv`. Scores are the reorder-stable, end-to-end signal; per-query
 boxes/masks are dominated by background queries that never clear conf filtering, so they aren't
 compared (bench covers surviving-box geometry). Warn-gated at cos ≥ 0.99 (≥ 0.90 for INT8).
+sem_seg swaps the metric to per-pixel argmax agreement (same gates).
 
 ### 10.1 INT8 quantization
 
@@ -271,7 +306,7 @@ uv run python -m tests.generate_fixtures
 3. **Pretrained weights auto-download from HF on first use** for the standard `dfine_<size>_<dataset>.pt` filenames. Custom `train.pretrained_model_path` values (e.g. fine-tuning checkpoints) are not fetched — those must exist on disk.
 4. **COCO vs YOLO is mutually exclusive.** Flipping `train.coco_dataset` without having the matching files on disk will fail in the loader.
 5. **`label_to_name` must be 0-indexed and contiguous.**
-6. **`task: segment` disables mosaic-friendliness.** Mosaic augmentation is not recommended for segmentation — lower `mosaic_augs.mosaic_prob` toward 0 if masks look wrong.
+6. **`mosaic_augs.mosaic_prob: null` means task default** — 0.8 for detect/segment, 0.5 for sem_seg (measured sweet spot); an explicit number wins for any task. For instance `segment`, mosaic is not recommended — lower it toward 0 if masks look wrong.
 7. **Decision metrics swap for segment.** `mAP_50` becomes `mAP_50_mask` automatically when `task: segment`.
 8. **NaN recipe** (from [notes.txt](notes.txt), applied if a bf16 run still diverges to non-finite loss):
    - Lower both `backbone_lr` and `base_lr`

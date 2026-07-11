@@ -77,14 +77,29 @@ def log_metrics_locally(
     metrics_df = pd.DataFrame.from_dict(all_metrics, orient="index")
     metrics_df = metrics_df.round(4)
     if extended:
-        extended_metrics = pd.DataFrame.from_records(
-            metrics_df["extended_metrics"].tolist(), index=metrics_df.index
-        ).round(4)
+        # keep only rows that actually carry extended metrics (e.g. skip an empty test row)
+        ext_rows = metrics_df["extended_metrics"].dropna()
+        extended_metrics = pd.DataFrame.from_records(ext_rows.tolist(), index=ext_rows.index).round(
+            4
+        )
 
-    metrics_list = ["mAP_50", "f1", "precision", "recall", "iou", "mAP_50_95", "TPs", "FPs", "FNs"]
-    if "mAP_50_mask" in metrics_df.columns:
-        metrics_list.insert(1, "mAP_50_mask")
-        metrics_list.remove("mAP_50_95")
+    if "mIoU" in metrics_df.columns:  # sem_seg
+        metrics_list = ["mIoU", "pixel_acc"]
+    else:
+        metrics_list = [
+            "mAP_50",
+            "f1",
+            "precision",
+            "recall",
+            "iou",
+            "mAP_50_95",
+            "TPs",
+            "FPs",
+            "FNs",
+        ]
+        if "mAP_50_mask" in metrics_df.columns:
+            metrics_list.insert(1, "mAP_50_mask")
+            metrics_list.remove("mAP_50_95")
     metrics_df = metrics_df[metrics_list]
 
     tabulated_data = tabulate(metrics_df, headers="keys", tablefmt="pretty", showindex=True)
@@ -518,6 +533,70 @@ def draw_mask(
     return img
 
 
+def sem_seg_palette(n_classes: int) -> np.ndarray:
+    """[256, 3] BGR uint8 lookup table; ids >= n_classes (incl. ignore=255) stay black."""
+    palette = np.zeros((256, 3), dtype=np.uint8)
+    palette[:n_classes] = np.array(Visualizer.generate_colors(n_classes), dtype=np.uint8)
+    return palette
+
+
+def overlay_sem_seg(
+    img: np.ndarray,
+    label_map: np.ndarray,
+    palette: np.ndarray,
+    alpha: float = 0.5,
+    ignore_index: int = 255,
+) -> np.ndarray:
+    """Blend a colorized label map over a BGR image; ignore pixels stay unblended."""
+    if label_map.shape != img.shape[:2]:
+        label_map = cv2.resize(
+            label_map, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST
+        )
+    out = cv2.addWeighted(img, 1 - alpha, palette[label_map], alpha, 0)
+    keep = label_map == ignore_index
+    out[keep] = img[keep]
+    return out
+
+
+def visualize_sem_seg(
+    img_path,
+    gt_map: np.ndarray,
+    pred_map: np.ndarray,
+    dataset_path: Path,
+    path_to_save: Path,
+    n_classes: int,
+    ignore_index: int = 255,
+    max_side: int = 1280,
+) -> None:
+    """Save a GT | pred side-by-side overlay, downscaled to max_side."""
+    from src.dl.dataset import read_image_hwc  # local to avoid circular import
+
+    img = read_image_hwc(dataset_path / img_path)
+    if img is None:
+        return
+    if img.shape[2] > 3:
+        img = img[..., :3]
+    if Path(img_path).suffix.lower() == ".npy":
+        img = np.ascontiguousarray(img[..., ::-1])
+
+    scale = max_side / max(img.shape[:2])
+    if scale < 1:
+        new_wh = (round(img.shape[1] * scale), round(img.shape[0] * scale))
+        img = cv2.resize(img, new_wh, interpolation=cv2.INTER_AREA)
+
+    palette = sem_seg_palette(n_classes)
+    panes = []
+    for name, label_map in (("GT", gt_map), ("pred", pred_map)):
+        pane = overlay_sem_seg(img, label_map, palette, ignore_index=ignore_index)
+        cv2.putText(
+            pane, name, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2, cv2.LINE_AA
+        )
+        panes.append(pane)
+
+    path_to_save.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path_to_save / f"{Path(img_path).stem}.jpg"), cv2.hconcat(panes))
+
+
 def vis_one_box(img, box, label, mode, label_to_name, score=None):
     if mode == "gt":
         prefix = "GT: "
@@ -635,10 +714,10 @@ class Visualizer:
 
     def __init__(self, n_classes: int, class_names: Dict[int, str] = None):
         self.class_names = class_names or {i: str(i) for i in range(n_classes)}
-        self.colors = self._generate_colors(n_classes)
+        self.colors = self.generate_colors(n_classes)
 
     @staticmethod
-    def _generate_colors(n: int) -> List[tuple]:
+    def generate_colors(n: int) -> List[tuple]:
         """Evenly spaced hues on a violet→red arc -> BGR tuples. Class 0 = deep purple, last = red."""
         colors = []
         n = max(n, 1)
@@ -1398,12 +1477,16 @@ def auto_batch_size(
             img_size=cfg.train.img_size,
             in_channels=cfg.train.in_channels,
             pretrained_model_path=cfg.train.pretrained_model_path,
+            task=cfg.task,
         )
         loss_fn = build_loss(
             cfg.model_name,
             num_labels,
             label_smoothing=cfg.train.label_smoothing,
             enable_mask_head=enable_mask_head,
+            task=cfg.task,
+            ignore_index=int(cfg.train.sem_seg.ignore_index) if cfg.task == "sem_seg" else 255,
+            class_weights=cfg.train.sem_seg.class_weights if cfg.task == "sem_seg" else None,
         )
 
         # Build a small train loader (num_workers=0 to avoid forking overhead)
@@ -1418,12 +1501,14 @@ def auto_batch_size(
         train_ds = base_loader.build_dataloaders(distributed=False)[0].dataset
     finally:
         logger.enable("src")
+    from src.dl.dataset import sem_seg_collate_fn
+
     probe_loader = DataLoader(
         train_ds,
         batch_size=1,
         num_workers=0,
         shuffle=False,
-        collate_fn=base_loader.train_collate_fn,
+        collate_fn=sem_seg_collate_fn if cfg.task == "sem_seg" else base_loader.train_collate_fn,
         pin_memory=False,
     )
 
@@ -1433,6 +1518,9 @@ def auto_batch_size(
     for i, (img, targets, _) in enumerate(probe_loader):
         if img is None:
             continue
+        if cfg.task == "sem_seg":  # dense target: memory is object-count independent
+            sample_img, sample_targets = img, targets
+            break
         n_objects = sum(t["labels"].numel() for t in targets)
         if n_objects > max_objects:
             max_objects = n_objects

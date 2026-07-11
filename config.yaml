@@ -4,18 +4,19 @@ exp_name: test # experiment name
 exp: ${exp_name}_${now_dir}
 
 model_name: s # model size (n, s, m, l, x)
-task: detect
+task: detect # detect | segment (instance segmentation) | sem_seg (dense per-pixel classes)
 
 train:
   ### Paths ###
   root: /home/argo/Desktop/Projects/vis_drone # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
-  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt
+  # detect: dfine_${model_name}_${train.pretrained_dataset}.pt; sem_seg/segment: use dfine_seg_*
+  pretrained_model_path: pretrained/dfine_seg_${model_name}_coco.pt
 
   imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
   coco_dataset: False # set True when annotations are in COCO JSON format (train/val/test)
 
-  data_path: ${train.root}/data/dataset # path to dataset
+  data_path: ${train.root}/data/dataset # path to dataset (images/, labels/, train.csv, val.csv)
   path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script
   path_to_save: ${train.root}/output/models/${exp} # where to save output
 
@@ -41,12 +42,18 @@ train:
 
   use_one_class: False
 
+  # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id
+  sem_seg:
+    ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
+    class_weights: null # optional per-class CE weights for imbalance
+
   ### Distributed Training (DDP) ###
   ddp:
     enabled: False  # set to true to use multi-GPU
     n_gpus: 2  # how many GPUs / processes per node for torchrun
 
-  decision_metrics: # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask
+  # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask; sem_seg overrides to mIoU
+  decision_metrics:
   - f1
   - mAP_50 # will be swapped with mask version for task = segment
   - iou
@@ -66,7 +73,7 @@ train:
   epochs: 75
   max_walltime_min: null # research: stop training after N minutes (best epoch kept); null = no cap
   early_stopping: 0 # 0 - no early stopping
-  ignore_background_epochs: 0 # background images are not used for N epochs in train set
+  ignore_background_epochs: 0 # background images are not used for N epochs in train set. Ignored for sem_seg
   num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
   mask_batch_size: 150 # number of images to process at once when computing mask metrics
 
@@ -92,8 +99,10 @@ train:
   label_smoothing: 0.0
 
   ### Augs ###
-  mosaic_augs: # not recommended for segmentation
-    mosaic_prob: 0.8 # set to 0 to disable
+  mosaic_augs: # all tasks
+    # mosaic_prob: null = task default (0.8 det/segment, 0.5 sem_seg)
+    # set a number to override, 0 disables
+    mosaic_prob: null
     no_mosaic_epochs: 5
     mosaic_scale: [0.5, 1.5]
     degrees: 0.0 # not recommended if bbox precision is critical
@@ -103,7 +112,8 @@ train:
   augs:
     rotation_degree: 10 # maximum +- rotation
     rotation_p: 0.05 # probability of the rotation (with above degree)
-    multiscale_prob: 0.0
+    multiscale_prob: 0.0 # ignored for sem_seg (box-collate multiscale)
+    scale_jitter: null # only for sem_seg:, e.g. [0.75, 1.5]
     rotate_90: 0.05
     left_right_flip: 0.3
     up_down_flip: 0.0
@@ -160,10 +170,10 @@ bench:
   formats: # which backends to bench
     - torch
     - tensorrt
-    - onnx
-    - openvino
-    - coreml
-    - litert
+    # - onnx
+    # - openvino
+    # - coreml
+    # - litert
 
 
 infer:

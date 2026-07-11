@@ -79,10 +79,17 @@ class OV_model:
         logger.info(f"OpenVino running on {self.device}")
 
     def _read_model_metadata(self):
-        """Detect mask presence and num classes from the compiled model."""
-        self.has_masks = len(self.model.outputs) > 2  # logits, boxes, [masks]
-        # partial_shape: output batch dim is dynamic for max_batch_size > 1 exports
-        self.n_outputs = int(self.model.outputs[0].partial_shape[2].get_length())  # [B, Q, C]
+        """Detect graph type, mask presence and num classes from the compiled model."""
+        # single output = sem_seg fused-argmax graph; detection raw graphs have >= 2
+        self.sem_seg = len(self.model.outputs) == 1
+        self.has_masks = (not self.sem_seg) and len(
+            self.model.outputs
+        ) > 2  # logits, boxes, [masks]
+        if self.sem_seg:
+            self.n_outputs = 1  # classes are baked into the fused argmax
+        else:
+            # partial_shape: output batch dim is dynamic for max_batch_size > 1 exports
+            self.n_outputs = int(self.model.outputs[0].partial_shape[2].get_length())  # [B, Q, C]
 
     def _test_pred(self):
         random_image = np.random.randint(0, 255, size=(1000, 1110, self.channels), dtype=np.uint8)
@@ -208,6 +215,25 @@ class OV_model:
     def _predict(self, img: NDArray) -> List[NDArray]:
         return list(self.model(img).values())
 
+    def _postprocess_sem_seg(
+        self, outputs, processed_sizes, original_sizes
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Fused-argmax graph: NEAREST-resize each label map to its original size."""
+        maps = np.asarray(outputs[0])  # [B, H, W] int
+        results = []
+        for b in range(maps.shape[0]):
+            m = maps[b].astype(np.uint8)
+            H0, W0 = int(original_sizes[b][0]), int(original_sizes[b][1])
+            if self.keep_ratio:
+                proc_h, proc_w = int(processed_sizes[b][0]), int(processed_sizes[b][1])
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+                m = m[max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)]
+            m = cv2.resize(m, (W0, H0), interpolation=cv2.INTER_NEAREST)
+            results.append({"sem_seg": torch.from_numpy(m)})
+        return results
+
     def _postprocess(
         self,
         outputs: List[NDArray],
@@ -219,6 +245,8 @@ class OV_model:
         """
         returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
         """
+        if self.sem_seg:
+            return self._postprocess_sem_seg(outputs, processed_sizes, original_sizes)
         logits, boxes = torch.from_numpy(outputs[0]), torch.from_numpy(outputs[1])
         has_masks = False
         if len(outputs) == 3:
@@ -306,6 +334,7 @@ class OV_model:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            sem_seg models instead return {"sem_seg": uint8 (H, W) dense label map} per image.
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
