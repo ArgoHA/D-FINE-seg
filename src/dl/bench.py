@@ -99,7 +99,7 @@ def test_model_sem_seg(
             latency.append((time.perf_counter() - t0) * 1000)
 
             pred_map = preds[0]["sem_seg"].cpu()
-            mask_path = data_path / "masks" / f"{Path(img_path).stem}.png"
+            mask_path = data_path / "labels" / f"{Path(img_path).stem}.png"
             gt = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
             if gt is None:
                 raise FileNotFoundError(f"Can't read GT mask {mask_path}")

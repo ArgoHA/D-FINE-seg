@@ -493,13 +493,13 @@ class Trainer:
         """Streaming sem_seg eval: pixel confusion matrix at ORIGINAL resolution.
 
         Pred argmax is upsampled to the original size with NEAREST and compared
-        against the original-res GT PNG re-read from masks/ (the batch-level
+        against the original-res GT PNG re-read from labels/ (the batch-level
         resized GT is only used for the loss).
         """
         model = self.ema_model.model if self.ema_model else self.model
         model.eval()
         validator = SemSegValidator(self.num_labels, self.label_to_name, self.ignore_index)
-        masks_dir = Path(self.cfg.train.data_path) / "masks"
+        labels_dir = Path(self.cfg.train.data_path) / "labels"
         n_vis = 0
 
         eval_iter = val_loader
@@ -519,7 +519,7 @@ class Trainer:
                 preds = outputs["sem_seg_logits"].argmax(1)  # (B, h, w) at input res
 
                 for b, img_path in enumerate(img_paths):
-                    mask_path = masks_dir / f"{Path(img_path).stem}.png"
+                    mask_path = labels_dir / f"{Path(img_path).stem}.png"
                     gt = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
                     if gt is None:
                         raise FileNotFoundError(f"Can't read GT mask {mask_path}")

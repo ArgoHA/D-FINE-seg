@@ -88,7 +88,7 @@ Produces `train.csv`, `val.csv` (and `test.csv` if `split.val_split < 1 - split.
 ```
 <train.data_path>/
   images/   # .jpg/.png/.jpeg/.npy
-  masks/    # .png — same stem, single channel uint8, pixel value = class id
+  labels/   # .png — same stem, single channel uint8, pixel value = class id
 ```
 
 `train.sem_seg.ignore_index` (default 255) pixels are excluded from loss + mIoU and used as
@@ -190,7 +190,7 @@ Outputs land under `${train.infer_path}`:
 - `<stem>_tracked.mp4` — for videos, when `infer.to_track: True` (default): persistent IDs via ByteTrack ([src/infer/byte_track.py](src/infer/byte_track.py)). Defaults are baked into [src/dl/infer.py](src/dl/infer.py); override any of them via a top-level `track:` block (e.g. `track.track_buffer=60`). A fresh tracker is instantiated per video so IDs don't bleed across clips.
 - `labels.txt` — classes seen across the run
 
-For `task: sem_seg` the outputs are `images/` (palette overlays) + `masks/` (GT-style grayscale
+For `task: sem_seg` the outputs are `images/` (palette overlays) + `labels/` (GT-style grayscale
 PNG label maps, pixel value = class id) + `labels.txt`; crops/YOLO txt/tracking are box-based and
 skipped (videos get `<stem>_sem_seg.mp4` overlays instead). Wrapper output contract: instance
 masks live under `out["masks"]` `[N,H,W]`; sem_seg returns `out["sem_seg"]` — a uint8 `[H,W]`

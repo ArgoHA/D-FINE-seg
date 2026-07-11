@@ -690,7 +690,7 @@ class CustomDataset(Dataset):
 class SemSegDataset(Dataset):
     """Dense per-pixel labels for task=sem_seg.
 
-    Layout: images/<stem>.<ext> + masks/<stem>.png (single channel uint8,
+    Layout: images/<stem>.<ext> + labels/<stem>.png (single channel uint8,
     pixel value = class id; ignore_index excluded from loss and metrics).
     Masks always use NEAREST interpolation (LINEAR corrupts integer class ids)
     and every pad-introducing aug fills the mask with ignore_index.
@@ -835,7 +835,7 @@ class SemSegDataset(Dataset):
             return None
         if image is None:
             return None
-        mask_path = self.root_path / "masks" / f"{image_path.stem}.png"
+        mask_path = self.root_path / "labels" / f"{image_path.stem}.png"
         mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if mask is None:
             logger.warning(f"Skipping {full_path}: can't read mask")
@@ -953,7 +953,7 @@ class Loader:
         self.use_one_class = cfg.train.use_one_class
         self.coco_dataset = cfg.train.get("coco_dataset", False)
         if self.task == "sem_seg" and self.coco_dataset:
-            raise ValueError("task=sem_seg expects PNG masks (masks/), not COCO JSON")
+            raise ValueError("task=sem_seg expects PNG masks (labels/), not COCO JSON")
         self.debug_img_processing = debug_img_processing
         self.coco_annotations = {"train": None, "val": None, "test": None}
         self._get_splits()

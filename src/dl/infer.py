@@ -160,7 +160,7 @@ def run_images_sem_seg(torch_model, folder_path, output_path, label_to_name):
     """Overlay + raw label-map PNG per image; crops/YOLO txt are box-based -> skipped."""
     palette = sem_seg_palette(len(label_to_name))
     (output_path / "images").mkdir(parents=True, exist_ok=True)
-    (output_path / "masks").mkdir(parents=True, exist_ok=True)
+    (output_path / "labels").mkdir(parents=True, exist_ok=True)
     labels = set()
     img_paths = [img.name for img in folder_path.iterdir() if not img.name.startswith(".")]
     for img_path in tqdm(img_paths):
@@ -179,7 +179,7 @@ def run_images_sem_seg(torch_model, folder_path, output_path, label_to_name):
             overlay_sem_seg(vis_img, label_map, palette),
         )
         # GT-style output: grayscale PNG, pixel value = class id
-        cv2.imwrite(str(output_path / "masks" / f"{Path(img_path).stem}.png"), label_map)
+        cv2.imwrite(str(output_path / "labels" / f"{Path(img_path).stem}.png"), label_map)
         labels.update(np.unique(label_map).tolist())
 
     with open(output_path / "labels.txt", "w") as f:

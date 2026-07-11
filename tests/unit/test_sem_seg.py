@@ -187,10 +187,10 @@ def test_rotate_fills_mask_with_ignore(tmp_path):
 
 def _write_sample(tmp_path, mask, stem="x"):
     (tmp_path / "images").mkdir(exist_ok=True)
-    (tmp_path / "masks").mkdir(exist_ok=True)
+    (tmp_path / "labels").mkdir(exist_ok=True)
     img = np.random.randint(0, 255, (*mask.shape, 3), dtype=np.uint8)
     cv2.imwrite(str(tmp_path / "images" / f"{stem}.jpg"), img)
-    cv2.imwrite(str(tmp_path / "masks" / f"{stem}.png"), mask)
+    cv2.imwrite(str(tmp_path / "labels" / f"{stem}.png"), mask)
 
 
 def test_load_mosaic_target_size_and_ignore_fill(tmp_path):

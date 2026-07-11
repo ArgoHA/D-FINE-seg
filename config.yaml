@@ -16,7 +16,7 @@ train:
   imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
   coco_dataset: False # set True when annotations are in COCO JSON format (train/val/test)
 
-  data_path: ${train.root}/data # path to dataset (images/, masks/, train.csv, val.csv)
+  data_path: ${train.root}/data/dataset # path to dataset (images/, labels/, train.csv, val.csv)
   path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script
   path_to_save: ${train.root}/output/models/${exp} # where to save output
 
@@ -51,7 +51,7 @@ train:
 
   use_one_class: False
 
-  # sem_seg only: masks live in <data_path>/masks/<stem>.png, 1 channel, pixel value = class id
+  # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id
   sem_seg:
     ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
     class_weights: null # optional per-class CE weights for imbalance
