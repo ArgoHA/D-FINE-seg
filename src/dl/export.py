@@ -705,7 +705,10 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
         except Exception as e:
             logger.warning(f"Parity skipped for ONNX: {e}")
 
-    for tag, fn, is8 in [("OpenVINO", "model.xml", False), ("OpenVINO INT8", "model_int8.xml", True)]:
+    for tag, fn, is8 in [
+        ("OpenVINO", "model.xml", False),
+        ("OpenVINO INT8", "model_int8.xml", True),
+    ]:
         if want("openvino") and (models_path / fn).exists():
             try:
                 from src.infer.ov_model import OV_model
@@ -722,7 +725,10 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
             except Exception as e:
                 logger.warning(f"Parity skipped for {tag}: {e}")
 
-    for tag, fn, is8 in [("LiteRT", "model.tflite", False), ("LiteRT INT8", "model_int8.tflite", True)]:
+    for tag, fn, is8 in [
+        ("LiteRT", "model.tflite", False),
+        ("LiteRT INT8", "model_int8.tflite", True),
+    ]:
         if want("litert") and (models_path / fn).exists():
             try:
                 from src.infer.litert_model import LiteRT_model
@@ -739,7 +745,10 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
                 logger.warning(f"Parity skipped for {tag}: {e}")
 
     if platform.system() == "Darwin":
-        for tag, fn, is8 in [("CoreML", "model.mlpackage", False), ("CoreML INT8", "model_int8.mlpackage", True)]:
+        for tag, fn, is8 in [
+            ("CoreML", "model.mlpackage", False),
+            ("CoreML INT8", "model_int8.mlpackage", True),
+        ]:
             if want("coreml") and (models_path / fn).exists():
                 try:
                     from src.infer.coreml_model import CoreML_model
@@ -755,7 +764,10 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
                 except Exception as e:
                     logger.warning(f"Parity skipped for {tag}: {e}")
     else:
-        for tag, fn, is8 in [("TensorRT", "model.engine", False), ("TensorRT INT8", "model_int8.engine", True)]:
+        for tag, fn, is8 in [
+            ("TensorRT", "model.engine", False),
+            ("TensorRT INT8", "model_int8.engine", True),
+        ]:
             if want("tensorrt") and (models_path / fn).exists():
                 try:
                     from src.infer.trt_model import TRT_model

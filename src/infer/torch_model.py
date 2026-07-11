@@ -178,7 +178,9 @@ class Torch_model:
                 gain = min(proc_h / H0, proc_w / W0)
                 padw = round((proc_w - W0 * gain) / 2 - 0.1)
                 padh = round((proc_h - H0 * gain) / 2 - 0.1)
-                m = m[..., max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)]
+                m = m[
+                    ..., max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)
+                ]
             m = torch.nn.functional.interpolate(m, size=(H0, W0), mode="nearest")[0, 0]
             results.append({"sem_seg": m.to(torch.uint8)})
         return results

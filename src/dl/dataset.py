@@ -874,7 +874,10 @@ class SemSegDataset(Dataset):
             img4.shape[:2], (W, H), self.degrees, self.mosaic_scale, self.shear, self.translate
         )
         img4 = cv2.warpAffine(
-            img4, M[:2], dsize=(W, H), flags=cv2.INTER_LINEAR,
+            img4,
+            M[:2],
+            dsize=(W, H),
+            flags=cv2.INTER_LINEAR,
             borderValue=tuple([114] * self.in_channels),
         )
         mask4 = cv2.warpAffine(

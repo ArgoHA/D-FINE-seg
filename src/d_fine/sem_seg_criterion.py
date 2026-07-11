@@ -46,7 +46,9 @@ class SemSegCriterion(nn.Module):
             if "sem_seg_logits_aux" in outputs:
                 losses["loss_aux"] = outputs["sem_seg_logits_aux"].float().sum() * 0.0
         else:
-            weight = self.class_weights.to(logits.device) if self.class_weights is not None else None
+            weight = (
+                self.class_weights.to(logits.device) if self.class_weights is not None else None
+            )
             losses = {
                 "loss_ce": F.cross_entropy(
                     logits,

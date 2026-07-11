@@ -34,8 +34,9 @@ def test_decoder_shapes_and_aux():
 
 def test_decoder_nano_low_level():
     # nano: encoder feats at 1/16+1/32, backbone 1/8 passed as low_level_feat
-    dec = SemSegDecoder(num_classes=N_CLASSES, feat_channels=[128, 128], mask_dim=128,
-                        mask_low_level_ch=64)
+    dec = SemSegDecoder(
+        num_classes=N_CLASSES, feat_channels=[128, 128], mask_dim=128, mask_low_level_ch=64
+    )
     feats = [torch.randn(1, 128, 4, 4), torch.randn(1, 128, 2, 2)]
     low = torch.randn(1, 64, 8, 8)
     out = dec.eval()(feats, low_level_feat=low)
@@ -77,9 +78,7 @@ def test_criterion_all_ignore_is_zero():
     logits = torch.randn(2, N_CLASSES, 8, 8, requires_grad=True)
     aux = torch.randn(2, N_CLASSES, 8, 8, requires_grad=True)
     target = torch.full((8, 8), 255, dtype=torch.long)
-    losses = crit(
-        {"sem_seg_logits": logits, "sem_seg_logits_aux": aux}, [{"sem_mask": target}] * 2
-    )
+    losses = crit({"sem_seg_logits": logits, "sem_seg_logits_aux": aux}, [{"sem_mask": target}] * 2)
     total = sum(losses.values())
     assert total.item() == 0.0
     total.backward()  # graph stays intact for DDP/AMP
@@ -137,10 +136,18 @@ def _make_dataset(tmp_path, rotation_p=0.0):
                 "keep_ratio": False,
                 "debug_img_path": str(tmp_path / "debug"),
                 "label_to_name": {i: str(i) for i in range(N_CLASSES)},
-                "sem_seg": {"ignore_index": 255, "class_weights": None, "scale_jitter": None},
+                "sem_seg": {"ignore_index": 255, "class_weights": None},
+                "mosaic_augs": {
+                    "mosaic_prob": 0.0,
+                    "mosaic_scale": [0.5, 1.5],
+                    "degrees": 0.0,
+                    "translate": 0.2,
+                    "shear": 2.0,
+                },
                 "augs": {
                     "rotation_degree": 45,
                     "rotation_p": rotation_p,
+                    "scale_jitter": None,
                     "rotate_90": 0.0,
                     "left_right_flip": 0.0,
                     "up_down_flip": 0.0,

@@ -79,15 +79,23 @@ def log_metrics_locally(
     if extended:
         # keep only rows that actually carry extended metrics (e.g. skip an empty test row)
         ext_rows = metrics_df["extended_metrics"].dropna()
-        extended_metrics = pd.DataFrame.from_records(
-            ext_rows.tolist(), index=ext_rows.index
-        ).round(4)
+        extended_metrics = pd.DataFrame.from_records(ext_rows.tolist(), index=ext_rows.index).round(
+            4
+        )
 
     if "mIoU" in metrics_df.columns:  # sem_seg
         metrics_list = ["mIoU", "pixel_acc"]
     else:
         metrics_list = [
-            "mAP_50", "f1", "precision", "recall", "iou", "mAP_50_95", "TPs", "FPs", "FNs",
+            "mAP_50",
+            "f1",
+            "precision",
+            "recall",
+            "iou",
+            "mAP_50_95",
+            "TPs",
+            "FPs",
+            "FNs",
         ]
         if "mAP_50_mask" in metrics_df.columns:
             metrics_list.insert(1, "mAP_50_mask")
@@ -528,9 +536,7 @@ def draw_mask(
 def sem_seg_palette(n_classes: int) -> np.ndarray:
     """[256, 3] BGR uint8 lookup table; ids >= n_classes (incl. ignore=255) stay black."""
     palette = np.zeros((256, 3), dtype=np.uint8)
-    palette[:n_classes] = np.array(
-        Visualizer._generate_colors(n_classes), dtype=np.uint8
-    )
+    palette[:n_classes] = np.array(Visualizer._generate_colors(n_classes), dtype=np.uint8)
     return palette
 
 

@@ -128,9 +128,7 @@ class Trainer:
         self.task = cfg.task  # detect/segment/sem_seg
         self.mask_batch_size = cfg.train.mask_batch_size
         enable_mask_head = self.task == "segment"
-        self.ignore_index = (
-            int(cfg.train.sem_seg.ignore_index) if self.task == "sem_seg" else None
-        )
+        self.ignore_index = int(cfg.train.sem_seg.ignore_index) if self.task == "sem_seg" else None
 
         self.debug_img_path = Path(self.cfg.train.debug_img_path)
         self.eval_preds_path = Path(self.cfg.train.eval_preds_path)

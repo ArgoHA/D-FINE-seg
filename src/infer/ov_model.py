@@ -82,7 +82,9 @@ class OV_model:
         """Detect graph type, mask presence and num classes from the compiled model."""
         # single output = sem_seg fused-argmax graph; detection raw graphs have >= 2
         self.sem_seg = len(self.model.outputs) == 1
-        self.has_masks = (not self.sem_seg) and len(self.model.outputs) > 2  # logits, boxes, [masks]
+        self.has_masks = (not self.sem_seg) and len(
+            self.model.outputs
+        ) > 2  # logits, boxes, [masks]
         if self.sem_seg:
             self.n_outputs = 1  # classes are baked into the fused argmax
         else:

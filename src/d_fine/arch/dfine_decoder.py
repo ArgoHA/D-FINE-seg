@@ -900,9 +900,7 @@ class DFINETransformer(nn.Module):
                 )
                 in_channels = self.hidden_dim
 
-    def _get_encoder_input(
-        self, feats: List[torch.Tensor]
-    ) -> Tuple[torch.Tensor, List[List[int]]]:
+    def _get_encoder_input(self, feats: List[torch.Tensor]) -> Tuple[torch.Tensor, List[List[int]]]:
         # get projection features
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         if self.num_levels > len(proj_feats):
@@ -1057,7 +1055,9 @@ class DFINETransformer(nn.Module):
                 return True
         return False
 
-    def _mask_logits_from_h(self, h: torch.Tensor, mask_feat: torch.Tensor) -> torch.Tensor:  # h: [B,Q,C]
+    def _mask_logits_from_h(
+        self, h: torch.Tensor, mask_feat: torch.Tensor
+    ) -> torch.Tensor:  # h: [B,Q,C]
         mask_embed = self.mask_head(h)  # [B,Q,Cmask]
         # Scale by 1/sqrt(C) to normalize dot product (like attention scaling)
         # This prevents large logits from the sum of C multiplications
