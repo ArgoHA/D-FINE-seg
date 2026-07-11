@@ -5,10 +5,10 @@ import cv2
 import hydra
 import numpy as np
 import torch
+from loguru import logger
 from omegaconf import DictConfig
 from torchvision.ops import box_iou
 from tqdm import tqdm
-from loguru import logger
 
 from src.dl.dataset import Loader, parse_yolo_label_file, read_image_hwc
 from src.dl.utils import (
@@ -234,7 +234,9 @@ def check_results_sem_seg(
     cv2.addWeighted(red, 0.6, err_pane, 0.4, 0, err_pane)
 
     for name, pane in (("GT", gt_pane), ("pred", pred_pane), ("errors", err_pane)):
-        cv2.putText(pane, name, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            pane, name, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(
@@ -273,9 +275,7 @@ def run_sem_seg(model, train_loader, val_loader, cfg: DictConfig) -> None:
             preds = model(img, bgr=not is_npy)
             pred_map = preds[0]["sem_seg"].cpu().numpy()
 
-            if check_results_sem_seg(
-                img, gt, pred_map, img_path, split_dir, palette, ignore_index
-            ):
+            if check_results_sem_seg(img, gt, pred_map, img_path, split_dir, palette, ignore_index):
                 n_with_errors += 1
 
     logger.info(f"sem_seg check_errors: {n_with_errors} image(s) with pixel errors -> {output_dir}")
