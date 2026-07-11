@@ -52,7 +52,8 @@ train:
     enabled: False  # set to true to use multi-GPU
     n_gpus: 2  # how many GPUs / processes per node for torchrun
 
-  decision_metrics: # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask; sem_seg overrides to [mIoU] at runtime
+  # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask; sem_seg overrides to mIoU
+  decision_metrics:
   - f1
   - mAP_50 # will be swapped with mask version for task = segment
   - iou
@@ -72,7 +73,7 @@ train:
   epochs: 75
   max_walltime_min: null # research: stop training after N minutes (best epoch kept); null = no cap
   early_stopping: 0 # 0 - no early stopping
-  ignore_background_epochs: 0 # background images are not used for N epochs in train set
+  ignore_background_epochs: 0 # background images are not used for N epochs in train set. Ignored for sem_seg
   num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
   mask_batch_size: 150 # number of images to process at once when computing mask metrics
 
@@ -99,7 +100,9 @@ train:
 
   ### Augs ###
   mosaic_augs: # all tasks
-    mosaic_prob: 0.8 # set to 0 to disable. Recommended: 0.8 for det, 0.5 for sem_seg
+    # mosaic_prob: null = task default (0.8 det/segment, 0.5 sem_seg)
+    # set a number to override, 0 disables
+    mosaic_prob: null
     no_mosaic_epochs: 5
     mosaic_scale: [0.5, 1.5]
     degrees: 0.0 # not recommended if bbox precision is critical

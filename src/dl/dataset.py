@@ -193,6 +193,14 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
     return entries, cat_id_to_class_id
 
 
+def resolve_mosaic_prob(cfg) -> float:
+    """None -> task default (0.8 det/segment, 0.5 sem_seg); an explicit number wins for any task."""
+    p = cfg.train.mosaic_augs.mosaic_prob
+    if p is None:
+        return 0.5 if cfg.task == "sem_seg" else 0.8
+    return float(p)
+
+
 class CustomDataset(Dataset):
     def __init__(
         self,
@@ -227,7 +235,7 @@ class CustomDataset(Dataset):
         self.label_to_name = cfg.train.label_to_name
         self.return_masks = str(cfg.task).lower() == "segment"
 
-        self.mosaic_prob = cfg.train.mosaic_augs.mosaic_prob
+        self.mosaic_prob = resolve_mosaic_prob(cfg)
         self.mosaic_scale = cfg.train.mosaic_augs.mosaic_scale
         self.degrees = cfg.train.mosaic_augs.degrees
         self.translate = cfg.train.mosaic_augs.translate
@@ -723,7 +731,7 @@ class SemSegDataset(Dataset):
         self.shear = cfg.train.mosaic_augs.shear
         # shared-memory so close_mosaic() reaches persistent workers (mirrors CustomDataset)
         self._shared_flags = torch.zeros(1).share_memory_()
-        self.mosaic_prob = float(cfg.train.mosaic_augs.mosaic_prob) if mode == "train" else 0.0
+        self.mosaic_prob = resolve_mosaic_prob(cfg) if mode == "train" else 0.0
         self.ignore_background = False
         if cfg.train.keep_ratio:
             raise ValueError(
