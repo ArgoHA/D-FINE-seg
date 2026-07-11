@@ -519,12 +519,10 @@ class Trainer:
                 preds = outputs["sem_seg_logits"].argmax(1)  # (B, h, w) at input res
 
                 for b, img_path in enumerate(img_paths):
-                    gt = cv2.imread(
-                        str(masks_dir / f"{Path(img_path).stem}.png"), cv2.IMREAD_GRAYSCALE
-                    )
+                    mask_path = masks_dir / f"{Path(img_path).stem}.png"
+                    gt = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
                     if gt is None:
-                        logger.warning(f"No GT mask for {img_path}, skipping in eval")
-                        continue
+                        raise FileNotFoundError(f"Can't read GT mask {mask_path}")
                     gt_t = torch.from_numpy(gt).to(self.device)
                     pred_full = F.interpolate(
                         preds[b][None, None].float(), size=gt_t.shape, mode="nearest"

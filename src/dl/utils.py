@@ -536,7 +536,7 @@ def draw_mask(
 def sem_seg_palette(n_classes: int) -> np.ndarray:
     """[256, 3] BGR uint8 lookup table; ids >= n_classes (incl. ignore=255) stay black."""
     palette = np.zeros((256, 3), dtype=np.uint8)
-    palette[:n_classes] = np.array(Visualizer._generate_colors(n_classes), dtype=np.uint8)
+    palette[:n_classes] = np.array(Visualizer.generate_colors(n_classes), dtype=np.uint8)
     return palette
 
 
@@ -714,10 +714,10 @@ class Visualizer:
 
     def __init__(self, n_classes: int, class_names: Dict[int, str] = None):
         self.class_names = class_names or {i: str(i) for i in range(n_classes)}
-        self.colors = self._generate_colors(n_classes)
+        self.colors = self.generate_colors(n_classes)
 
     @staticmethod
-    def _generate_colors(n: int) -> List[tuple]:
+    def generate_colors(n: int) -> List[tuple]:
         """Evenly spaced hues on a violet→red arc -> BGR tuples. Class 0 = deep purple, last = red."""
         colors = []
         n = max(n, 1)

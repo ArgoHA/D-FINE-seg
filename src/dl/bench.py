@@ -99,9 +99,10 @@ def test_model_sem_seg(
             latency.append((time.perf_counter() - t0) * 1000)
 
             pred_map = preds[0]["sem_seg"].cpu()
-            gt = cv2.imread(
-                str(data_path / "masks" / f"{Path(img_path).stem}.png"), cv2.IMREAD_GRAYSCALE
-            )
+            mask_path = data_path / "masks" / f"{Path(img_path).stem}.png"
+            gt = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if gt is None:
+                raise FileNotFoundError(f"Can't read GT mask {mask_path}")
             validator.update(pred_map, torch.from_numpy(gt))
 
             if to_visualize and n_vis < max_vis:

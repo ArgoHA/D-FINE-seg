@@ -835,12 +835,18 @@ class SemSegDataset(Dataset):
             return None
         if image is None:
             return None
-        mask = cv2.imread(
-            str(self.root_path / "masks" / f"{image_path.stem}.png"), cv2.IMREAD_GRAYSCALE
-        )
+        mask_path = self.root_path / "masks" / f"{image_path.stem}.png"
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if mask is None:
             logger.warning(f"Skipping {full_path}: can't read mask")
             return None
+        invalid = (mask >= len(self.label_to_name)) & (mask != self.ignore_index)
+        if invalid.any():
+            raise ValueError(
+                f"{mask_path}: class id {int(mask[invalid][0])} >= num_classes="
+                f"{len(self.label_to_name)} (ignore_index={self.ignore_index}); "
+                "masks must use contiguous label_to_name ids"
+            )
         return image, mask
 
     def _load_mosaic(self, idx: int):

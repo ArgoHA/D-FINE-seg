@@ -681,7 +681,14 @@ class SemSegValidator:
     def update(self, pred: torch.Tensor, gt: torch.Tensor) -> None:
         """pred/gt: (H, W) integer tensors at the same (original) resolution."""
         valid = gt != self.ignore_index
-        idx = gt[valid].long() * self.num_classes + pred[valid].long()
+        gt_v = gt[valid].long()
+        if gt_v.numel() and int(gt_v.max()) >= self.num_classes:
+            raise ValueError(
+                f"GT mask contains class id {int(gt_v.max())} >= num_classes="
+                f"{self.num_classes} (ignore_index={self.ignore_index}); "
+                "masks must use contiguous label_to_name ids"
+            )
+        idx = gt_v * self.num_classes + pred[valid].long()
         cm = torch.bincount(idx, minlength=self.num_classes**2)
         self.cm += cm.reshape(self.num_classes, self.num_classes).cpu()
 
