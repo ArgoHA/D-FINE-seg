@@ -306,7 +306,7 @@ uv run python -m tests.generate_fixtures
 3. **Pretrained weights auto-download from HF on first use** for the standard `dfine_<size>_<dataset>.pt` filenames. Custom `train.pretrained_model_path` values (e.g. fine-tuning checkpoints) are not fetched — those must exist on disk.
 4. **COCO vs YOLO is mutually exclusive.** Flipping `train.coco_dataset` without having the matching files on disk will fail in the loader.
 5. **`label_to_name` must be 0-indexed and contiguous.**
-6. **`task: segment` disables mosaic-friendliness.** Mosaic augmentation is not recommended for segmentation — lower `mosaic_augs.mosaic_prob` toward 0 if masks look wrong.
+6. **`mosaic_augs.mosaic_prob: null` means task default** — 0.8 for detect/segment, 0.5 for sem_seg (measured sweet spot); an explicit number wins for any task. For instance `segment`, mosaic is not recommended — lower it toward 0 if masks look wrong.
 7. **Decision metrics swap for segment.** `mAP_50` becomes `mAP_50_mask` automatically when `task: segment`.
 8. **NaN recipe** (from [notes.txt](notes.txt), applied if a bf16 run still diverges to non-finite loss):
    - Lower both `backbone_lr` and `base_lr`
