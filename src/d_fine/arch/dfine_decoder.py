@@ -13,7 +13,7 @@ import copy
 import functools
 import math
 from collections import OrderedDict
-from typing import List
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -34,7 +34,14 @@ __all__ = ["DFINETransformer"]
 
 
 class MLP(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, act="relu"):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        num_layers: int,
+        act: str = "relu",
+    ) -> None:
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
@@ -43,7 +50,7 @@ class MLP(nn.Module):
         )
         self.act = get_activation(act)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         for i, layer in enumerate(self.layers):
             x = self.act(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
@@ -52,13 +59,13 @@ class MLP(nn.Module):
 class MSDeformableAttention(nn.Module):
     def __init__(
         self,
-        embed_dim=256,
-        num_heads=8,
-        num_levels=4,
-        num_points=4,
-        method="default",
-        offset_scale=0.5,
-    ):
+        embed_dim: int = 256,
+        num_heads: int = 8,
+        num_levels: int = 4,
+        num_points: Union[int, List[int]] = 4,
+        method: str = "default",
+        offset_scale: float = 0.5,
+    ) -> None:
         """Multi-Scale Deformable Attention"""
         super(MSDeformableAttention, self).__init__()
         self.embed_dim = embed_dim
@@ -100,7 +107,7 @@ class MSDeformableAttention(nn.Module):
             for p in self.sampling_offsets.parameters():
                 p.requires_grad = False
 
-    def _reset_parameters(self):
+    def _reset_parameters(self) -> None:
         # sampling_offsets
         init.constant_(self.sampling_offsets.weight, 0)
         thetas = torch.arange(self.num_heads, dtype=torch.float32) * (
@@ -124,8 +131,8 @@ class MSDeformableAttention(nn.Module):
         query: torch.Tensor,
         reference_points: torch.Tensor,
         value: torch.Tensor,
-        value_spatial_shapes: List[int],
-    ):
+        value_spatial_shapes: List[List[int]],
+    ) -> torch.Tensor:
         """
         Args:
             query (Tensor): [bs, query_length, C]
@@ -184,16 +191,16 @@ class MSDeformableAttention(nn.Module):
 class TransformerDecoderLayer(nn.Module):
     def __init__(
         self,
-        d_model=256,
-        n_head=8,
-        dim_feedforward=1024,
-        dropout=0.0,
-        activation="relu",
-        n_levels=4,
-        n_points=4,
-        cross_attn_method="default",
-        layer_scale=None,
-    ):
+        d_model: int = 256,
+        n_head: int = 8,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.0,
+        activation: str = "relu",
+        n_levels: int = 4,
+        n_points: int = 4,
+        cross_attn_method: str = "default",
+        layer_scale: Optional[float] = None,
+    ) -> None:
         super(TransformerDecoderLayer, self).__init__()
         if layer_scale is not None:
             dim_feedforward = round(layer_scale * dim_feedforward)
@@ -223,19 +230,25 @@ class TransformerDecoderLayer(nn.Module):
 
         self._reset_parameters()
 
-    def _reset_parameters(self):
+    def _reset_parameters(self) -> None:
         init.xavier_uniform_(self.linear1.weight)
         init.xavier_uniform_(self.linear2.weight)
 
-    def with_pos_embed(self, tensor, pos):
+    def with_pos_embed(self, tensor: torch.Tensor, pos: Optional[torch.Tensor]) -> torch.Tensor:
         return tensor if pos is None else tensor + pos
 
-    def forward_ffn(self, tgt):
+    def forward_ffn(self, tgt: torch.Tensor) -> torch.Tensor:
         return self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
 
     def forward(
-        self, target, reference_points, value, spatial_shapes, attn_mask=None, query_pos_embed=None
-    ):
+        self,
+        target: torch.Tensor,
+        reference_points: torch.Tensor,
+        value: torch.Tensor,
+        spatial_shapes: List[List[int]],
+        attn_mask: Optional[torch.Tensor] = None,
+        query_pos_embed: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         # self attention
         q = k = self.with_pos_embed(target, query_pos_embed)
 
@@ -259,7 +272,7 @@ class TransformerDecoderLayer(nn.Module):
 
 
 class Gate(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_model: int) -> None:
         super(Gate, self).__init__()
         self.gate = nn.Linear(2 * d_model, 2 * d_model)
         bias = bias_init_with_prob(0.5)
@@ -267,7 +280,7 @@ class Gate(nn.Module):
         init.constant_(self.gate.weight, 0)
         self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, x1, x2):
+    def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         gate_input = torch.cat([x1, x2], dim=-1)
         gates = torch.sigmoid(self.gate(gate_input))
         gate1, gate2 = gates.chunk(2, dim=-1)
@@ -287,11 +300,11 @@ class Integral(nn.Module):
                        It can be adjusted based on the dataset or task requirements.
     """
 
-    def __init__(self, reg_max=32):
+    def __init__(self, reg_max: int = 32) -> None:
         super(Integral, self).__init__()
         self.reg_max = reg_max
 
-    def forward(self, x, project):
+    def forward(self, x: torch.Tensor, project: torch.Tensor) -> torch.Tensor:
         shape = x.shape
         x = F.softmax(x.reshape(-1, self.reg_max + 1), dim=1)
         x = (x @ project.to(x.device).unsqueeze(-1)).reshape(-1, 4)
@@ -299,7 +312,7 @@ class Integral(nn.Module):
 
 
 class LQE(nn.Module):
-    def __init__(self, k, hidden_dim, num_layers, reg_max):
+    def __init__(self, k: int, hidden_dim: int, num_layers: int, reg_max: int) -> None:
         super(LQE, self).__init__()
         self.k = k
         self.reg_max = reg_max
@@ -308,10 +321,10 @@ class LQE(nn.Module):
         init.constant_(self.reg_conf.layers[-1].weight, 0)
         self.deploy = False
 
-    def convert_to_deploy(self):
+    def convert_to_deploy(self) -> None:
         self.deploy = True
 
-    def _topk_no_sort(self, x, k):
+    def _topk_no_sort(self, x: torch.Tensor, k: int) -> torch.Tensor:
         """TFLite-compatible top-k using iterative argmax (avoids vhlo.sort_v1)."""
         top_vals = []
         for _ in range(k):
@@ -321,7 +334,7 @@ class LQE(nn.Module):
             x = x.scatter(-1, idx, torch.zeros_like(val))
         return torch.cat(top_vals, dim=-1)
 
-    def forward(self, scores, pred_corners):
+    def forward(self, scores: torch.Tensor, pred_corners: torch.Tensor) -> torch.Tensor:
         B, L, _ = pred_corners.size()
         prob = F.softmax(pred_corners.reshape(B, L, 4, self.reg_max + 1), dim=-1)
         if self.deploy:
@@ -349,7 +362,7 @@ class MaskDecoder(nn.Module):
         Fused mask features at 1/4 resolution. Shape: (B, out_ch, H/4, W/4)
     """
 
-    def __init__(self, in_chs, out_ch=256):
+    def __init__(self, in_chs: List[int], out_ch: int = 256) -> None:
         super().__init__()
         n_groups = 32
         # 1x1 proj for each backbone level
@@ -367,10 +380,10 @@ class MaskDecoder(nn.Module):
 
         self._reset_parameters()
 
-    def _reset_parameters(self):
+    def _reset_parameters(self) -> None:
         init.kaiming_normal_(self.up_conv.weight, mode="fan_out", nonlinearity="relu")
 
-    def forward(self, feats):
+    def forward(self, feats: List[torch.Tensor]) -> torch.Tensor:
         # feats: PAN features [F_s8, F_s16, F_s32] from HybridEncoder's outs
         # Take the biggest resolution feature as the base
         f0 = self.bn[0](self.lateral[0](feats[0]))  # (B, out_ch, H/8, W/8)
@@ -390,6 +403,71 @@ class MaskDecoder(nn.Module):
         return x  # (B, out_ch, H/4, W/4)
 
 
+def conv_gn_act(in_ch: int, out_ch: int) -> nn.Sequential:
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
+        nn.GroupNorm(32, out_ch),
+        nn.ReLU(inplace=True),
+    )
+
+
+class SemSegDecoder(nn.Module):
+    """Dense per-pixel head for task=sem_seg: MaskDecoder fuser -> seg neck -> classifier.
+
+    Plugs into the DFINE "decoder" slot, bypassing the whole query/matcher path.
+    Attr name "mask_decoder" keeps keys aligned with dfine_seg_<size>_coco.pt so the
+    pretrained fuser weights transfer (neck/classifier/aux train from scratch).
+    Logits are produced at 1/4 scale and bilinearly upsampled x4 to input resolution.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        feat_channels: List[int],
+        mask_dim: int = 256,
+        mask_low_level_ch: Optional[int] = None,
+        neck_dim: int = 128,
+        dropout: float = 0.1,
+        aux: bool = True,
+    ) -> None:
+        super().__init__()
+        in_chs = list(feat_channels)
+        if mask_low_level_ch is not None:  # nano: prepend backbone 1/8 feat
+            in_chs = [mask_low_level_ch] + in_chs
+        self.mask_decoder = MaskDecoder(in_chs=in_chs, out_ch=mask_dim)
+        self.neck = nn.Sequential(conv_gn_act(mask_dim, neck_dim), conv_gn_act(neck_dim, neck_dim))
+        self.dropout = nn.Dropout2d(dropout)
+        self.classifier = nn.Conv2d(neck_dim, num_classes, 1)
+        # train-only deep supervision on the finest PAN feature (stride 8; 16 for nano)
+        self.aux_head = (
+            nn.Sequential(
+                conv_gn_act(feat_channels[0], neck_dim),
+                nn.Dropout2d(dropout),
+                nn.Conv2d(neck_dim, num_classes, 1),
+            )
+            if aux
+            else None
+        )
+
+    def forward(
+        self,
+        feats: List[torch.Tensor],
+        targets: Optional[List[Dict[str, torch.Tensor]]] = None,
+        low_level_feat: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
+        x = self.mask_decoder(mask_feats)  # (B, mask_dim, H/4, W/4)
+        logits = self.classifier(self.dropout(self.neck(x)))  # (B, C, H/4, W/4)
+        logits = F.interpolate(logits, scale_factor=4.0, mode="bilinear", align_corners=False)
+        out = {"sem_seg_logits": logits}  # (B, C, H, W)
+        if self.training and self.aux_head is not None:
+            aux = self.aux_head(feats[0])
+            out["sem_seg_logits_aux"] = F.interpolate(
+                aux, size=logits.shape[-2:], mode="bilinear", align_corners=False
+            )
+        return out
+
+
 class TransformerDecoder(nn.Module):
     """
     Transformer Decoder implementing Fine-grained Distribution Refinement (FDR).
@@ -401,17 +479,17 @@ class TransformerDecoder(nn.Module):
 
     def __init__(
         self,
-        hidden_dim,
-        decoder_layer,
-        decoder_layer_wide,
-        num_layers,
-        num_head,
-        reg_max,
-        reg_scale,
-        up,
-        eval_idx=-1,
-        layer_scale=2,
-    ):
+        hidden_dim: int,
+        decoder_layer: TransformerDecoderLayer,
+        decoder_layer_wide: TransformerDecoderLayer,
+        num_layers: int,
+        num_head: int,
+        reg_max: int,
+        reg_scale: torch.Tensor,
+        up: torch.Tensor,
+        eval_idx: int = -1,
+        layer_scale: int = 2,
+    ) -> None:
         super(TransformerDecoder, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
@@ -427,7 +505,14 @@ class TransformerDecoder(nn.Module):
             [copy.deepcopy(LQE(4, 64, 2, reg_max)) for _ in range(num_layers)]
         )
 
-    def value_op(self, memory, value_proj, value_scale, memory_mask, memory_spatial_shapes):
+    def value_op(
+        self,
+        memory: torch.Tensor,
+        value_proj: Optional[nn.Module],
+        value_scale: Optional[int],
+        memory_mask: Optional[torch.Tensor],
+        memory_spatial_shapes: List[List[int]],
+    ) -> Tuple[torch.Tensor, ...]:
         """
         Preprocess values for MSDeformableAttention.
         """
@@ -439,7 +524,7 @@ class TransformerDecoder(nn.Module):
         split_shape = [h * w for h, w in memory_spatial_shapes]
         return value.permute(0, 2, 3, 1).split(split_shape, dim=-1)
 
-    def convert_to_deploy(self):
+    def convert_to_deploy(self) -> None:
         self.project = weighting_function(self.reg_max, self.up, self.reg_scale, deploy=True)
         self.layers = self.layers[: self.eval_idx + 1]
         self.lqe_layers = nn.ModuleList(
@@ -448,21 +533,29 @@ class TransformerDecoder(nn.Module):
 
     def forward(
         self,
-        target,
-        ref_points_unact,
-        memory,
-        spatial_shapes,
-        bbox_head,
-        score_head,
-        query_pos_head,
-        pre_bbox_head,
-        integral,
-        up,
-        reg_scale,
-        attn_mask=None,
-        memory_mask=None,
+        target: torch.Tensor,
+        ref_points_unact: torch.Tensor,
+        memory: torch.Tensor,
+        spatial_shapes: List[List[int]],
+        bbox_head: nn.ModuleList,
+        score_head: nn.ModuleList,
+        query_pos_head: nn.Module,
+        pre_bbox_head: nn.Module,
+        integral: Integral,
+        up: torch.Tensor,
+        reg_scale: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
         return_queries: bool = False,
-    ):
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        Optional[torch.Tensor],
+    ]:
         output = target
         output_detach = pred_corners_undetach = 0
         value = self.value_op(memory, None, None, memory_mask, spatial_shapes)
@@ -552,35 +645,35 @@ class DFINETransformer(nn.Module):
 
     def __init__(
         self,
-        num_classes=80,
-        hidden_dim=256,
-        num_queries=300,
-        feat_channels=[512, 1024, 2048],
-        feat_strides=[8, 16, 32],
-        num_levels=3,
-        num_points=4,
-        nhead=8,
-        num_layers=6,
-        dim_feedforward=1024,
-        dropout=0.0,
-        activation="relu",
-        num_denoising=100,
-        label_noise_ratio=0.5,
-        box_noise_scale=1.0,
-        learn_query_content=False,
-        eval_spatial_size=None,
-        eval_idx=-1,
-        eps=1e-2,
-        aux_loss=True,
-        cross_attn_method="default",
-        query_select_method="default",
-        reg_max=32,
-        reg_scale=4.0,
-        layer_scale=1,
-        enable_mask_head=False,
-        mask_dim=256,
-        mask_low_level_ch=None,
-    ):
+        num_classes: int = 80,
+        hidden_dim: int = 256,
+        num_queries: int = 300,
+        feat_channels: List[int] = [512, 1024, 2048],
+        feat_strides: List[int] = [8, 16, 32],
+        num_levels: int = 3,
+        num_points: int = 4,
+        nhead: int = 8,
+        num_layers: int = 6,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.0,
+        activation: str = "relu",
+        num_denoising: int = 100,
+        label_noise_ratio: float = 0.5,
+        box_noise_scale: float = 1.0,
+        learn_query_content: bool = False,
+        eval_spatial_size: Optional[List[int]] = None,
+        eval_idx: int = -1,
+        eps: float = 1e-2,
+        aux_loss: bool = True,
+        cross_attn_method: str = "default",
+        query_select_method: str = "default",
+        reg_max: int = 32,
+        reg_scale: float = 4.0,
+        layer_scale: int = 1,
+        enable_mask_head: bool = False,
+        mask_dim: int = 256,
+        mask_low_level_ch: Optional[int] = None,
+    ) -> None:
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)
@@ -724,7 +817,7 @@ class DFINETransformer(nn.Module):
 
         self._reset_parameters(feat_channels)
 
-    def convert_to_deploy(self):
+    def convert_to_deploy(self) -> None:
         self.dec_score_head = nn.ModuleList(
             [nn.Identity()] * (self.eval_idx) + [self.dec_score_head[self.eval_idx]]
         )
@@ -738,7 +831,7 @@ class DFINETransformer(nn.Module):
         self.reg_scale = nn.Parameter(self.reg_scale.abs(), requires_grad=False)
         self.up = nn.Parameter(self.up.abs(), requires_grad=False)
 
-    def _reset_parameters(self, feat_channels):
+    def _reset_parameters(self, feat_channels: List[int]) -> None:
         bias = bias_init_with_prob(0.01)
         init.constant_(self.enc_score_head.bias, bias)
         init.constant_(self.enc_bbox_head.layers[-1].weight, 0)
@@ -762,7 +855,7 @@ class DFINETransformer(nn.Module):
             if in_channels != self.hidden_dim:
                 init.xavier_uniform_(m[0].weight)
 
-    def _build_input_proj_layer(self, feat_channels):
+    def _build_input_proj_layer(self, feat_channels: List[int]) -> None:
         self.input_proj = nn.ModuleList()
         for in_channels in feat_channels:
             if in_channels == self.hidden_dim:
@@ -807,7 +900,7 @@ class DFINETransformer(nn.Module):
                 )
                 in_channels = self.hidden_dim
 
-    def _get_encoder_input(self, feats: List[torch.Tensor]):
+    def _get_encoder_input(self, feats: List[torch.Tensor]) -> Tuple[torch.Tensor, List[List[int]]]:
         # get projection features
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         if self.num_levels > len(proj_feats):
@@ -833,8 +926,12 @@ class DFINETransformer(nn.Module):
         return feat_flatten, spatial_shapes
 
     def _generate_anchors(
-        self, spatial_shapes=None, grid_size=0.05, dtype=torch.float32, device="cpu"
-    ):
+        self,
+        spatial_shapes: Optional[List[List[int]]] = None,
+        grid_size: float = 0.05,
+        dtype: torch.dtype = torch.float32,
+        device: Union[str, torch.device] = "cpu",
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         if spatial_shapes is None:
             spatial_shapes = []
             eval_h, eval_w = self.eval_spatial_size
@@ -858,8 +955,12 @@ class DFINETransformer(nn.Module):
         return anchors, valid_mask
 
     def _get_decoder_input(
-        self, memory: torch.Tensor, spatial_shapes, denoising_logits=None, denoising_bbox_unact=None
-    ):
+        self,
+        memory: torch.Tensor,
+        spatial_shapes: List[List[int]],
+        denoising_logits: Optional[torch.Tensor] = None,
+        denoising_bbox_unact: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
         # prepare input for decoder
         if self.training or self.eval_spatial_size is None:
             anchors, valid_mask = self._generate_anchors(spatial_shapes, device=memory.device)
@@ -910,7 +1011,7 @@ class DFINETransformer(nn.Module):
         outputs_logits: torch.Tensor,
         outputs_anchors_unact: torch.Tensor,
         topk: int,
-    ):
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         if self.query_select_method == "default":
             _, topk_ind = torch.topk(outputs_logits.max(-1).values, topk, dim=-1)
 
@@ -941,7 +1042,7 @@ class DFINETransformer(nn.Module):
 
         return topk_memory, topk_logits, topk_anchors
 
-    def _should_do_masks(self, targets):
+    def _should_do_masks(self, targets: Optional[List[Dict[str, torch.Tensor]]]) -> bool:
         if not self.enable_mask_head:
             return False
         if targets is None:
@@ -954,7 +1055,9 @@ class DFINETransformer(nn.Module):
                 return True
         return False
 
-    def _mask_logits_from_h(self, h, mask_feat):  # h: [B,Q,C]
+    def _mask_logits_from_h(
+        self, h: torch.Tensor, mask_feat: torch.Tensor
+    ) -> torch.Tensor:  # h: [B,Q,C]
         mask_embed = self.mask_head(h)  # [B,Q,Cmask]
         # Scale by 1/sqrt(C) to normalize dot product (like attention scaling)
         # This prevents large logits from the sum of C multiplications
@@ -963,7 +1066,12 @@ class DFINETransformer(nn.Module):
         # einsum: (B,Q,C) x (B,C,H,W) -> (B,Q,H,W)
         return torch.einsum("bqc,bchw->bqhw", mask_embed, mask_feat)
 
-    def forward(self, feats, targets=None, low_level_feat=None):
+    def forward(
+        self,
+        feats: List[torch.Tensor],
+        targets: Optional[List[Dict[str, torch.Tensor]]] = None,
+        low_level_feat: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
         enable_mask_head = self._should_do_masks(targets)
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
@@ -1090,7 +1198,9 @@ class DFINETransformer(nn.Module):
         return out
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord):
+    def _set_aux_loss(
+        self, outputs_class: List[torch.Tensor], outputs_coord: List[torch.Tensor]
+    ) -> List[Dict[str, torch.Tensor]]:
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
@@ -1099,14 +1209,14 @@ class DFINETransformer(nn.Module):
     @torch.jit.unused
     def _set_aux_loss2(
         self,
-        outputs_class,
-        outputs_coord,
-        outputs_corners,
-        outputs_ref,
-        teacher_corners=None,
-        teacher_logits=None,
-        aux_masks=None,
-    ):
+        outputs_class: torch.Tensor,
+        outputs_coord: torch.Tensor,
+        outputs_corners: torch.Tensor,
+        outputs_ref: torch.Tensor,
+        teacher_corners: Optional[torch.Tensor] = None,
+        teacher_logits: Optional[torch.Tensor] = None,
+        aux_masks: Optional[List[torch.Tensor]] = None,
+    ) -> List[Dict[str, torch.Tensor]]:
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.

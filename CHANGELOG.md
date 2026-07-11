@@ -62,3 +62,18 @@ Minor improvement - now pretrained weigts automatically download from HuggingFac
 - New `src/d_fine/muon.py` (`MuonWithAuxAdam`): Muon (Jordan et al., 2024) routes the encoder/decoder attention/MLP weight matrices to Newton-Schulz-orthogonalized momentum, while backbone, norms, biases, embeddings, and det/mask heads stay on an AdamW aux path inside one optimizer. **On by default** (`train.use_muon: True`).
 - Adan (Xie et al., arXiv:2208.06677) is selectable for the aux groups via `train.aux_optimizer: adamw|adan`, with `train.adan_lr_mult` and `train.adan_betas` knobs.
 - Muon + Adan is the new best recipe on the VisDrone screen: +0.0078 mAP_50_95 over the AdamW-X reference, latency-neutral.
+
+## 2026-07-11 - Semantic segmentation task
+
+- New third task `task: sem_seg` — dense per-pixel classification, full pipeline (train / infer / export / bench).
+- Head: `SemSegDecoder` reuses the pretrained `MaskDecoder` fuser from `dfine_seg_<size>_coco.pt` (backbone + encoder + fuser transfer; only the small neck/classifier train from scratch) + a train-only aux head for deep supervision. No queries, no NMS. Loss: CE + multi-class Dice + 0.4 aux-CE.
+- Data: `labels/<stem>.png` (single-channel uint8, pixel value = class id); `train.sem_seg.ignore_index` (default 255) excluded from loss/metrics and used as mask fill for pad-introducing augs.
+- Eval: decision metric mIoU from a pixel confusion matrix at original image resolution (same protocol in training eval and bench); new metrics — mIoU (macro) + pixel_acc (micro).
+- Export: one fused-argmax graph for every backend — single int32 `sem_seg` `[B, H, W]` output; parity check compares per-pixel argmax agreement. Wrappers return `out["sem_seg"]` `[H, W]` label map at original resolution.
+
+#### Results (Cityscapes Dataset, S @ 640, RTX 5070 Ti)
+
+| Backend | mIoU | Latency |
+|--------|------|---------|
+| PyTorch fp32 | 0.728 | 9.8 ms |
+| TensorRT fp16 | 0.728 | 2.0 ms |
