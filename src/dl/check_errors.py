@@ -8,12 +8,15 @@ import torch
 from omegaconf import DictConfig
 from torchvision.ops import box_iou
 from tqdm import tqdm
+from loguru import logger
 
-from src.dl.dataset import Loader, parse_yolo_label_file
+from src.dl.dataset import Loader, parse_yolo_label_file, read_image_hwc
 from src.dl.utils import (
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
     norm_xywh_to_abs_xyxy,
+    overlay_sem_seg,
+    sem_seg_palette,
     vis_one_box,
 )
 from src.infer.torch_model import Torch_model
@@ -185,6 +188,99 @@ def check_results(
         )
 
 
+def check_results_sem_seg(
+    img,
+    gt_map,
+    pred_map,
+    img_path,
+    output_dir: Path,
+    palette: np.ndarray,
+    ignore_index: int,
+    max_side: int = 1024,
+) -> bool:
+    """Save GT | pred | error panes for images with misclassified pixels.
+
+    Error = pixels where gt != ignore_index and pred != gt. Returns True when a
+    file was written (i.e. any such pixel exists).
+    """
+    if pred_map.shape != gt_map.shape:
+        pred_map = cv2.resize(
+            pred_map, (gt_map.shape[1], gt_map.shape[0]), interpolation=cv2.INTER_NEAREST
+        )
+
+    bgr = img
+    if bgr.ndim == 3 and bgr.shape[2] > 3:
+        bgr = bgr[..., :3]
+    if Path(img_path).suffix.lower() == ".npy" and bgr.ndim == 3:
+        bgr = np.ascontiguousarray(bgr[..., ::-1])  # RGB -> BGR
+
+    scale = max_side / max(bgr.shape[:2])
+    if scale < 1:
+        new_wh = (round(bgr.shape[1] * scale), round(bgr.shape[0] * scale))
+        bgr = cv2.resize(bgr, new_wh, interpolation=cv2.INTER_AREA)
+        gt_map = cv2.resize(gt_map, new_wh, interpolation=cv2.INTER_NEAREST)
+        pred_map = cv2.resize(pred_map, new_wh, interpolation=cv2.INTER_NEAREST)
+
+    wrong = (gt_map != ignore_index) & (pred_map != gt_map)
+    if not wrong.any():
+        return False
+
+    gt_pane = overlay_sem_seg(bgr, gt_map, palette, ignore_index=ignore_index)
+    pred_pane = overlay_sem_seg(bgr, pred_map, palette, ignore_index=ignore_index)
+
+    err_pane = bgr.copy()
+    red = err_pane.copy()
+    red[wrong] = (0, 0, 255)
+    cv2.addWeighted(red, 0.6, err_pane, 0.4, 0, err_pane)
+
+    for name, pane in (("GT", gt_pane), ("pred", pred_pane), ("errors", err_pane)):
+        cv2.putText(pane, name, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(
+        str(output_dir / f"{Path(img_path).stem}.jpg"),
+        cv2.hconcat([gt_pane, pred_pane, err_pane]),
+    )
+    return True
+
+
+def run_sem_seg(model, train_loader, val_loader, cfg: DictConfig) -> None:
+    output_dir = Path(cfg.train.infer_path).parent / "check_errors"
+    if output_dir.exists():
+        rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    data_path = Path(cfg.train.data_path)
+    ignore_index = int(cfg.train.sem_seg.ignore_index)
+    palette = sem_seg_palette(len(cfg.train.label_to_name))
+    n_with_errors = 0
+
+    for loader in [train_loader, val_loader]:
+        split_name = loader.dataset.mode
+        split_dir = output_dir / split_name
+
+        for batch in tqdm(loader, desc=f"Processing {split_name}"):
+            _, _, paths = batch
+            img_path = Path(paths[0])
+            img = read_image_hwc(data_path / "images" / img_path)
+            is_npy = img_path.suffix.lower() == ".npy"
+
+            mask_path = data_path / "labels" / f"{img_path.stem}.png"
+            gt = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if gt is None:
+                raise FileNotFoundError(f"Can't read GT mask {mask_path}")
+
+            preds = model(img, bgr=not is_npy)
+            pred_map = preds[0]["sem_seg"].cpu().numpy()
+
+            if check_results_sem_seg(
+                img, gt, pred_map, img_path, split_dir, palette, ignore_index
+            ):
+                n_with_errors += 1
+
+    logger.info(f"sem_seg check_errors: {n_with_errors} image(s) with pixel errors -> {output_dir}")
+
+
 def run(model, train_loader, val_loader, cfg: DictConfig) -> None:
     output_dir = Path(cfg.train.infer_path).parent / "check_errors"
     if output_dir.exists():
@@ -236,6 +332,7 @@ def run(model, train_loader, val_loader, cfg: DictConfig) -> None:
 def main(cfg: DictConfig) -> None:
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
+    task = str(cfg.task).lower()
     model = Torch_model(
         model_name=cfg.model_name,
         model_path=Path(cfg.train.path_to_save) / "model.pt",
@@ -245,7 +342,9 @@ def main(cfg: DictConfig) -> None:
         conf_thresh=cfg.train.conf_thresh,
         rect=cfg.export.dynamic_input,
         keep_ratio=cfg.train.keep_ratio,
-        use_nms=True,  # to remove duplocated boxes on 1 GT object and not show them as FPs
+        apply_nms=True,  # to remove duplocated boxes on 1 GT object and not show them as FPs
+        channels=cfg.train.in_channels,
+        task=task,
     )
     base_loader = Loader(
         root_path=Path(cfg.train.data_path),
@@ -257,7 +356,10 @@ def main(cfg: DictConfig) -> None:
     )
     train_loader, val_loader, _ = base_loader.build_dataloaders()
 
-    run(model, train_loader, val_loader, cfg)
+    if task == "sem_seg":
+        run_sem_seg(model, train_loader, val_loader, cfg)
+    else:
+        run(model, train_loader, val_loader, cfg)
 
 
 if __name__ == "__main__":
