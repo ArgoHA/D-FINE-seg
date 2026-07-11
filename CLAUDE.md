@@ -236,6 +236,15 @@ For `task: sem_seg` every backend gets the **same fused-argmax graph**: single i
 `sem_seg` `[B,H,W]` (label map at input resolution; no detection postprocessor, no NMS). The
 `/infer` wrappers auto-detect it (single-output graph) and NEAREST-resize to original size.
 
+Postprocess pipeline (deliberate):
+1. Model produces logits at H/4, W/4 (MaskDecoder output).
+2. Bilinearly upsamples logits x4 to input resolution (640×640) — fused in the export graph.
+3. Argmax → label map at input resolution (fused → int32 output).
+4. `/infer` wrappers NEAREST-resize the label map to the original image size.
+
+Bilinear-upsampling the logits to original size *before* argmax (steps 3-4 swapped) gives smoother
+edges (+0.004 mIoU on Cityscapes) but ~+20% TRT latency (2.65→3.19 ms, m@640) — not worth it.
+
 **Parity self-check** (`export.parity: True`, default on): after exporting, each backend runs on
 the same input as torch and one cosine per backend — over the sorted top-K detection scores — is
 printed and written to `parity.csv`. Scores are the reorder-stable, end-to-end signal; per-query
