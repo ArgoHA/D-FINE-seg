@@ -24,13 +24,18 @@
 
 ---
 
-**D-FINE-seg** extends the [D-FINE](https://arxiv.org/abs/2410.13842) real-time transformer based object detector with instance segmentation. It adds a lightweight mask head, segmentation-aware training (box-cropped BCE and dice mask losses, auxiliary and denoising mask supervision), and mask-aware Hungarian matching. On the TACO and VisDrone datasets, D-FINE-seg improves F1-score over Ultralytics YOLO26 under a unified TensorRT FP16 end-to-end benchmarking protocol, while maintaining competitive latency.
+D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, and **semantic segmentation** - one codebase, one config flag (`task: detect | segment | sem_seg`), five model sizes (N -> X).
 
-The framework covers the full workflow — from data preparation and training (with DDP, EMA, AMP, mosaic) through export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) to optimized multi-backend inference — for **object detection**, **instance segmentation**, and **semantic segmentation** tasks, switched by a single `task` config flag.
+- End-to-end workflow - dataset prep -> training (DDP, EMA, AMP, mosaic) -> export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) -> benchmarked multi-backend inference
+- Accuracy - higher F1 than YOLO26 on TACO and VisDrone, higher mIoU than EfficientNet-Unet on Cityscapes, at comparable or lower latency (TensorRT FP16, end-to-end protocol)
+- Paper - [D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment](https://arxiv.org/abs/2602.23043)
+- Not a fork: the detection core follows the [D-FINE paper](https://github.com/Peterande/D-FINE); segmentation heads, training, export and inference are implemented from scratch.
 
-This is **not** a fork. The detection core is based on the [original D-FINE paper](https://github.com/Peterande/D-FINE); everything else — segmentation head, training pipeline, export, inference, augmentations — was reimplemented from scratch.
+One frame, three tasks, one config flag:
 
-> [**Paper**](https://arxiv.org/abs/2602.23043): *D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment*
+<p align="center">
+  <img src="assets/mosaic.jpg" width="100%">
+</p>
 
 <p align="center">
   <img src="assets/det_benchmark.png" width="48%">
@@ -40,13 +45,13 @@ This is **not** a fork. The detection core is based on the [original D-FINE pape
 
 ## Highlights
 
-- **Instance segmentation** via a lightweight mask head on top of D-FINE's HybridEncoder PAN outputs — fuses stride 8/16/32 features to 1/4 resolution, then dot-product between per-query mask embeddings (3-layer MLP) and shared mask features produces per-instance masks
-- **Semantic segmentation** (`task: sem_seg`): dense per-pixel head reusing the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier — no queries, no NMS
-- **New losses**: box-cropped BCE + Dice mask losses (instance seg, computed only inside GT boxes and normalized by ROI area); cross-entropy + multi-class soft Dice with `ignore_index` masking (semantic seg)
-- **Mask-aware denoising**: contrastive denoising training extended with mask supervision for faster convergence (adds no inference cost)
-- **Mask-aware matching**: Hungarian matcher augmented with Dice overlap cost and sigmoid focal mask cost alongside classification, L1, and GIoU costs
-- **5 model sizes** — Nano, Small, Medium, Large, Extra-Large — with HGNetv2 backbones
-- **Production-ready**: export to ONNX / TensorRT / OpenVINO / CoreML / LiteRT and optimized inference backends
+- **Instance segmentation head** (`task: segment`) - lightweight mask head on top of D-FINE's HybridEncoder PAN outputs: stride 8/16/32 features fused to 1/4 resolution, then a dot-product between per-query mask embeddings (3-layer MLP) and the shared mask features yields per-instance masks
+- **Semantic segmentation head** (`task: sem_seg`) - reuses the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier: no queries, no NMS
+- **Mask-aware training** - box-cropped BCE + Dice mask losses (instance seg) and CE + multi-class soft Dice with `ignore_index` (semantic seg), mask supervision inside contrastive denoising, and Dice + sigmoid-focal mask costs in the Hungarian matcher - all train-time only, zero inference cost
+- **COCO-pretrained weights for detection *and* instance segmentation**, auto-downloaded on first use - fine-tuning starts from a trained mask decoder, not from scratch
+- **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
+- **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, OneCycle, early stopping, WandB
+- **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML / LiteRT)
 
 ## Quick Start
 
@@ -70,7 +75,7 @@ Two annotation formats are supported: **YOLO** (default) and **COCO JSON**. Sema
 
 ``` bash
 data/dataset/
-├── images/    # all images: .jpg, .png, etc. (.npy for multi-channel — see below)
+├── images/    # all images: .jpg, .png, etc. (.npy for multi-channel - see below)
 └── labels/    # all labels: one .txt per image (same filename stem)
 ```
 
@@ -94,7 +99,7 @@ Every pixel gets a class from `label_to_name` (background included). Pixels with
 
 Set `train.in_channels: N` (default 3) to train on stacks beyond plain RGB.
 Supported range is `N=3` (RGB) or `N=4` (RGB + one extra modality, e.g. thermal,
-depth, NIR). Higher channel counts are not supported — cv2 / Albumentations
+depth, NIR). Higher channel counts are not supported - cv2 / Albumentations
 ops cap at 4.
 
 Layout is the same; drop the stacks as **`.npy`** files (uint8 HWC arrays):
@@ -107,7 +112,7 @@ data/dataset/
 
 Loader rules (see [src/dl/dataset.py](src/dl/dataset.py)):
 
-- `np.load` is byte-faithful — channels come back exactly as you saved them.
+- `np.load` is byte-faithful - channels come back exactly as you saved them.
 - A file whose channel count doesn't match `train.in_channels` is skipped with a `loguru.warning` line (path + reason). Mosaic re-samples another index automatically.
 - Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [src/d_fine/utils.py](src/d_fine/utils.py)), so fine-tuning from COCO still works.
 - Stem freeze (`freeze_at` in [src/d_fine/configs.py](src/d_fine/configs.py)) is auto-bypassed when `in_channels > 3` so the inflated extra-channel weights can train; the size-configured `freeze_at` still applies for plain 3-channel RGB.
@@ -131,11 +136,11 @@ data/dataset/
 └── test.json     # (optional) COCO-format annotations for test split
 ```
 
-Enable COCO mode by setting `coco_dataset: True` in your config (see below). No CSV split generation step is needed — the splits are read directly from the JSON files.
+Enable COCO mode by setting `coco_dataset: True` in your config (see below). No CSV split generation step is needed - the splits are read directly from the JSON files.
 
 ### Configure
 
-Edit `config.yaml` — key settings:
+Edit `config.yaml` - key settings:
 
 ```yaml
 task: detect  # detect | segment | sem_seg
@@ -172,7 +177,7 @@ make ov_int8         # INT8 accuracy-aware quantization for OpenVINO (can take h
 Notes:
 
 - **YOLO format**: `make train` requires `train.csv` and `val.csv` in `train.data_path` (generated by `make split`).
-- **COCO format**: set `coco_dataset: True` — `train.json` and `val.json` are loaded directly; `make split` is not needed.
+- **COCO format**: set `coco_dataset: True` - `train.json` and `val.json` are loaded directly; `make split` is not needed.
 - `make infer` runs Torch inference on `train.path_to_test_data` and writes to `train.infer_path`.
 
 Or run in sequence:
@@ -187,7 +192,7 @@ Or run overwriting configs from CLI
 uv run python -m src.dl.train exp_name=my_exp
 ```
 
-Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` — it auto-launches with `torchrun`.
+Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` - it auto-launches with `torchrun`.
 
 ### Training Features
 
@@ -212,7 +217,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 | Format | Half Precision | Notes |
 |:-------|:--------------:|:------|
-| **ONNX** | — | With optional fused postprocessor |
+| **ONNX** | - | With optional fused postprocessor |
 | **TensorRT** | FP16 | Must be exported on the target GPU. **Static input shape only** |
 | **OpenVINO** | FP16, INT8 | Single export for FP32 or FP16 (pick during inference) and separate INT8 quantization script |
 | **CoreML** | FP16, INT8 | Cross-platform export, inference on macOS / iOS. FP32 and INT8 exported by default  |
@@ -220,7 +225,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 > **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
-After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend — over the sorted top-K detection scores vs torch — to `parity.csv` next to the weights.
+After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend - over the sorted top-K detection scores vs torch - to `parity.csv` next to the weights.
 
 For `task: sem_seg` every backend gets the same fused-argmax graph: a single int32 `sem_seg` output `[B, H, W]` (label map at input resolution, no detection postprocessor), and parity compares per-pixel argmax agreement instead of score cosine.
 
@@ -248,7 +253,7 @@ Also provided:
 
 ### Multi-Object Tracking
 
-A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.06864)) is included for persistent object tracking across video frames — uses constant-velocity motion prediction with EMA-smoothed velocity instead of a Kalman filter, blends IoU with centroid distance in the match cost, and does per-class matching by default.
+A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.06864)) is included for persistent object tracking across video frames - uses constant-velocity motion prediction with EMA-smoothed velocity instead of a Kalman filter, blends IoU with centroid distance in the match cost, and does per-class matching by default.
 
 ### Gradio Demo
 
@@ -262,16 +267,16 @@ A web UI for uploading images and running inference interactively.
 
 ### Metrics
 
-**Detection / instance segmentation** — GT objects and predictions are matched one-to-one: a prediction is a TP if IoU > 0.5 (box for `detect`, mask for `segment`) and the class matches; only the highest-IoU prediction per GT counts, extra overlapping ones are FPs; a class mismatch is one FP + one FN.
+**Detection / instance segmentation** - GT objects and predictions are matched one-to-one: a prediction is a TP if IoU > 0.5 (box for `detect`, mask for `segment`) and the class matches; only the highest-IoU prediction per GT counts, extra overlapping ones are FPs; a class mismatch is one FP + one FN.
 
-- **F1 / Precision / Recall** — computed from those TP/FP/FN counts at `train.conf_thresh`.
-- **IoU** (penalized) — mean IoU over all outcomes: TPs contribute their IoU, FPs and FNs contribute 0 (= sum of TP IoUs / (TPs + FPs + FNs)).
-- **mAP_50 / mAP_50_95** — COCO-style average precision (mask versions for `segment`).
+- **F1 / Precision / Recall** - computed from those TP/FP/FN counts at `train.conf_thresh`.
+- **IoU** (penalized) - mean IoU over all outcomes: TPs contribute their IoU, FPs and FNs contribute 0 (= sum of TP IoUs / (TPs + FPs + FNs)).
+- **mAP_50 / mAP_50_95** - COCO-style average precision (mask versions for `segment`).
 
-**Semantic segmentation** — all metrics come from one pixel confusion matrix accumulated over the whole eval set at original image resolution (`ignore_index` pixels excluded). A pixel of class *i* predicted as *j* counts as an FN for *i* and an FP for *j* — each confused pixel penalizes both classes.
+**Semantic segmentation** - all metrics come from one pixel confusion matrix accumulated over the whole eval set at original image resolution (`ignore_index` pixels excluded). A pixel of class *i* predicted as *j* counts as an FN for *i* and an FP for *j* - each confused pixel penalizes both classes.
 
-- **mIoU** (decision metric) — macro-averaged: per-class pixel IoU = TP / (TP + FP + FN), averaged over classes present in GT, so every class has equal weight regardless of pixel count.
-- **pixel_acc** — micro: fraction of all valid pixels classified correctly, so it is dominated by large classes.
+- **mIoU** (decision metric) - macro-averaged: per-class pixel IoU = TP / (TP + FP + FN), averaged over classes present in GT, so every class has equal weight regardless of pixel count.
+- **pixel_acc** - micro: fraction of all valid pixels classified correctly, so it is dominated by large classes.
 
 ### VisDrone - object detection
 
@@ -440,7 +445,7 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 | D-FINE-seg S CoreML | FP16 | 0.259 | 79.1 | 24.3 |
 | D-FINE-seg S CoreML | INT8 | 0.256 | 62.1 | 12.8 |
 
-> CoreML FP32 -> ~2x faster than Torch MPS, no F1 drop. FP16 is ~30% slower than FP32 on Apple Silicon — the Neural Engine prefers FP32 for this architecture. INT8 shows strong accuracy, same latency on this machine, but 4 times smaller weights size.
+> CoreML FP32 -> ~2x faster than Torch MPS, no F1 drop. FP16 is ~30% slower than FP32 on Apple Silicon - the Neural Engine prefers FP32 for this architecture. INT8 shows strong accuracy, same latency on this machine, but 4 times smaller weights size.
 
 </details>
 
@@ -453,7 +458,7 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 | Eval predictions | `output/eval_preds/` | Val set predictions with GT (green) and preds (blue) |
 | Bench images | `output/bench_imgs/` | Predictions from all exported models |
 | Infer | `output/infer/` | Visualizations + YOLO txt annotations (sem_seg: overlays + PNG label maps) |
-| Check errors | `output/check_errors/` | FP and FN only — for finding mislabeled samples |
+| Check errors | `output/check_errors/` | FP and FN only - for finding mislabeled samples |
 
 ## Result examples
 
