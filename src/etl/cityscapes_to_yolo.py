@@ -82,7 +82,9 @@ def convert(gtfine_root: Path, images_dir: Path, out_dir: Path) -> None:
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--gtfine", type=Path, required=True, help="Path to raw/gtFine")
     p.add_argument("--images", type=Path, required=True, help="Path to dataset/images")
     p.add_argument("--out", type=Path, required=True, help="Output labels dir")
