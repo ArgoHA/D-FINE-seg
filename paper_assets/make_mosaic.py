@@ -20,12 +20,36 @@ ROOT = Path("/home/argo/Desktop/Projects/cityscapes")
 IMG_DIR = ROOT / "data/dataset/images"
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-DET_NAMES = {0: "person", 1: "rider", 2: "car", 3: "truck", 4: "bus", 5: "train", 6: "motorcycle", 7: "bicycle"}
+DET_NAMES = {
+    0: "person",
+    1: "rider",
+    2: "car",
+    3: "truck",
+    4: "bus",
+    5: "train",
+    6: "motorcycle",
+    7: "bicycle",
+}
 SEM_NAMES = {
-    0: "road", 1: "sidewalk", 2: "building", 3: "wall", 4: "fence", 5: "pole",
-    6: "traffic-light", 7: "traffic-sign", 8: "vegetation", 9: "terrain", 10: "sky",
-    11: "person", 12: "rider", 13: "car", 14: "truck", 15: "bus", 16: "train",
-    17: "motorcycle", 18: "bicycle",
+    0: "road",
+    1: "sidewalk",
+    2: "building",
+    3: "wall",
+    4: "fence",
+    5: "pole",
+    6: "traffic-light",
+    7: "traffic-sign",
+    8: "vegetation",
+    9: "terrain",
+    10: "sky",
+    11: "person",
+    12: "rider",
+    13: "car",
+    14: "truck",
+    15: "bus",
+    16: "train",
+    17: "motorcycle",
+    18: "bicycle",
 }
 
 PANEL_H = 900
@@ -51,7 +75,9 @@ def draw_dets(img, res, names, colors, with_masks, label_min_px=26):
             overlay[m.astype(bool)] = colors[lb]
         img = cv2.addWeighted(img, 0.55, overlay, 0.45, 0)
         for m, lb in zip(masks, labels):
-            cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnts, _ = cv2.findContours(
+                m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
             cv2.drawContours(img, cnts, -1, colors[lb], 2, cv2.LINE_AA)
 
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
@@ -113,7 +139,9 @@ def build(img, models, colors, crop):
     rows = [cv2.hconcat([panels[0], vgap, panels[1]]), cv2.hconcat([panels[2], vgap, panels[3]])]
     hgap = np.full((GUTTER, rows[0].shape[1], 3), 255, np.uint8)
     mosaic = cv2.vconcat([rows[0], hgap, rows[1]])
-    return cv2.resize(mosaic, (FINAL_W, int(FINAL_W * mosaic.shape[0] / mosaic.shape[1])), cv2.INTER_AREA)
+    return cv2.resize(
+        mosaic, (FINAL_W, int(FINAL_W * mosaic.shape[0] / mosaic.shape[1])), cv2.INTER_AREA
+    )
 
 
 if __name__ == "__main__":
