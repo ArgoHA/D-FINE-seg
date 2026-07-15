@@ -407,7 +407,7 @@ def main(cfg: DictConfig):
         root_path=data_path,
         img_size=tuple(cfg.train.img_size),
         batch_size=1,
-        num_workers=1,
+        num_workers=0,  # no concurrent decoder thread contending with the timed inference call
         cfg=cfg,
         debug_img_processing=False,
     ).build_dataloaders()

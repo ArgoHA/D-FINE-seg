@@ -194,10 +194,9 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
 
 
 def resolve_mosaic_prob(cfg) -> float:
-    """None -> task default (0.8 det/segment, 0.5 sem_seg); an explicit number wins for any task."""
     p = cfg.train.mosaic_augs.mosaic_prob
     if p is None:
-        return 0.5 if cfg.task == "sem_seg" else 0.8
+        return 0.8 if cfg.task == "detect" else 0.5
     return float(p)
 
 
@@ -976,7 +975,7 @@ class Loader:
         else:
             self._get_splits_yolo()
         assert len(self.splits["train"]) and len(self.splits["val"]), (
-            "Train and Val splits must be present"
+            f"Train and Val splits must be present at {self.root_path}"
         )
 
     def _get_splits_yolo(self) -> None:
