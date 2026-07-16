@@ -284,7 +284,7 @@ A web UI for uploading images and running inference interactively.
 
 ### Cityscapes - vs YOLO26 and RF-DETR
 
-500 Cityscapes val images at original 2048x1024, TensorRT 10.13 FP16, batch 1, RTX 5070 Ti. Every framework runs its **own shipped inference code**, scored by one validator against the same GT. Two latency columns - **e2e** (end-to-end, including each framework's CPU preprocessing) and **engine** (pure TensorRT execute) - because they can disagree. Full protocol and every known asymmetry: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
+500 Cityscapes val images at original 2048x1024, TensorRT 10.13 FP16, batch 1, RTX 5070 Ti. Every framework runs its **own shipped inference code**, scored by one validator against the same GT. Confidence thresholds were calculated for each framework separately to maximixe the F1. Two latency columns - **e2e** (end-to-end, including each framework's CPU preprocessing) and **engine** (pure TensorRT execute) - because they can disagree. Full protocol and every known asymmetry: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
 
 #### Detection
 
