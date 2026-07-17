@@ -4,9 +4,10 @@
 on the keep_ratio path. If either drifts, predictions land in the wrong place.
 """
 
+import albumentations as A
 import numpy as np
 
-from src.dl.utils import scale_boxes_ratio_kept
+from src.dl.utils import LetterboxRect, scale_boxes_ratio_kept
 from src.infer.torch_model import letterbox
 
 
@@ -44,3 +45,28 @@ def test_scale_boxes_ratio_kept_round_trips_letterbox():
         fwd.copy(), img0_shape=(100, 200), img1_shape=(640, 640), padding=True
     )
     np.testing.assert_allclose(back, orig_box, atol=0.5)
+
+
+def test_letterbox_rect_dense_mask_nearest_and_ignore_pad():
+    # 100x200 -> 640x640: vertical pad of 160 top/bottom (gain 3.2).
+    img = np.zeros((100, 200, 3), dtype=np.uint8)
+    mask = np.full((100, 200), 3, dtype=np.uint8)
+    mask[:, :100] = 7  # two distinct class ids, no id between them
+    t = A.Compose(
+        [LetterboxRect(640, 640, dense_mask=True, mask_fill=255)],
+        mask_interpolation=None,  # LetterboxRect overrides apply_to_mask; Compose setting ignored
+    )
+    out = t(image=img, mask=mask)["mask"]
+    assert out.shape == (640, 640)
+    assert set(np.unique(out).tolist()) <= {3, 7, 255}  # NEAREST: no interpolated ids
+    assert (out[:160] == 255).all() and (out[480:] == 255).all()  # pad = ignore_index
+    assert (out[160:480] != 255).all()  # interior fully labeled
+
+
+def test_letterbox_rect_binary_mask_unchanged_pads_zero():
+    # Default (binary) mode must keep old behavior: pad with 0, values stay {0, 1}.
+    img = np.zeros((100, 200, 3), dtype=np.uint8)
+    mask = np.ones((100, 200), dtype=np.uint8)
+    out = A.Compose([LetterboxRect(640, 640)])(image=img, mask=mask)["mask"]
+    assert set(np.unique(out).tolist()) <= {0, 1}
+    assert (out[:160] == 0).all() and (out[480:] == 0).all()

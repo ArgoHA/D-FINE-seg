@@ -96,7 +96,9 @@ the mask fill for pad-introducing augs. `label_to_name` covers **every** pixel c
 (including background). `make split` works unchanged. Init from
 `pretrained/dfine_seg_<size>_coco.pt` (transfers the trained `MaskDecoder` fuser). Decision
 metric is forced to `mIoU` (protocol: pixel confusion matrix at original image resolution).
-`keep_ratio: True` and `coco_dataset: True` are rejected for sem_seg.
+`keep_ratio: True` is supported (letterbox: aspect-preserving resize + pad; mask padded with
+`ignore_index` via `LetterboxRect(dense_mask=True)`, so pad pixels don't supervise). `coco_dataset:
+True` is rejected for sem_seg.
 
 ### 5.2 COCO layout
 
