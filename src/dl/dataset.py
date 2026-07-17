@@ -732,11 +732,7 @@ class SemSegDataset(Dataset):
         self._shared_flags = torch.zeros(1).share_memory_()
         self.mosaic_prob = resolve_mosaic_prob(cfg) if mode == "train" else 0.0
         self.ignore_background = False
-        if cfg.train.keep_ratio:
-            raise ValueError(
-                "task=sem_seg supports keep_ratio: False only (plain resize); "
-                "LetterboxRect has no ignore_index mask fill yet"
-            )
+        self.keep_ratio = cfg.train.keep_ratio
         self._init_augs(cfg)
 
     @property
@@ -749,7 +745,22 @@ class SemSegDataset(Dataset):
 
     def _init_augs(self, cfg) -> None:
         pad_color = tuple([114] * self.in_channels)
-        resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_LINEAR)]
+        if self.keep_ratio:
+            # letterbox img (LINEAR/114) + dense mask (NEAREST/ignore_index); scaleup=True to match
+            # the /infer letterbox() default so train-eval mIoU == bench mIoU
+            resize = [
+                LetterboxRect(
+                    height=self.target_h,
+                    width=self.target_w,
+                    color=pad_color,
+                    scaleup=True,
+                    dense_mask=True,
+                    mask_fill=self.ignore_index,
+                    always_apply=True,
+                )
+            ]
+        else:
+            resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_LINEAR)]
         norm = [A.Normalize(mean=self.norm[0], std=self.norm[1]), ToTensorV2()]
 
         if self.mode == "train":

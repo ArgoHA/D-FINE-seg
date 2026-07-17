@@ -126,7 +126,7 @@ def test_validator_absent_class_excluded_from_miou():
 # ── dataset augs ─────────────────────────────────────────────────────────
 
 
-def _make_dataset(tmp_path, rotation_p=0.0):
+def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
     from src.dl.dataset import SemSegDataset
 
     cfg = OmegaConf.create(
@@ -134,7 +134,7 @@ def _make_dataset(tmp_path, rotation_p=0.0):
             "task": "sem_seg",
             "train": {
                 "in_channels": 3,
-                "keep_ratio": False,
+                "keep_ratio": keep_ratio,
                 "debug_img_path": str(tmp_path / "debug"),
                 "label_to_name": {i: str(i) for i in range(N_CLASSES)},
                 "sem_seg": {"ignore_index": 255, "class_weights": None},
@@ -162,7 +162,7 @@ def _make_dataset(tmp_path, rotation_p=0.0):
             },
         }
     )
-    return SemSegDataset((64, 64), tmp_path, pd.DataFrame(["x.jpg"]), False, "train", cfg)
+    return SemSegDataset((64, 64), tmp_path, pd.DataFrame(["x.jpg"]), False, mode, cfg)
 
 
 def test_augs_preserve_class_ids(tmp_path):
@@ -183,6 +183,20 @@ def test_rotate_fills_mask_with_ignore(tmp_path):
     for _ in range(8):
         ids |= set(np.unique(ds.transform(image=img, mask=mask)["mask"].numpy()))
     assert ids <= {3, 255} and 255 in ids  # rotate corners -> ignore, never class 0
+
+
+def test_keep_ratio_letterbox_pads_mask_with_ignore(tmp_path):
+    """keep_ratio=True val letterbox: dense mask padded with ignore_index (not class 0),
+    class ids preserved (NEAREST). Pad rows never supervise."""
+    ds = _make_dataset(tmp_path, keep_ratio=True, mode="val")
+    img = np.random.randint(0, 255, (40, 120, 3), dtype=np.uint8)  # 3:1 -> vertical pad to 64x64
+    mask = np.full((40, 120), 4, dtype=np.uint8)
+    mask[:, :60] = 2
+    out = ds.transform(image=img, mask=mask)["mask"].numpy()
+    assert out.shape == (64, 64)
+    assert set(np.unique(out).tolist()) <= {2, 4, 255}  # NEAREST + ignore pad, no invented ids
+    assert (out[0] == 255).all() and (out[-1] == 255).all()  # top/bottom rows are pad
+    assert (out == 2).any() and (out == 4).any()  # both classes survive
 
 
 def _write_sample(tmp_path, mask, stem="x"):

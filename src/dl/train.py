@@ -517,6 +517,7 @@ class Trainer:
                 else:
                     outputs = model(inputs)
                 preds = outputs["sem_seg_logits"].argmax(1)  # (B, h, w) at input res
+                proc_h, proc_w = preds.shape[1], preds.shape[2]
 
                 for b, img_path in enumerate(img_paths):
                     mask_path = labels_dir / f"{Path(img_path).stem}.png"
@@ -524,8 +525,18 @@ class Trainer:
                     if gt is None:
                         raise FileNotFoundError(f"Can't read GT mask {mask_path}")
                     gt_t = torch.from_numpy(gt).to(self.device)
+                    H0, W0 = gt_t.shape
+                    pred = preds[b]  # (h, w) at input res
+                    if self.keep_ratio:  # crop letterbox pad before resizing to orig (matches wrappers)
+                        gain = min(proc_h / H0, proc_w / W0)
+                        padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                        padh = round((proc_h - H0 * gain) / 2 - 0.1)
+                        pred = pred[
+                            max(padh, 0) : proc_h - max(padh, 0),
+                            max(padw, 0) : proc_w - max(padw, 0),
+                        ]
                     pred_full = F.interpolate(
-                        preds[b][None, None].float(), size=gt_t.shape, mode="nearest"
+                        pred[None, None].float(), size=gt_t.shape, mode="nearest"
                     )[0, 0].long()
                     validator.update(pred_full, gt_t)
 
@@ -533,7 +544,7 @@ class Trainer:
                         visualize_sem_seg(
                             img_path,
                             gt_map=gt,
-                            pred_map=preds[b].cpu().numpy().astype(np.uint8),
+                            pred_map=pred_full.cpu().numpy().astype(np.uint8),
                             dataset_path=Path(self.cfg.train.data_path) / "images",
                             path_to_save=self.eval_preds_path,
                             n_classes=self.num_labels,

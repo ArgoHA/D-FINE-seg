@@ -1070,6 +1070,8 @@ class LetterboxRect(DualTransform):
         scale_fill: bool = False,
         scaleup: bool = True,
         stride: int = 32,
+        dense_mask: bool = False,  # True: dense label map (NEAREST, pad mask_fill); False: binary
+        mask_fill: int = 0,  # pad value for dense masks (e.g. sem_seg ignore_index)
         always_apply: bool = True,
         p: float = 1.0,
     ):
@@ -1081,9 +1083,14 @@ class LetterboxRect(DualTransform):
         self.scale_fill = bool(scale_fill)
         self.scaleup = bool(scaleup)
         self.stride = int(stride)
+        self.dense_mask = bool(dense_mask)
+        self.mask_fill = int(mask_fill)
 
     def get_transform_init_args_names(self):
-        return ("height", "width", "color", "auto", "scale_fill", "scaleup", "stride")
+        return (
+            "height", "width", "color", "auto", "scale_fill", "scaleup", "stride",
+            "dense_mask", "mask_fill",
+        )
 
     @property
     def targets_as_params(self):
@@ -1172,22 +1179,26 @@ class LetterboxRect(DualTransform):
             )
         return img
 
-    # Mask transform - pad with 0 (not object) instead of image color
+    # Mask transform - binary: LINEAR+re-threshold, pad 0; dense: NEAREST, pad mask_fill
     def apply_to_mask(
         self, mask, new_w=0, new_h=0, pad_left=0, pad_top=0, pad_right=0, pad_bottom=0, **kwargs
     ):
-        # resize if needed - use INTER_LINEAR for smooth edges, then re-threshold
-        # INTER_NEAREST causes ladder/wavy patterns on mask edges!
-        if mask.shape[1] != new_w or mask.shape[0] != new_h:
-            # Convert to float for bilinear interpolation
-            mask_float = mask.astype(np.float32)
-            mask_float = cv2.resize(
-                mask_float, (int(new_w), int(new_h)), interpolation=cv2.INTER_LINEAR
-            )
-            # Re-threshold to binary (0.5 threshold for anti-aliased edges)
-            mask = (mask_float > 0.5).astype(mask.dtype)
+        needs_resize = mask.shape[1] != new_w or mask.shape[0] != new_h
+        if self.dense_mask:
+            # dense label map: NEAREST keeps integer class ids intact, pad with mask_fill
+            if needs_resize:
+                mask = cv2.resize(mask, (int(new_w), int(new_h)), interpolation=cv2.INTER_NEAREST)
+            pad_value = self.mask_fill
+        else:
+            # binary mask: LINEAR for smooth edges, then re-threshold (NEAREST -> ladder edges!)
+            if needs_resize:
+                mask_float = mask.astype(np.float32)
+                mask_float = cv2.resize(
+                    mask_float, (int(new_w), int(new_h)), interpolation=cv2.INTER_LINEAR
+                )
+                mask = (mask_float > 0.5).astype(mask.dtype)
+            pad_value = 0  # padding is not part of any object
 
-        # pad if needed - use 0 for masks (padding is not part of any object)
         if pad_top or pad_bottom or pad_left or pad_right:
             mask = cv2.copyMakeBorder(
                 mask,
@@ -1196,7 +1207,7 @@ class LetterboxRect(DualTransform):
                 int(pad_left),
                 int(pad_right),
                 cv2.BORDER_CONSTANT,
-                value=0,
+                value=pad_value,
             )
         return mask
 
