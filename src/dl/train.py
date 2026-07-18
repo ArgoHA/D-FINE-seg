@@ -527,7 +527,9 @@ class Trainer:
                     gt_t = torch.from_numpy(gt).to(self.device)
                     H0, W0 = gt_t.shape
                     pred = preds[b]  # (h, w) at input res
-                    if self.keep_ratio:  # crop letterbox pad before resizing to orig (matches wrappers)
+                    if (
+                        self.keep_ratio
+                    ):  # crop letterbox pad before resizing to orig (matches wrappers)
                         gain = min(proc_h / H0, proc_w / W0)
                         padw = round((proc_w - W0 * gain) / 2 - 0.1)
                         padh = round((proc_h - H0 * gain) / 2 - 0.1)

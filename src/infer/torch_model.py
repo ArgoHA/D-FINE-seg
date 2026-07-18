@@ -163,12 +163,16 @@ class Torch_model:
         processed_sizes,
         original_sizes,
         keep_ratio: bool,
+        labels_to_use: List[int] = None,  # empty -> keep all; else ids not requested -> 255
     ) -> List[Dict[str, torch.Tensor]]:
         """argmax -> per-image NEAREST resize to original size (letterbox pads cropped first).
 
         Returns list of length B with {"sem_seg": uint8 [H0, W0] label map}.
         """
         maps = logits.argmax(1, keepdim=True).float()  # [B, 1, H, W]
+        if labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
+            lbl_set = torch.as_tensor(labels_to_use, device=maps.device, dtype=maps.dtype)
+            maps = torch.where(torch.isin(maps, lbl_set), maps, 255.0)
         results = []
         for b in range(maps.shape[0]):
             m = maps[b : b + 1]
@@ -357,7 +361,11 @@ class Torch_model:
     ):
         if self.task == "sem_seg":
             return self.process_sem_seg(
-                preds["sem_seg_logits"], processed_sizes, original_sizes, self.keep_ratio
+                preds["sem_seg_logits"],
+                processed_sizes,
+                original_sizes,
+                self.keep_ratio,
+                self.labels_to_use,
             )
         return self._preds_postprocess(preds, processed_sizes, original_sizes)
 

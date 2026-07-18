@@ -399,6 +399,9 @@ class TRT_model:
     ) -> List[Dict[str, torch.Tensor]]:
         """Fused-argmax graph: NEAREST-resize each label map to its original size (on device)."""
         maps = outputs[0]  # [B, H, W] int32
+        if self.labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
+            lbl_set = torch.as_tensor(self.labels_to_use, device=maps.device, dtype=maps.dtype)
+            maps = torch.where(torch.isin(maps, lbl_set), maps, 255)
         results = []
         for b in range(maps.shape[0]):
             m = maps[b][None, None].float()  # [1, 1, H, W]

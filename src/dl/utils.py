@@ -1088,8 +1088,15 @@ class LetterboxRect(DualTransform):
 
     def get_transform_init_args_names(self):
         return (
-            "height", "width", "color", "auto", "scale_fill", "scaleup", "stride",
-            "dense_mask", "mask_fill",
+            "height",
+            "width",
+            "color",
+            "auto",
+            "scale_fill",
+            "scaleup",
+            "stride",
+            "dense_mask",
+            "mask_fill",
         )
 
     @property

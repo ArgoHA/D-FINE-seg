@@ -197,6 +197,8 @@ class CoreML_model:
     ) -> List[Dict[str, torch.Tensor]]:
         """Fused-argmax graph: NEAREST-resize each label map to its original size."""
         maps = np.asarray(outputs[0])  # [B, H, W] int
+        if self.labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
+            maps = np.where(np.isin(maps, self.labels_to_use), maps, 255)
         results = []
         for b in range(maps.shape[0]):
             m = maps[b].astype(np.uint8)
