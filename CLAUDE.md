@@ -346,3 +346,7 @@ uv run python -m tests.generate_fixtures
 - **Be consice** - write as little code as possible to achieve the goal.
 
 - **Keep comments short — core info only.** Prefer a single terse line. Don't restate what the code already says or narrate rationale at length; capture just the non-obvious fact. Match the existing comment density of the surrounding file.
+
+## 15. Version control
+
+- **Never `git commit`, push, create branches, or open PRs without the user explicitly asking in that request.** Leave changes uncommitted in the working tree for the user to review and commit themselves; when done, just report what changed and where. This overrides any default "ship it" / background-job workflow that would auto-commit or open a PR.
