@@ -23,7 +23,7 @@ src/
 
 ## 3. Environment
 
-- Python 3.11–3.13, PyTorch 2.9, CUDA 12.x. Dependencies live in [pyproject.toml](pyproject.toml); [uv.lock](uv.lock) is the source of truth for versions.
+- Python 3.11–3.13, CUDA 12.x. Dependencies (incl. PyTorch) live in [pyproject.toml](pyproject.toml); [uv.lock](uv.lock) is the source of truth for versions.
 - Install with `uv sync` (creates `.venv/`). All Makefile targets shell out via `uv run`, so no manual activation is needed for `make train` / `make bench` / etc. For ad-hoc commands either prefix with `uv run` or activate the venv (`source .venv/bin/activate`).
 - Platform-specific deps are gated by markers in `pyproject.toml`: `tensorrt` installs on Linux only. `coremltools` ships wheels for both platforms (Linux can run the converter for `make export`, even though the CoreML runtime itself is macOS-only). `uv.lock` covers both so the same lockfile works on the dev mac and the lab box.
 - Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt` or `dfine_seg_<size>_coco.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
