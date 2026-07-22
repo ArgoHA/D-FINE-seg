@@ -183,6 +183,11 @@ def export_to_onnx(
     import onnx
     import onnxsim
     from onnxconverter_common import float16
+    from onnxscript.function_libs.torch_lib.ops import core as onnx_core
+
+    # torch 2.13 runs type promotion after decomposition, which re-introduces aten.mul.Scalar --
+    # an overload onnxscript never registers (it relies on decomposition). Map it to Mul.
+    custom_translation_table = {torch.ops.aten.mul.Scalar: onnx_core.aten_mul}
 
     dynamic_axes = {}
     if max_batch_size > 1:
@@ -202,6 +207,7 @@ def export_to_onnx(
         output_names=output_names,
         dynamic_axes=dynamic_axes if dynamic_axes else None,
         dynamo=True,
+        custom_translation_table=custom_translation_table,
     ).save(output_path)
 
     onnx_model = onnx.load(output_path)
