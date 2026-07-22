@@ -1286,10 +1286,10 @@ def norm_poly_to_abs(poly_norm_flat: np.ndarray, H: int, W: int) -> np.ndarray:
 
 
 def poly_abs_to_mask(poly_abs: np.ndarray, h: int, w: int) -> np.ndarray:
-    pts = poly_abs.copy()
-    pts = np.round(pts).astype(np.int32)
+    pts = np.round(poly_abs).astype(np.int32)
     m = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillPoly(m, [pts], 1)
+    if len(pts) >= 3:  # cv2.fillPoly segfaults on empty/degenerate contours
+        cv2.fillPoly(m, [pts], 1)
     return m
 
 

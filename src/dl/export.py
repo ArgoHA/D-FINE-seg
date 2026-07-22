@@ -701,9 +701,11 @@ def main(cfg: DictConfig):
     )
     _ = model(x_test)
 
-    # null = all backends; a list (e.g. [tensorrt]) restricts what is built (research loop)
+    # null = all shipped backends; a list (e.g. [tensorrt]) restricts what is built (research loop).
+    # litert is paused (litert-torch caps torch<2.13), so it is built only when asked for by name.
+    default_formats = ["onnx", "tensorrt", "openvino", "coreml"]
     formats = cfg.export.get("formats", None)
-    want = (lambda f: True) if formats is None else (lambda f: f in formats)
+    want = (lambda f: f in default_formats) if formats is None else (lambda f: f in formats)
 
     # Openvino currently doesn't supprort some operations in the detection postprocessor,
     # so it gets the raw head; sem_seg's fused argmax graph is OV-supported as-is.

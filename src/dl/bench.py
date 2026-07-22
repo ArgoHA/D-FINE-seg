@@ -264,8 +264,9 @@ def main(cfg: DictConfig):
     nms = True
 
     # upd this to skip some formats even if they exist; overridable via bench.formats (research loop)
+    # litert omitted: paused (litert-torch caps torch<2.13); add it back by name to bench it
     formats_to_bench = cfg.get("bench", {}).get(
-        "formats", ["torch", "tensorrt", "onnx", "openvino", "coreml", "litert"]
+        "formats", ["torch", "tensorrt", "onnx", "openvino", "coreml"]
     )
 
     ov_half = cfg.export.half

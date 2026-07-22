@@ -233,6 +233,8 @@ class CustomDataset(Dataset):
         self.ignore_background = False
         self.label_to_name = cfg.train.label_to_name
         self.return_masks = str(cfg.task).lower() == "segment"
+        if self.return_masks and not self.coco_mode:
+            self._assert_has_polygons()
 
         self.mosaic_prob = resolve_mosaic_prob(cfg)
         self.mosaic_scale = cfg.train.mosaic_augs.mosaic_scale
@@ -246,6 +248,23 @@ class CustomDataset(Dataset):
         self._init_augs(cfg)
 
         self.debug_img_path = Path(cfg.train.debug_img_path)
+
+    def _assert_has_polygons(self) -> None:
+        """bbox-only labels parse to empty polygons, so masks would silently be all-zero."""
+        for img_path in self.split.iloc[:, 0]:
+            labels_path = self.root_path / "labels" / f"{Path(img_path).stem}.txt"
+            if not labels_path.exists():
+                continue
+            with open(labels_path, "r") as f:
+                for raw in f:
+                    s = raw.strip()
+                    if s and not s.startswith("#") and len(s.split()) - 1 >= 6:
+                        return  # early exit: first polygon found is enough
+        raise ValueError(
+            f"task=segment but no polygon annotations in {self.root_path / 'labels'} "
+            f"({self.mode} split): all labels are bbox-only. "
+            "Point train.data_path at the segmentation dataset."
+        )
 
     @property
     def mosaic_prob(self) -> float:
