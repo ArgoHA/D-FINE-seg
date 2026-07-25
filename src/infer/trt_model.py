@@ -5,6 +5,7 @@ import numpy as np
 import tensorrt as trt
 import torch
 import torch.nn.functional as F  # noqa: N812
+from loguru import logger
 from numpy.typing import NDArray
 from torchvision.ops import nms
 
@@ -58,11 +59,11 @@ class TRT_model:
             self.conf_threshs, device=self.device, dtype=torch.float32
         )
 
-        self._graph = None
+        self._graphs: Dict[int, "torch.cuda.CUDAGraph"] = {}
         self._test_pred()
 
         if self.device == "cuda" and self.use_cuda_graph:
-            self._capture_cuda_graph()
+            self._capture_graphs()
 
     def _load_model(self):
         self.TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
@@ -163,34 +164,39 @@ class TRT_model:
                 (H, W, self.channels), dtype=torch.uint8, device=self.device
             )
 
-    def _capture_cuda_graph(self):
-        """Capture the engine forward into a CUDA graph for low-overhead replay."""
-        if self._is_dynamic:
-            # Graphs lock in a single shape; useless when batch varies per call.
-            self._graph = None
-            return
-        try:
-            self._stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(self._stream):
-                # Warmup so cudnn/cublas/etc. pick algos before capture.
-                for _ in range(3):
-                    self.context.execute_async_v3(self._stream.cuda_stream)
-            self._stream.synchronize()
-            torch.cuda.current_stream().wait_stream(self._stream)
+    def _capture_graphs(self) -> None:
+        """Capture one CUDA graph per batch size, 1..max_batch, up front.
 
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, stream=self._stream):
-                self.context.execute_async_v3(self._stream.cuda_stream)
-            self._graph = graph
-        except Exception:
-            # Some kernels may not be capturable; fall back to plain async exec.
-            self._graph = None
+        A graph bakes in the shapes set at capture, so it may only be replayed at
+        that batch — a dynamic engine needs one per batch rather than none at all.
+        Capture must happen here, at construction: torch captures with
+        cudaStreamCaptureModeGlobal, so capturing lazily on first use aborts
+        (cudaErrorStreamCaptureInvalidated) as soon as any other thread touches
+        CUDA, and takes that thread's calls down with it.
+        """
+        for batch in range(1, self._max_batch + 1):
+            if self._is_dynamic:
+                shape = (batch,) + tuple(self._input_tensor.shape[1:])
+                self.context.set_input_shape(self._input_name, shape)
+            try:
+                self._stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self._stream):
+                    # Warmup so cudnn/cublas/etc. pick algos before capture.
+                    for _ in range(3):
+                        self.context.execute_async_v3(self._stream.cuda_stream)
+                self._stream.synchronize()
+                torch.cuda.current_stream().wait_stream(self._stream)
+
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph, stream=self._stream):
+                    self.context.execute_async_v3(self._stream.cuda_stream)
+                self._graphs[batch] = graph
+            except Exception as e:
+                # Some kernels may not be capturable; fall back to plain async exec.
+                logger.warning(f"CUDA graph capture failed at batch {batch}, using async exec: {e}")
 
     def _test_pred(self) -> None:
         random_image = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
-        # Route through __call__ so the dedicated stream context is applied,
-        # otherwise the engine (on _stream) and post-processing (on default
-        # stream) race and trigger device-side asserts asynchronously.
         self(random_image)
 
     @staticmethod
@@ -356,8 +362,9 @@ class TRT_model:
             if self._is_dynamic:
                 run_shape = (actual_batch,) + tuple(self._input_tensor.shape[1:])
                 self.context.set_input_shape(self._input_name, run_shape)
-            if self._graph is not None:
-                self._graph.replay()
+            graph = self._graphs.get(actual_batch)
+            if graph is not None:
+                graph.replay()
             else:
                 stream_handle = self._stream.cuda_stream if self.device == "cuda" else 0
                 self.context.execute_async_v3(stream_handle)

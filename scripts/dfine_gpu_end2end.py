@@ -1,8 +1,15 @@
 """
-GPU-resident batched script: NVDEC -> batched TRT -> GPU paint -> NVENC.
+GPU-resident script: NVDEC -> TensorRT (batch 1) -> GPU annotate -> NVENC.
 
-This is an example script that fully utilizes a GPU. In this case we just
-redact detected objects.
+This is an example script that fully utilizes a GPU. Detections are drawn the way
+the rest of the repo draws them (mask overlay under boxes under labels, same
+per-class colours as src/dl/utils.py Visualizer) without ever leaving the device.
+
+Concurrency: MAX_CONCURRENT_CLIPS worker threads, one CUDA stream each, decode /
+resize / paint / encode one clip apiece and submit frames to a single shared queue.
+N_ENGINE_INSTANCES engine instances drain that queue, each with its own execution
+context and stream, so any instance can serve any worker's frame and inferences
+overlap. Inference runs at batch 1 on purpose — see MAX_TRT_BATCH.
 """
 
 import queue
@@ -11,7 +18,10 @@ import threading
 import time
 from concurrent.futures import Future
 from pathlib import Path
+from typing import List
 
+import cv2
+import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 
@@ -19,11 +29,24 @@ import torch.nn.functional as F  # noqa: N812
 from loguru import logger
 
 GPU_ID = 0
-FILL_VALUE = 114  # solid gray painted over each person
-MASK_SCALE = 0.5  # compute/paint masks at this fraction of output res (coarser=faster); 1.0=full
-DILATE_PX = 7  # mask dilation in full-res px (scaled into coarse-mask space); 0 disables
+MASK_SCALE = 0.5  # compute masks at this fraction of output res (coarser=faster); 1.0=full
+BOX_ALPHA = 0.6  # bbox outline + label background opacity (Visualizer.draw default)
+MASK_BODY_ALPHA = 0.45  # Visualizer._draw_mask body fill
+MASK_EDGE_ALPHA = 0.70  # Visualizer._draw_mask contour
+SEM_SEG_ALPHA = 0.5  # utils.overlay_sem_seg blend weight for dense label maps
+IGNORE_INDEX = 255  # sem_seg void id; these pixels are left unblended
+DRAW_LABELS = False  # "<class> <score>" tags above each box
 BATCH_WINDOW_S = 0.004  # how long the server waits to fill a batch before firing
-MAX_CONCURRENT_CLIPS = 8  # == NVENC session cap on GeForce; also the max TRT batch
+MAX_CONCURRENT_CLIPS = 8  # pool width == NVENC session cap on GeForce
+# there is a bug in TensorRT with batcehd inferece, so use 1. Check readme for more details
+MAX_TRT_BATCH = 1  # engine's optimization-profile max batch (independent of pool width)
+# Concurrent engine instances. Each owns an engine + execution context + stream, so
+# inferences overlap instead of serializing on one stream. Tune on the pipeline, NOT on the
+# engine alone: isolated, 4 instances is the peak (1.8x detect / 1.56x segment), but in the
+# full pipeline 8 clips measured 490 fps at 1, 591 at 2, 481 at 4 — past 2 the extra server
+# threads starve the GPU (util drops to ~77%) instead of feeding it. Instances are
+# independent: 4 running the same input are bit-identical, unlike batch slots.
+N_ENGINE_INSTANCES = 2
 GPU_ENCODE_INPUT = True  # True: feed NVENC the device NV12 buffer; False: host-copy fallback
 
 
@@ -151,43 +174,215 @@ def resize_rgb(rgb: torch.Tensor, out_w: int, out_h: int) -> torch.Tensor:
     return x.squeeze(0).clamp_(0, 255).to(torch.uint8)
 
 
-def paint_gpu(frame: torch.Tensor, result: dict, fill: int = FILL_VALUE) -> None:
-    """Solid-fill every person region into `frame` ([3, H, W] uint8 CUDA) in place.
+def class_colors(n: int) -> List[tuple]:
+    """Evenly spaced hues on a violet->red arc -> RGB tuples. Class 0 = deep purple.
 
-    Mask-head engines: masks arrive at the coarse MASK_SCALE resolution; we
-    union + dilate them there, then nearest-upsample the single union to the
-    full frame once. Detection-only engines: fall back to painting each bbox
-    rectangle (boxes come back already rescaled to (H, W) — see process_clip).
+    Mirrors Visualizer.generate_colors in src/dl/utils.py (which returns BGR, for
+    cv2) so annotations match the rest of the repo. Kept inline rather than
+    imported because src.dl.utils pulls in wandb / pandas / albumentations.
     """
-    h, w = frame.shape[1], frame.shape[2]
-    masks = result.get("masks")
-    if masks is not None and masks.shape[0] > 0:
-        combined = masks.any(dim=0).float()[None, None]  # [1, 1, mh, mw] coarse
-        if DILATE_PX:
-            k = max(1, round(DILATE_PX * MASK_SCALE)) | 1  # dilate in coarse-mask px, odd kernel
-            combined = F.max_pool2d(combined, k, stride=1, padding=k // 2)
-        up = F.interpolate(combined, size=(h, w), mode="nearest")[0, 0] > 0
-        frame[:, up] = fill
-        return
+    colors = []
+    n = max(n, 1)
+    hue_start = 135  # deep violet in OpenCV's [0, 179] hue range
+    denom = max(n - 1, 1)
+    for i in range(n):
+        hue = int(hue_start * (n - 1 - i) / denom)
+        hsv = np.array([[[hue, 230, 200]]], dtype=np.uint8)
+        b, g, r = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
+        colors.append((int(r), int(g), int(b)))
+    return colors
 
-    boxes = result.get("boxes")
-    if boxes is None or boxes.shape[0] == 0:
-        return
-    if DILATE_PX:
-        pad = torch.tensor(
-            [-DILATE_PX, -DILATE_PX, DILATE_PX, DILATE_PX],
-            device=boxes.device,
-            dtype=boxes.dtype,
+
+class Annotator:
+    """Draws detections onto device frames, mirroring src/dl/utils.py Visualizer:
+    mask overlay (body + contour) under boxes under "<class> <score>" tags.
+
+    Tags are rasterised once at startup into GPU alpha masks — cv2 cannot draw
+    into device tensors, and compositing glyphs per frame costs more than the
+    detector. Lookup is (class, score rounded to 1%).
+    """
+
+    def __init__(self, n_classes: int, class_names=None, ref: int = 1920, device: str = "cuda"):
+        # Pad/truncate: n_classes comes from the engine, class_names from config,
+        # and they disagree whenever a task is swapped without editing both.
+        names = list(class_names or [])
+        names = (names + [str(i) for i in range(len(names), n_classes)])[:n_classes]
+        self.colors = class_colors(n_classes)
+        palette = torch.tensor(self.colors, dtype=torch.uint8, device=device)
+        # 4th channel is a coverage flag, so one slice write per box edge sets
+        # colour and mask together.
+        self._pal4 = torch.cat(
+            [palette, torch.ones((n_classes, 1), dtype=torch.uint8, device=device)], dim=1
+        )[:, :, None, None]  # [n, 4, 1, 1]
+        self._palette = palette
+        # Dense-label-map LUT, mirroring utils.sem_seg_palette: ids >= n_classes
+        # (including ignore=255) stay black and are never blended in.
+        self._sem_pal = torch.zeros((256, 3), dtype=torch.uint8, device=device)
+        self._sem_pal[:n_classes] = palette
+        self.box_thick = max(1, int(ref / 400))
+        self.pad = 4
+        self._tags = None
+        if DRAW_LABELS:
+            scale = max(0.35, ref / 1800)
+            thick = max(1, int(ref / 600))
+            self._tags = [
+                [
+                    self._render(f"{names[c]} {s / 100:.2f}", scale, thick, device)
+                    for s in range(101)
+                ]
+                for c in range(n_classes)
+            ]
+            # White or black text depending on background brightness, as Visualizer
+            # does. Uploaded once — building this per label costs an H2D per box.
+            self._txt = torch.tensor(
+                [
+                    (0, 0, 0) if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else (255, 255, 255)
+                    for r, g, b in self.colors
+                ],
+                dtype=torch.uint8,
+                device=device,
+            )[:, :, None, None]
+
+    @staticmethod
+    def _render(text: str, scale: float, thick: int, device: str) -> torch.Tensor:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (tw, th), base = cv2.getTextSize(text, font, scale, thick)
+        img = np.zeros((th + base + 2, tw + 2), dtype=np.uint8)
+        cv2.putText(img, text, (1, th), font, scale, 255, thick, cv2.LINE_AA)
+        return torch.from_numpy(img).to(device)
+
+    def __call__(self, frame: torch.Tensor, result: dict, src_size=None) -> None:
+        """Annotate [3, H, W] uint8 RGB CUDA `frame` in place.
+
+        `src_size` is the (H, W) boxes/masks are expressed in when it differs from
+        the frame — mask engines run at MASK_SCALE (see process_clip).
+        """
+        h, w = frame.shape[1], frame.shape[2]
+        sem = result.get("sem_seg")
+        if sem is not None:  # dense label map: no boxes or instances to draw
+            self._draw_sem_seg(frame, sem, h, w)
+            return
+
+        labels = result.get("labels")
+        if labels is None or labels.numel() == 0:
+            return
+        sh, sw = src_size or (h, w)
+
+        self._draw_masks(frame, result.get("masks"), labels, h, w)
+        boxes = result.get("boxes")
+        if boxes is None or boxes.shape[0] == 0:
+            return
+
+        # One D2H for the frame's geometry, then rectangles are plain slice
+        # writes. Rasterising them on-device needs an [N, H, W] mask stack per
+        # frame, which moves more memory than the rest of the pipeline combined.
+        scale = torch.tensor([w / sw, h / sh, w / sw, h / sh], device=boxes.device)
+        xyxy = (boxes * scale).round().int().cpu().tolist()
+        ids = labels.int().cpu().tolist()
+        sc = None
+        if self._tags is not None:
+            sc = (result["scores"] * 100).round().clamp_(0, 100).int().cpu().tolist()
+        self._draw_boxes(frame, xyxy, ids, sc, h, w)
+
+    def _draw_sem_seg(self, frame, label_map, h, w) -> None:
+        """Blend a dense label map over the frame — mirrors utils.overlay_sem_seg.
+
+        Void pixels keep the original image, so unlabelled regions stay readable.
+        """
+        if label_map.shape[-2:] != (h, w):
+            label_map = F.interpolate(label_map[None, None].float(), size=(h, w), mode="nearest")[
+                0, 0
+            ].to(torch.uint8)
+        col = self._sem_pal[label_map.long()].permute(2, 0, 1)  # [3, h, w]
+        blended = (
+            (frame.float() * (1 - SEM_SEG_ALPHA) + col.float() * SEM_SEG_ALPHA)
+            .clamp_(0, 255)
+            .to(torch.uint8)
         )
-        boxes = boxes + pad
-    x1 = boxes[:, 0].clamp(0, w).long()[:, None, None]
-    y1 = boxes[:, 1].clamp(0, h).long()[:, None, None]
-    x2 = boxes[:, 2].clamp(0, w).long()[:, None, None]
-    y2 = boxes[:, 3].clamp(0, h).long()[:, None, None]
-    ys = torch.arange(h, device=boxes.device)[None, :, None]
-    xs = torch.arange(w, device=boxes.device)[None, None, :]
-    inside = ((xs >= x1) & (xs < x2) & (ys >= y1) & (ys < y2)).any(dim=0)
-    frame[:, inside] = fill
+        # Dense blend + where, not masked indexing: a dense label map covers
+        # essentially every pixel, so gather/scatter costs more than it saves.
+        frame.copy_(torch.where(label_map[None] != IGNORE_INDEX, blended, frame))
+
+    def _draw_masks(self, frame, masks, labels, h, w) -> None:
+        if masks is None or masks.shape[0] == 0:
+            return
+        m = masks.bool()
+        cols = self._palette[labels.clamp(max=self._palette.shape[0] - 1)]
+        cov = m.any(dim=0)
+        # First covering instance owns the pixel — argmax over the stack in one
+        # pass, on uint8 rather than float (a quarter of the memory traffic).
+        owner = m.to(torch.uint8).argmax(dim=0)
+        # Contours come from an instance-id map, not per-instance erosion: a pixel
+        # is on a contour when its 3x3 neighbourhood spans two ids. That is two
+        # pools over one [h, w] plane instead of over the whole [N, h, w] stack.
+        ids = torch.where(cov, owner + 1, torch.zeros_like(owner)).float()[None, None]
+        spread = F.max_pool2d(ids, 3, stride=1, padding=1) + F.max_pool2d(
+            -ids, 3, stride=1, padding=1
+        )
+        edge = (spread[0, 0] > 0) & cov
+        colmap = cols[owner].permute(2, 0, 1).float()
+        alpha = torch.where(edge, MASK_EDGE_ALPHA, cov.float() * MASK_BODY_ALPHA)
+        if colmap.shape[-2:] != (h, w):
+            colmap = F.interpolate(colmap[None], size=(h, w), mode="nearest")[0]
+            alpha = F.interpolate(alpha[None, None], size=(h, w), mode="nearest")[0, 0]
+        # Blend only covered pixels; a dense full-frame float blend moves ~66 MB.
+        hit = alpha > 0
+        av = alpha[hit]
+        frame[:, hit] = (
+            (frame[:, hit].float() * (1 - av) + colmap[:, hit] * av).clamp_(0, 255).to(torch.uint8)
+        )
+
+    def _draw_boxes(self, frame, xyxy, ids, scores, h, w) -> None:
+        """Rasterise box outlines (+ optional tags) into scratch buffers, blend once.
+
+        Everything is a plain slice write; only two blends touch the frame, so cost
+        scales with painted area rather than with detection count.
+        """
+        t = self.box_thick
+        # RGB + coverage flag, so one write per edge sets colour and mask together.
+        buf = torch.zeros((4, h, w), dtype=torch.uint8, device=frame.device)
+        txt = None if scores is None else torch.zeros_like(buf)
+        for i, ((x1, y1, x2, y2), cid) in enumerate(zip(xyxy, ids)):
+            cid %= self._pal4.shape[0]
+            x1 = max(0, min(x1, w - 1))
+            y1 = max(0, min(y1, h - 1))
+            x2 = max(x1 + 1, min(x2, w))
+            y2 = max(y1 + 1, min(y2, h))
+            c = self._pal4[cid]
+            buf[:, y1 : min(y1 + t, y2), x1:x2] = c
+            buf[:, max(y2 - t, y1) : y2, x1:x2] = c
+            buf[:, y1:y2, x1 : min(x1 + t, x2)] = c
+            buf[:, y1:y2, max(x2 - t, x1) : x2] = c
+            if txt is None:
+                continue
+            glyph = self._tags[cid][scores[i]]
+            gh, gw = glyph.shape
+            bh, bw = gh + 2 * self.pad, gw + 2 * self.pad
+            lx = max(0, min(x1, w - bw))
+            ly = y1 - bh  # above the box; if it would clip, tuck it just inside
+            ly = max(0, min(ly if ly >= 0 else y1, h - bh))
+            buf[:, ly : ly + bh, lx : lx + bw] = c  # tag background, same alpha as boxes
+            ys, xs = (
+                slice(ly + self.pad, ly + self.pad + gh),
+                slice(lx + self.pad, lx + self.pad + gw),
+            )
+            txt[:3, ys, xs] = self._txt[cid]
+            txt[3, ys, xs] = glyph  # per-pixel text alpha
+
+        cov = buf[3] > 0
+        frame[:, cov] = (
+            (frame[:, cov].float() * (1 - BOX_ALPHA) + buf[:3][:, cov].float() * BOX_ALPHA)
+            .clamp_(0, 255)
+            .to(torch.uint8)
+        )
+        if txt is not None:
+            hit = txt[3] > 0
+            ta = txt[3][hit].float() / 255.0
+            frame[:, hit] = (
+                (frame[:, hit].float() * (1 - ta) + txt[:3][:, hit].float() * ta)
+                .clamp_(0, 255)
+                .to(torch.uint8)
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -195,14 +390,19 @@ def paint_gpu(frame: torch.Tensor, result: dict, fill: int = FILL_VALUE) -> None
 # the Future; the server coalesces concurrent submissions into one engine call.
 # --------------------------------------------------------------------------- #
 class BatchInferenceServer:
-    def __init__(self, model, max_batch: int, window_s: float = BATCH_WINDOW_S):
-        self.model = model
+    def __init__(self, models: List, max_batch: int, window_s: float = BATCH_WINDOW_S):
+        self.models = models
         self.max_batch = max_batch
         self.window_s = window_s
         self._q: queue.Queue = queue.Queue()
         self._stop = False
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+        # One shared request queue, one thread per model instance: the single queue keeps
+        # every instance evenly fed regardless of how the workers happen to be phased.
+        self._threads = [
+            threading.Thread(target=self._loop, args=(m,), daemon=True) for m in models
+        ]
+        for t in self._threads:
+            t.start()
 
     def infer(
         self,
@@ -227,13 +427,14 @@ class BatchInferenceServer:
 
     @property
     def has_masks(self) -> bool:
-        return self.model.has_masks
+        return self.models[0].has_masks
 
     def stop(self) -> None:
         self._stop = True
-        self._thread.join()
+        for t in self._threads:
+            t.join()
 
-    def _loop(self) -> None:
+    def _loop(self, model) -> None:
         while not self._stop:
             try:
                 first = self._q.get(timeout=0.1)
@@ -251,6 +452,7 @@ class BatchInferenceServer:
                     break
             try:
                 results, masks_ready = self._run_batch(
+                    model,
                     [b[0] for b in batch],
                     [b[1] for b in batch],
                     [b[2] for b in batch],
@@ -261,13 +463,12 @@ class BatchInferenceServer:
                 for *_, fut in batch:
                     fut.set_exception(exc)
 
-    def _run_batch(self, frame_list, orig_sizes, input_events):
+    def _run_batch(self, model, frame_list, orig_sizes, input_events):
         # Hand the whole batch to the model's gpu_run, which does the engine-
         # input resize + cast + /255 + predict + postprocess on its private
         # stream and returns a masks_ready event for callers to wait on.
         # gpu_run only takes a single input_ready event, so the multi-worker
         # wait fans out here (one wait_event per submitter on model._stream).
-        model = self.model
         for ev in input_events:
             model._stream.wait_event(ev)
         return model.gpu_run(frame_list, original_sizes=orig_sizes)
@@ -429,8 +630,8 @@ class GpuEncoder:
 # Per-clip worker + pool
 # --------------------------------------------------------------------------- #
 def out_path_for(video_path: Path, data_path: str) -> Path:
-    out_dir = Path(f"{data_path}_redacted") / video_path.parent.name
-    return out_dir / f"{video_path.stem}_redacted{video_path.suffix}"
+    out_dir = Path(f"{data_path}_annotated") / video_path.parent.name
+    return out_dir / f"{video_path.stem}_annotated{video_path.suffix}"
 
 
 def process_clip(
@@ -439,6 +640,7 @@ def process_clip(
     data_path: str,
     max_dim,
     worker_stream: torch.cuda.Stream,
+    annotator: Annotator,
 ) -> int:
     src_w, src_h, fps = probe_video(video_path)
     out_w, out_h = compute_out_size(src_w, src_h, max_dim)
@@ -448,9 +650,8 @@ def process_clip(
     out_path = out_path_for(video_path, data_path)
     decoder = GpuDecoder(video_path)
     encoder = GpuEncoder(out_path, out_w, out_h, fps)
-    # Mask engines: ask for masks at coarse res — cuts per-instance upsample/cleanup.
-    # Detection-only engines: ask for boxes in full frame space so paint_gpu can
-    # rectangle-fill directly without rescaling.
+    # Mask engines: ask for masks at coarse res — cuts per-instance upsample cost;
+    # the annotator scales boxes back up. Detection-only engines: full frame space.
     if server.has_masks:
         infer_h = max(1, round(out_h * MASK_SCALE))
         infer_w = max(1, round(out_w * MASK_SCALE))
@@ -462,15 +663,21 @@ def process_clip(
         for rgb_src in decoder:  # [H, W, 3] uint8 CUDA at source resolution
             with torch.cuda.stream(worker_stream):
                 frame = resize_rgb(rgb_src, out_w, out_h)
+                # Infer from the SOURCE frame, not the downscaled display frame:
+                # resizing twice (source -> out -> 640) aliases twice and measurably
+                # costs detections. Same number of resizes either way, since the
+                # engine has to reach 640 from something.
+                model_in = rgb_src.permute(2, 0, 1)
                 input_ready = torch.cuda.Event()
                 input_ready.record(worker_stream)
                 # gpu_run (inside server) handles the engine-input resize + cast
-                # + /255; we just hand it the output-res uint8 frame. server.infer
-                # blocks the Python thread until the engine picks up the batch,
-                # but no CUDA ops are issued during the block.
-                result, masks_ready = server.infer(frame, (infer_h, infer_w), input_ready)
+                # + /255; boxes/masks come back in (infer_h, infer_w) space
+                # regardless of the input's own size. server.infer blocks the
+                # Python thread until the engine picks up the batch, but no CUDA
+                # ops are issued during the block.
+                result, masks_ready = server.infer(model_in, (infer_h, infer_w), input_ready)
                 worker_stream.wait_event(masks_ready)
-                paint_gpu(frame, result)
+                annotator(frame, result, src_size=(infer_h, infer_w))
                 nv12 = rgb_to_nv12(frame)
                 encode_ready = torch.cuda.Event()
                 encode_ready.record(worker_stream)
@@ -479,11 +686,11 @@ def process_clip(
     finally:
         encoder.close()
         decoder.close()
-    logger.info(f"Saved redacted video: {out_path} ({n} frames)")
+    logger.info(f"Saved annotated video: {out_path} ({n} frames)")
     return n
 
 
-def worker(clip_q: queue.Queue, server, data_path, max_dim, totals: list) -> None:
+def worker(clip_q: queue.Queue, server, data_path, max_dim, totals: list, annotator) -> None:
     """Drain clips until the queue empties, then record this worker's frame total.
 
     Each worker owns one CUDA stream reused across clips so paint / NV12 / encode
@@ -499,44 +706,94 @@ def worker(clip_q: queue.Queue, server, data_path, max_dim, totals: list) -> Non
         except queue.Empty:
             break
         try:
-            local += process_clip(video_path, server, data_path, max_dim, worker_stream)
+            local += process_clip(video_path, server, data_path, max_dim, worker_stream, annotator)
         except Exception:
             logger.exception(f"Clip failed: {video_path}")
     totals.append(local)
 
 
 def main():
-    model_path = "../../../nodes/D-FINE-seg/weights/coco_seg_batched.engine"
-    data_path = "test_videos"
+    model_path = (
+        "/home/argo/Desktop/Projects/cityscapes/output/models/sem_seg_s_2026-07-10/model.engine"
+    )
+    data_path = "/home/argo/Desktop/Projects/cityscapes/data/test_videos"
     out_max_dim = 1920  # downscale output so the long edge <= this (None/0 = source 4K)
+    # class_names = [
+    #     "person",
+    #     "rider",
+    #     "car",
+    #     "truck",
+    #     "bus",
+    #     "train",
+    #     "motorcycle",
+    #     "bicycle",
+    # ]
+    class_names = [
+        "road",
+        "sidewalk",
+        "building",
+        "wall",
+        "fence",
+        "pole",
+        "traffic-light",
+        "traffic-sign",
+        "vegetation",
+        "terrain",
+        "sky",
+        "person",
+        "rider",
+        "car",
+        "truck",
+        "bus",
+        "train",
+        "motorcycle",
+        "bicycle",
+    ]
     model_args = {
-        "n_outputs": 80,
+        "n_outputs": len(class_names),
         "model_name": "s",
-        "conf_thresh": 0.4,
-        "enable_mask_head": True,
-        "labels_to_use": [0],
+        "conf_thresh": 0.5,
+        "enable_mask_head": False,
+        "labels_to_use": [],
     }
 
     # All clips across all cameras go into one queue; the pool drains it.
     cam_dirs = sorted(d for d in Path(data_path).iterdir() if d.is_dir())
+    clips = [
+        clip
+        for cam_dir in cam_dirs
+        for clip in sorted(p for p in cam_dir.iterdir() if p.suffix.lower() == ".mp4")
+    ]
     clip_q: queue.Queue = queue.Queue()
-    for cam_dir in cam_dirs:
-        for clip in sorted(p for p in cam_dir.iterdir() if p.suffix.lower() == ".mp4"):
-            clip_q.put(clip)
-    n_clips = clip_q.qsize()
+    for clip in clips:
+        clip_q.put(clip)
+    n_clips = len(clips)
     width = min(MAX_CONCURRENT_CLIPS, n_clips)
     logger.info(f"{n_clips} clips across {len(cam_dirs)} cameras; pool width {width}")
 
-    # One engine, batched across the pool. Must be exported with a dynamic batch
-    # profile whose max >= width.
-    model = autobackend(model_path, **model_args)
-    if not model.has_masks:
-        logger.warning("engine has no mask head — falling back to bbox-rectangle redaction")
-    server = BatchInferenceServer(model, max_batch=width)
+    # N engine instances behind one queue, so inference overlaps instead of funnelling
+    # through a single stream. Each instance still coalesces up to MAX_TRT_BATCH frames
+    # per call — capped by the engine, not by pool width.
+    n_instances = min(N_ENGINE_INSTANCES, width)
+    logger.info(f"{n_instances} engine instances")
+    models = [autobackend(model_path, **model_args) for _ in range(n_instances)]
+    server = BatchInferenceServer(models, max_batch=min(MAX_TRT_BATCH, width))
+    annotator = Annotator(model_args["n_outputs"], class_names, ref=out_max_dim or 1920)
+
+    # Warm the compiled NV12 kernel for every output size the pool will produce.
+    # torch.compile's Triton launcher races when the workers first reach it together
+    # (on a cold inductor cache that fails every clip), and compiling in-band would
+    # also land inside the timing window below.
+    out_sizes = {
+        tuple(v & ~1 for v in compute_out_size(*probe_video(c)[:2], out_max_dim)) for c in clips
+    }
+    for warm_w, warm_h in out_sizes:
+        rgb_to_nv12(torch.zeros((3, warm_h, warm_w), dtype=torch.uint8, device="cuda"))
+    torch.cuda.synchronize()
 
     t0 = time.perf_counter()
     totals: list[int] = []
-    args = (clip_q, server, data_path, out_max_dim, totals)
+    args = (clip_q, server, data_path, out_max_dim, totals, annotator)
     threads = [threading.Thread(target=worker, args=args) for _ in range(width)]
     for t in threads:
         t.start()
