@@ -713,33 +713,10 @@ def worker(clip_q: queue.Queue, server, data_path, max_dim, totals: list, annota
 
 
 def main():
-    model_path = (
-        "/home/argo/Desktop/Projects/cityscapes/output/models/sem_seg_s_2026-07-10/model.engine"
-    )
-    data_path = "/home/argo/Desktop/Projects/cityscapes/data/test_videos"
+    model_path = ".../model.engine"
+    data_path = ".../test_videos"
     out_max_dim = 1920  # downscale output so the long edge <= this (None/0 = source 4K)
-    # class_names = [
-    #     "person",
-    #     "rider",
-    #     "car",
-    #     "truck",
-    #     "bus",
-    #     "train",
-    #     "motorcycle",
-    #     "bicycle",
-    # ]
     class_names = [
-        "road",
-        "sidewalk",
-        "building",
-        "wall",
-        "fence",
-        "pole",
-        "traffic-light",
-        "traffic-sign",
-        "vegetation",
-        "terrain",
-        "sky",
         "person",
         "rider",
         "car",
