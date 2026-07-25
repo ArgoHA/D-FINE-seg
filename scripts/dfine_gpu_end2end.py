@@ -10,6 +10,12 @@ resize / paint / encode one clip apiece and submit frames to a single shared que
 N_ENGINE_INSTANCES engine instances drain that queue, each with its own execution
 context and stream, so any instance can serve any worker's frame and inferences
 overlap. Inference runs at batch 1 on purpose — see MAX_TRT_BATCH.
+
+Tested on RTX 5070ti on cityscapes and default values:
+
+sem_seg  | 443 fps
+inst_seg | 350 fps
+detect   | 602 fps
 """
 
 import queue
