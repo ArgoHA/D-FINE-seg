@@ -563,6 +563,9 @@ class GpuEncoder:
         )
         # NVENC emits an elementary stream; ffmpeg muxes it into a real .mp4.
         # To keep source audio, add `-i {src} -map 0:v -map 1:a -c:a aac` here.
+        # -avoid_negative_ts make_zero is required, not cosmetic: NVENC emits B-frames,
+        # so frame 0 carries a negative DTS and the mp4 muxer silently drops it (N frames
+        # in -> N-1 out, output frame 0 == source frame 1).
         self._mux = subprocess.Popen(
             [
                 "ffmpeg",
@@ -577,6 +580,8 @@ class GpuEncoder:
                 "-",
                 "-c",
                 "copy",
+                "-avoid_negative_ts",
+                "make_zero",
                 str(out_path),
             ],
             stdin=subprocess.PIPE,
