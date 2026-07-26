@@ -1,0 +1,692 @@
+"""Torch inference wrapper with torch.compile + AMP + channels_last.
+
+Same API and output contract as Torch_model — drop-in replacement — but the forward
+runs through inductor instead of eager. Needs the model source (src/d_fine/) at
+runtime like Torch_model does; torch.compile is a JIT, not an exported artifact.
+
+Measured on D-FINE-S detect @640, batch 1, RTX 5070 Ti, torch 2.13+cu130
+(pure GPU forward, CUDA-synced; latency = sync every call, throughput = queue then sync):
+
+    eager fp32                     8.70 ms
+    eager autocast fp16           10.59 ms   <- SLOWER than fp32, see below
+    compile fp16 (default)         4.33 ms
+    compile fp16 reduce-overhead   2.65 / 2.12 ms
+    compile fp16 max-autotune      2.22 / 1.75 ms
+    TensorRT fp16 (reference)      1.39 / 1.35 ms
+
+Two things worth knowing before tuning:
+
+1. AMP without compile is a pessimisation. At batch 1 this model is launch-bound, so
+   the extra cast kernels cost more than fp16 saves. fp16 only pays once compiled.
+2. Accuracy is BETTER than TensorRT, not worse. Against eager fp32 over 200 real
+   frames (3155 detections >= 0.5), compiled fp16 lost 7 and TensorRT fp16 lost 38 —
+   at the same precision. Compiled output is also bit-identical across batch slots,
+   which batched TensorRT engines are not.
+
+Costs: first max-autotune build takes ~3 min (~6 s afterwards from the inductor
+cache, which persists across processes). Every distinct input shape triggers its own
+compile, so `keep_ratio`/`rect` — which vary the input size per image — pay one build
+per distinct size. `compile_dynamic=True` would avoid that in principle but inductor
+cannot lower this model with symbolic shapes (CantSplit on the encoder reshape), so it
+is left off; leave it off unless a future torch fixes that. For fixed-size input (the
+default `keep_ratio=False` path) none of this applies — one shape, one build.
+
+max-autotune also dumps a ranked kernel table per tuned op (~700 lines here) directly
+to stderr during the build. It is progress output, not a problem, and it stops once the
+cache is warm — `quiet_compile=True` (default) turns it off.
+"""
+
+from typing import Dict, List, Tuple
+
+import cv2
+import numpy as np
+import torch
+from loguru import logger
+from numpy.typing import NDArray
+from torchvision.ops import nms
+
+from src.d_fine.dfine import build_model
+
+_AMP_DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16}
+
+
+class Torch_compile_model:
+    def __init__(
+        self,
+        model_name: str,
+        model_path: str,
+        n_outputs: int,
+        input_width: int = 640,
+        input_height: int = 640,
+        conf_thresh: float = 0.5,
+        rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
+        keep_ratio: bool = False,
+        apply_nms: bool = True,
+        nms_iou_thresh: float = 0.7,
+        labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
+        enable_mask_head: bool = False,
+        binarize_masks: bool = True,
+        mask_threshold: float = 0.5,
+        device: str = None,
+        channels: int = 3,
+        task: str = None,  # detect | segment | sem_seg; overrides enable_mask_head
+        # --- compile / AMP knobs (the only additions over Torch_model) ---
+        compile_mode: str = "max-autotune",  # None -> eager; "reduce-overhead", "default"
+        compile_dynamic: bool = False,  # keep False: symbolic shapes don't lower (see docstring)
+        amp_dtype: str = "float16",  # None -> fp32; "bfloat16" for wider range
+        channels_last: bool = True,
+        quiet_compile: bool = True,  # mute inductor's per-kernel autotune tables
+    ):
+        self.input_size = (input_height, input_width)
+        self.n_outputs = n_outputs
+        self.model_name = model_name
+        self.model_path = model_path
+        self.rect = rect
+        self.keep_ratio = keep_ratio
+        self.apply_nms = apply_nms
+        self.nms_iou_thresh = nms_iou_thresh
+        self.labels_to_use = labels_to_use or []
+        self.task = task or ("segment" if enable_mask_head else "detect")
+        self.enable_mask_head = self.task == "segment"
+        self.channels = channels
+        self.debug_mode = False
+        self.binarize_masks = binarize_masks
+        self.mask_threshold = mask_threshold
+
+        if isinstance(conf_thresh, float):
+            self.conf_threshs = [conf_thresh] * self.n_outputs
+        elif isinstance(conf_thresh, list):
+            self.conf_threshs = conf_thresh
+
+        if not device:
+            self.device = "cpu"
+            if torch.backends.mps.is_available():
+                self.device = "mps"
+            if torch.cuda.is_available():
+                self.device = "cuda"
+        else:
+            self.device = device
+
+        self.np_dtype = np.float32
+
+        self.compile_mode = compile_mode
+        self.compile_dynamic = compile_dynamic
+        if quiet_compile and compile_mode:
+            # max-autotune writes a ranked table per tuned kernel (~700 lines for this
+            # model) straight to sys.stderr, not through logging — so only these two
+            # inductor config flags can turn it off.
+            import torch._inductor.config as inductor_config
+
+            inductor_config.autotune_num_choices_displayed = 0
+            inductor_config.max_autotune_report_choices_stats = False
+        self.channels_last = channels_last and self.device == "cuda"
+        self.amp_dtype = _AMP_DTYPES.get(amp_dtype) if amp_dtype else None
+        if self.amp_dtype is not None and self.device != "cuda":
+            logger.warning(f"AMP requested but device is {self.device}; running fp32")
+            self.amp_dtype = None
+        if self.amp_dtype is not None and self.compile_mode is None:
+            # Measured 10.59 ms vs 8.70 ms fp32 on S@640 batch 1: the cast kernels cost
+            # more than fp16 saves while the model is launch-bound.
+            logger.warning("AMP without compile is slower than fp32 at batch 1")
+        self._warned_shapes: set = set()
+
+        self._load_model()
+        self._test_pred()
+
+    def _load_model(self):
+        self.model = build_model(
+            self.model_name,
+            self.n_outputs,
+            self.enable_mask_head,
+            self.device,
+            img_size=None,
+            in_channels=self.channels,
+            task=self.task,
+        )
+        self.model.load_state_dict(
+            torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu")),
+            strict=False,
+        )
+        self.model.eval()
+        self.model.to(self.device)
+
+        # NB: .half() is not an option here — HybridEncoder builds its sincos pos_embed
+        # as a plain fp32 attribute via setattr (not a registered buffer), so .to(dtype)
+        # silently misses it and the first attention matmul hits a dtype mismatch.
+        # autocast is the supported fp16 path.
+        if self.channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
+        if self.compile_mode:
+            # dynamic must be an explicit bool, never None. None means "let dynamo decide",
+            # and dynamo switches to symbolic shapes the moment it sees a second input size —
+            # which inductor cannot lower for this model (CantSplit on the encoder reshape).
+            # False keeps every shape on its own static graph: recompiles, but it works.
+            self.model = torch.compile(
+                self.model, mode=self.compile_mode, dynamic=self.compile_dynamic
+            )
+
+        logger.info(
+            f"Torch compile model, Device: {self.device}, mode: {self.compile_mode}, "
+            f"amp: {self.amp_dtype}, channels_last: {self.channels_last}"
+        )
+
+    def _test_pred(self) -> None:
+        # Also the compile warmup: this triggers the inductor build (minutes on a cold
+        # cache with max-autotune) so the first real call isn't the one that pays it.
+        random_image = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
+        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(random_image)
+        preds = self._predict(processed_inputs)
+        self._postprocess(preds, processed_sizes, original_sizes)
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+
+    @staticmethod
+    def process_boxes(boxes, processed_sizes, orig_sizes, keep_ratio):
+        final_boxes = torch.zeros_like(boxes, device=boxes.device)
+        for idx in range(boxes.shape[0]):
+            final_boxes[idx] = norm_xywh_to_abs_xyxy(
+                boxes[idx], processed_sizes[idx][0], processed_sizes[idx][1]
+            )
+
+        for i in range(len(orig_sizes)):
+            if keep_ratio:
+                final_boxes[i] = scale_boxes_ratio_kept(
+                    final_boxes[i], processed_sizes[i], orig_sizes[i]
+                )
+            else:
+                final_boxes[i] = scale_boxes(final_boxes[i], orig_sizes[i], processed_sizes[i])
+        return final_boxes
+
+    @staticmethod
+    def process_masks(
+        pred_masks,  # Tensor [B, Q, Hm, Wm] or [Q, Hm, Wm]
+        processed_size,  # (H, W) of network input (after your A.Compose)
+        orig_sizes,  # Tensor [B, 2] (H, W)
+        keep_ratio: bool,
+    ) -> List[torch.Tensor]:
+        """
+        Returns list of length B with masks resized to original image sizes:
+        Each item: Float Tensor [Q, H_orig, W_orig] in [0,1] (no thresholding here).
+        - Handles letterbox padding removal if keep_ratio=True.
+        - Works for both batched and single-image inputs.
+        """
+        single = pred_masks.dim() == 3  # [Q,Hm,Wm]
+        if single:
+            pred_masks = pred_masks.unsqueeze(0)  # -> [1,Q,Hm,Wm]
+
+        B, Q, Hm, Wm = pred_masks.shape
+        proc_h, proc_w = int(processed_size[0]), int(processed_size[1])
+
+        out = []
+        for b in range(B):
+            H0, W0 = int(orig_sizes[b, 0].item()), int(orig_sizes[b, 1].item())
+            m = pred_masks[b]  # [Q, Hm, Wm]
+
+            if keep_ratio:
+                # Compute same gain/pad as in scale_boxes_ratio_kept
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+
+                # Calculate crop region in mask space (scaled from processed_size to mask_size)
+                scale_h, scale_w = Hm / proc_h, Wm / proc_w
+                y1 = int(max(padh, 0) * scale_h)
+                y2 = int((proc_h - max(padh, 0)) * scale_h)
+                x1 = int(max(padw, 0) * scale_w)
+                x2 = int((proc_w - max(padw, 0)) * scale_w)
+                m = m[:, y1:y2, x1:x2]  # [Q, cropped_h, cropped_w]
+
+            # Single resize directly to original size
+            m = torch.nn.functional.interpolate(
+                m.unsqueeze(0), size=(H0, W0), mode="bilinear", align_corners=False
+            ).squeeze(0)  # [Q, H0, W0]
+            out.append(m.clamp_(0, 1))
+
+        if single:
+            return [out[0]]
+        return out
+
+    @staticmethod
+    def process_sem_seg(
+        logits,  # [B, C, H, W] at input resolution
+        processed_sizes,
+        original_sizes,
+        keep_ratio: bool,
+        labels_to_use: List[int] = None,  # empty -> keep all; else ids not requested -> 255
+    ) -> List[Dict[str, torch.Tensor]]:
+        """argmax -> per-image NEAREST resize to original size (letterbox pads cropped first).
+
+        Returns list of length B with {"sem_seg": uint8 [H0, W0] label map}.
+        """
+        maps = logits.argmax(1, keepdim=True).float()  # [B, 1, H, W]
+        if labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
+            lbl_set = torch.as_tensor(labels_to_use, device=maps.device, dtype=maps.dtype)
+            maps = torch.where(torch.isin(maps, lbl_set), maps, 255.0)
+        results = []
+        for b in range(maps.shape[0]):
+            m = maps[b : b + 1]
+            H0, W0 = int(original_sizes[b][0]), int(original_sizes[b][1])
+            if keep_ratio:
+                proc_h, proc_w = int(processed_sizes[b][0]), int(processed_sizes[b][1])
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+                m = m[
+                    ..., max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)
+                ]
+            m = torch.nn.functional.interpolate(m, size=(H0, W0), mode="nearest")[0, 0]
+            results.append({"sem_seg": m.to(torch.uint8)})
+        return results
+
+    def _preds_postprocess(
+        self,
+        outputs,
+        processed_sizes,
+        original_sizes,
+        num_top_queries=300,
+        use_focal_loss=True,
+    ) -> List[Dict[str, torch.Tensor]]:
+        """
+        returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
+        """
+        logits, boxes = outputs["pred_logits"], outputs["pred_boxes"]
+        has_masks = ("pred_masks" in outputs) and (outputs["pred_masks"] is not None)
+        pred_masks = outputs["pred_masks"] if has_masks else None  # [B,Q,Hm,Wm]
+        B, Q = logits.shape[:2]
+
+        boxes = self.process_boxes(
+            boxes, processed_sizes, original_sizes, self.keep_ratio
+        )  # B x TopQ x 4
+
+        # scores/labels and preliminary topK over all Q*C
+        if use_focal_loss:
+            scores_all = torch.sigmoid(logits)  # [B,Q,C]
+            flat = scores_all.flatten(1)  # [B, Q*C]
+            # pre-topk to avoid scanning all queries later
+            K = min(num_top_queries, flat.shape[1])
+            topk_scores, topk_idx = torch.topk(flat, K, dim=-1)  # [B,K]
+            topk_labels = topk_idx - (topk_idx // self.n_outputs) * self.n_outputs  # [B,K]
+            topk_qidx = topk_idx // self.n_outputs  # [B,K]
+        else:
+            probs = torch.softmax(logits, dim=-1)[:, :, :-1]  # [B,Q,C-1]
+            topk_scores, topk_labels = probs.max(dim=-1)  # [B,Q]
+            # keep at most K queries per image by score
+            K = min(num_top_queries, Q)
+            topk_scores, order = torch.topk(topk_scores, K, dim=-1)  # [B,K]
+            topk_labels = topk_labels.gather(1, order)  # [B,K]
+            topk_qidx = order
+
+        results = []
+        for b in range(B):
+            sb = topk_scores[b]
+            lb = topk_labels[b]
+            qb = topk_qidx[b]
+            # Apply per-class confidence thresholds
+            conf_threshs_tensor = torch.tensor(self.conf_threshs, device=sb.device)
+            keep = sb >= conf_threshs_tensor[lb]
+            if self.labels_to_use:  # restrict to requested class ids
+                lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
+                keep &= torch.isin(lb, lbl_set)
+
+            sb = sb[keep]
+            lb = lb[keep]
+            qb = qb[keep]
+            # gather boxes once
+            bb = boxes[b].gather(0, qb.unsqueeze(-1).repeat(1, 4))
+
+            if self.apply_nms and bb.numel() > 0:
+                nms_keep = nms(bb, sb, self.nms_iou_thresh)
+                sb, lb, bb = sb[nms_keep], lb[nms_keep], bb[nms_keep]
+                qb = qb[nms_keep]
+
+            out = {"labels": lb, "boxes": bb, "scores": sb}
+
+            if has_masks and qb.numel() > 0:
+                # gather only kept masks
+                mb = pred_masks[b, qb]  # [K', Hm, Wm] logits or probs
+                # resize to original size (list of length 1)
+                orig_sizes_tensor = torch.tensor([original_sizes[b]], device=mb.device)
+                masks_list = self.process_masks(
+                    mb.unsqueeze(0),  # [1,K',Hm,Wm]
+                    processed_size=processed_sizes[b],  # (Hin, Win)
+                    orig_sizes=orig_sizes_tensor,  # [1,2]
+                    keep_ratio=self.keep_ratio,
+                )
+                out["masks"] = masks_list[0]  # [K, H, W]
+                if self.binarize_masks:
+                    out["masks"] = (out["masks"] >= self.mask_threshold).to(torch.uint8)
+                # clean up masks outside of the corresponding bbox
+                out["masks"] = cleanup_masks(out["masks"], out["boxes"])
+
+            results.append(out)
+
+        return results
+
+    def _compute_nearest_size(self, shape, target_size, stride=32) -> Tuple[int, int]:
+        """
+        Get nearest size that is divisible by 32
+        """
+        scale = target_size / max(shape)
+        new_shape = [int(round(dim * scale)) for dim in shape]
+
+        # Make sure new dimensions are divisible by the stride
+        new_shape = [max(stride, int(np.ceil(dim / stride) * stride)) for dim in new_shape]
+        return new_shape
+
+    def _preprocess(self, img: NDArray, stride: int = 32, bgr: bool = True) -> torch.tensor:
+        if not self.keep_ratio:  # simple resize
+            img = cv2.resize(
+                img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_LINEAR
+            )
+        elif self.rect:  # keep ratio and cut paddings
+            target_height, target_width = self._compute_nearest_size(
+                img.shape[:2], max(*self.input_size)
+            )
+            img = letterbox(img, (target_height, target_width), stride=stride, auto=False)[0]
+        else:  # keep ratio adding paddings
+            img = letterbox(
+                img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
+            )[0]
+
+        # 3ch BGR (cv2.imread) needs a swap; 3ch .npy is RGB already; >3ch is RGB+extras.
+        if self.channels == 3 and bgr:
+            img = img[..., ::-1].transpose(2, 0, 1)
+        else:
+            img = img.transpose(2, 0, 1)
+        img = np.ascontiguousarray(img, dtype=np.uint8)
+
+        # save debug image
+        if self.debug_mode:
+            debug_img = img.reshape([1, *img.shape])
+            debug_img = debug_img[0].transpose(1, 2, 0)  # CHW to HWC
+            if debug_img.shape[2] >= 3:
+                debug_img = debug_img[:, :, :3][:, :, ::-1]  # RGB to BGR for saving
+            cv2.imwrite("torch_infer.jpg", debug_img)
+        return img
+
+    def _prepare_inputs(self, inputs, bgr: bool = True):
+        original_sizes = []
+        processed_sizes = []
+
+        if isinstance(inputs, np.ndarray) and inputs.ndim == 3:  # single image
+            processed_inputs = self._preprocess(inputs, bgr=bgr)[None]
+            original_sizes.append((inputs.shape[0], inputs.shape[1]))
+            processed_sizes.append((processed_inputs[0].shape[1], processed_inputs[0].shape[2]))
+
+        elif isinstance(inputs, np.ndarray) and inputs.ndim == 4:  # batch of images
+            processed_inputs = np.zeros(
+                (inputs.shape[0], self.channels, self.input_size[0], self.input_size[1]),
+                dtype=np.uint8,
+            )
+            for idx, image in enumerate(inputs):
+                processed_inputs[idx] = self._preprocess(image, bgr=bgr)
+                original_sizes.append((image.shape[0], image.shape[1]))
+                processed_sizes.append(
+                    (processed_inputs[idx].shape[1], processed_inputs[idx].shape[2])
+                )
+
+        # Transfer to device and normalize there (faster for GPU)
+        if self.device == "cuda":
+            tensor = torch.from_numpy(processed_inputs).to(self.device, non_blocking=True)
+            tensor = tensor.to(dtype=torch.float32).div_(255.0)
+        else:
+            tensor = (
+                torch.from_numpy(processed_inputs)
+                .to(dtype=torch.float32)
+                .div_(255.0)
+                .to(self.device)
+            )
+        if self.channels_last:
+            tensor = tensor.to(memory_format=torch.channels_last)
+        return tensor, processed_sizes, original_sizes
+
+    @torch.no_grad()
+    def _predict(self, inputs) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
+        self._warn_on_new_shape(tuple(inputs.shape))
+        if self.amp_dtype is not None:
+            with torch.autocast(self.device, dtype=self.amp_dtype):
+                out = self.model(inputs)
+        else:
+            out = self.model(inputs)
+        # Postprocess (sigmoid -> topk -> NMS) in fp32 regardless of AMP, so results
+        # match the eager fp32 path instead of tie-breaking differently in fp16.
+        return {
+            k: v.float() if torch.is_tensor(v) and v.is_floating_point() else v
+            for k, v in out.items()
+        }
+
+    def _warn_on_new_shape(self, shape: tuple) -> None:
+        """Each distinct input shape costs a fresh inductor compile."""
+        if not self.compile_mode or self.compile_dynamic or shape in self._warned_shapes:
+            return
+        if self._warned_shapes:
+            logger.warning(
+                f"New input shape {shape} (already compiled {sorted(self._warned_shapes)}); "
+                "each new shape costs a fresh compile — use fixed-size input if you can"
+            )
+        self._warned_shapes.add(shape)
+
+    def _postprocess(
+        self,
+        preds: torch.tensor,
+        processed_sizes: List[Tuple[int, int]],
+        original_sizes: List[Tuple[int, int]],
+    ):
+        if self.task == "sem_seg":
+            return self.process_sem_seg(
+                preds["sem_seg_logits"],
+                processed_sizes,
+                original_sizes,
+                self.keep_ratio,
+                self.labels_to_use,
+            )
+        return self._preds_postprocess(preds, processed_sizes, original_sizes)
+
+    @torch.no_grad()
+    def __call__(
+        self, inputs: NDArray[np.uint8], bgr: bool = True
+    ) -> List[Dict[str, torch.Tensor]]:
+        """
+        Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
+        3-channel inputs already in RGB order (e.g., ``.npy`` read via
+        ``read_image_hwc``); ignored for >3 channels.
+        Output:
+            List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
+            labels: torch.Tensor of shape (N,), dtype int64
+            boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
+            scores: torch.Tensor of shape (N,), dtype float32
+            masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            task=sem_seg instead returns {"sem_seg": uint8 (H, W) dense label map} per image.
+        """
+        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
+        preds = self._predict(processed_inputs)
+        return self._postprocess(preds, processed_sizes, original_sizes)
+
+    @staticmethod
+    def mask2poly(masks: np.ndarray, img_shape: Tuple[int, int]) -> List[np.ndarray]:
+        """
+        Convert binary masks to normalized polygon coordinates for YOLO segmentation format.
+
+        Args:
+            masks: Binary masks array of shape [N, H, W] where N is number of instances
+            img_shape: Tuple of (height, width) of the original image
+
+        Returns:
+            List of normalized polygon coordinates, each as array of shape [num_points, 2]
+            with values in range [0, 1]. Returns empty array for invalid masks.
+        """
+        h, w = img_shape[:2]
+        polys = []
+
+        for mask in masks:
+            if not isinstance(mask, np.ndarray):
+                mask = mask.numpy()
+            mask = (mask > 0.5).astype(np.uint8)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                # Get the largest contour
+                contour = max(contours, key=cv2.contourArea)
+                contour = contour.reshape(-1, 2)
+                if len(contour) >= 3:  # Need at least 3 points for a valid polygon
+                    # Normalize coordinates
+                    norm_contour = contour.astype(np.float32)
+                    norm_contour[:, 0] /= w
+                    norm_contour[:, 1] /= h
+                    polys.append(norm_contour)
+                else:
+                    polys.append(np.array([]))
+            else:
+                polys.append(np.array([]))
+
+        return polys
+
+
+def letterbox(
+    im,
+    new_shape=(640, 640),
+    color=None,
+    auto=True,
+    scale_fill=False,
+    scaleup=True,
+    stride=32,
+):
+    # Resize and pad image while meeting stride-multiple constraints
+    shape = im.shape[:2]  # current shape [height, width]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+    if color is None:
+        c = im.shape[2] if im.ndim == 3 else 1
+        color = tuple([114] * c)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    if not scaleup:  # only scale down, do not scale up (for better val mAP)
+        r = min(r, 1.0)
+
+    # Compute padding
+    ratio = r, r  # initial uniform width, height ratios (may be updated below)
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif scale_fill:  # stretch
+        dw, dh = 0.0, 0.0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    if shape[::-1] != new_unpad:  # resize
+        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(np.floor(dh)), int(np.ceil(dh))
+    left, right = int(np.floor(dw)), int(np.ceil(dw))
+    im = cv2.copyMakeBorder(
+        im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color
+    )  # add border
+    return im, ratio, (dw, dh)
+
+
+def clip_boxes(boxes, shape):
+    # Clip boxes (xyxy) to image shape (height, width)
+    if isinstance(boxes, torch.Tensor):  # faster individually
+        boxes[..., 0].clamp_(0, shape[1])  # x1
+        boxes[..., 1].clamp_(0, shape[0])  # y1
+        boxes[..., 2].clamp_(0, shape[1])  # x2
+        boxes[..., 3].clamp_(0, shape[0])  # y2
+    else:  # np.array (faster grouped)
+        boxes[..., [0, 2]] = boxes[..., [0, 2]].clip(0, shape[1])  # x1, x2
+        boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0])  # y1, y2
+
+
+def scale_boxes_ratio_kept(boxes, img1_shape, img0_shape, ratio_pad=None, padding=True):
+    """
+    img1_shape: (height, width) after resize
+    img0_shape: (height, width) before resize
+    """
+    # Rescale boxes (xyxy) from img1_shape to img0_shape
+    if ratio_pad is None:  # calculate from img0_shape
+        gain = min(
+            img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1]
+        )  # gain  = old / new
+        pad = (
+            round((img1_shape[1] - img0_shape[1] * gain) / 2 - 0.1),
+            round((img1_shape[0] - img0_shape[0] * gain) / 2 - 0.1),
+        )  # wh padding
+    else:
+        gain = ratio_pad[0][0]
+        pad = ratio_pad[1]
+
+    if padding:
+        boxes[..., [0, 2]] -= pad[0]  # x padding
+        boxes[..., [1, 3]] -= pad[1]  # y padding
+    boxes[..., :4] /= gain
+    clip_boxes(boxes, img0_shape)
+    return boxes
+
+
+def scale_boxes(boxes, orig_shape, resized_shape):
+    scale_x = orig_shape[1] / resized_shape[1]
+    scale_y = orig_shape[0] / resized_shape[0]
+    boxes[:, 0] *= scale_x
+    boxes[:, 2] *= scale_x
+    boxes[:, 1] *= scale_y
+    boxes[:, 3] *= scale_y
+    return boxes
+
+
+def norm_xywh_to_abs_xyxy(
+    boxes: torch.Tensor, height: int, width: int, to_round=True
+) -> torch.Tensor:
+    """Converts boxes: [N, 4] normalized xywh -> [N, 4] absolute xyxy"""
+    x_center = boxes[:, 0] * width
+    y_center = boxes[:, 1] * height
+    box_width = boxes[:, 2] * width
+    box_height = boxes[:, 3] * height
+
+    x_min = x_center - (box_width / 2)
+    y_min = y_center - (box_height / 2)
+    x_max = x_center + (box_width / 2)
+    y_max = y_center + (box_height / 2)
+
+    if to_round:
+        x_min = torch.clamp(torch.floor(x_min), min=0, max=width - 1)
+        y_min = torch.clamp(torch.floor(y_min), min=0, max=height - 1)
+        x_max = torch.clamp(torch.ceil(x_max), min=0, max=width - 1)
+        y_max = torch.clamp(torch.ceil(y_max), min=0, max=height - 1)
+    else:
+        x_min = torch.clamp(x_min, min=0, max=width)
+        y_min = torch.clamp(y_min, min=0, max=height)
+        x_max = torch.clamp(x_max, min=0, max=width)
+        y_max = torch.clamp(y_max, min=0, max=height)
+    return torch.stack([x_min, y_min, x_max, y_max], dim=1)
+
+
+def filter_preds(preds, conf_threshs: List[float]):
+    conf_threshs = torch.tensor(conf_threshs, device=preds[0]["scores"].device)
+    for pred in preds:
+        mask = pred["scores"] >= conf_threshs[pred["labels"]]
+        pred["scores"] = pred["scores"][mask]
+        pred["boxes"] = pred["boxes"][mask]
+        pred["labels"] = pred["labels"][mask]
+    return preds
+
+
+def cleanup_masks(masks: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+    # clean up masks outside of the corresponding bbox
+    N, H, W = masks.shape
+    device = masks.device
+    dtype = masks.dtype
+
+    ys = torch.arange(H, device=device)[None, :, None]  # (1, H, 1)
+    xs = torch.arange(W, device=device)[None, None, :]  # (1, 1, W)
+
+    x1, y1, x2, y2 = boxes.T  # each (N,)
+    inside = (
+        (xs >= x1[:, None, None])
+        & (xs < x2[:, None, None])
+        & (ys >= y1[:, None, None])
+        & (ys < y2[:, None, None])
+    )  # (N, H, W), bool
+    masks = masks * inside.to(dtype)
+    return masks
