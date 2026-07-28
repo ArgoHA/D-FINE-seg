@@ -87,10 +87,10 @@ class ONNX_model:
     def process_masks(
         pred_masks,  # Tensor [B, Q, Hm, Wm] or [Q, Hm, Wm]
         processed_size,  # (H, W) of network input (after your A.Compose)
-        orig_sizes,  # Tensor [B, 2] (H, W)
+        orig_sizes,  # sequence of B (H, W) pairs — keep it on the host, it is only read there
         keep_ratio: bool,
     ) -> List[torch.Tensor]:
-        """Resize masks to original image size, handling letterbox padding if needed."""
+        """Resize masks to original size (half on CUDA), handling letterbox padding if needed."""
         single = pred_masks.dim() == 3  # [Q,Hm,Wm]
         if single:
             pred_masks = pred_masks.unsqueeze(0)  # -> [1,Q,Hm,Wm]
@@ -100,7 +100,7 @@ class ONNX_model:
 
         out = []
         for b in range(B):
-            H0, W0 = int(orig_sizes[b, 0].item()), int(orig_sizes[b, 1].item())
+            H0, W0 = int(orig_sizes[b][0]), int(orig_sizes[b][1])
             m = pred_masks[b]  # [Q, Hm, Wm]
 
             if keep_ratio:
@@ -117,11 +117,16 @@ class ONNX_model:
                 x2 = int((proc_w - max(padw, 0)) * scale_w)
                 m = m[:, y1:y2, x1:x2]  # [Q, cropped_h, cropped_w]
 
-            # Single resize directly to original size
+            # Single resize directly to original size, in fp16 on GPU: this is the largest
+            # tensor in postprocess ([Q, H0, W0]) and it is only compared against a
+            # threshold afterwards. No clamp — bilinear of values already in [0,1] is a
+            # convex combination, so it cannot leave [0,1].
+            if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
+                m = m.half()
             m = torch.nn.functional.interpolate(
                 m.unsqueeze(0), size=(H0, W0), mode="bilinear", align_corners=False
             ).squeeze(0)  # [Q, H0, W0]
-            out.append(m.clamp_(0, 1))
+            out.append(m)
 
         return [out[0]] if single else out
 
@@ -232,8 +237,9 @@ class ONNX_model:
             if self.labels_to_use:  # restrict to requested class ids
                 lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
                 conf_keep &= torch.isin(lb, lbl_set)
-            keep_indices = torch.where(conf_keep)[0]
-            sb, lb, bb = sb[conf_keep], lb[conf_keep], bb[conf_keep]
+            # index once and reuse: boolean indexing would re-run nonzero (and re-sync) per tensor
+            keep_indices = torch.nonzero(conf_keep, as_tuple=True)[0]
+            sb, lb, bb = sb[keep_indices], lb[keep_indices], bb[keep_indices]
 
             if self.apply_nms and bb.numel() > 0:
                 nms_keep = nms(bb, sb, self.nms_iou_thresh)
@@ -245,16 +251,19 @@ class ONNX_model:
             if pred_masks is not None and lb.numel() > 0:
                 mb = pred_masks[b][keep_indices]  # [N, Hm, Wm]
                 # resize to original size (list of length 1)
-                orig_sizes_tensor = torch.tensor([original_sizes[b]], device=mb.device)
                 masks_list = self.process_masks(
                     mb.unsqueeze(0),
                     processed_size=processed_sizes[b],
-                    orig_sizes=orig_sizes_tensor,
+                    orig_sizes=[original_sizes[b]],  # host-side (H, W)
                     keep_ratio=self.keep_ratio,
                 )
                 out["masks"] = masks_list[0]  # [K, H, W]
                 if self.binarize_masks:
-                    out["masks"] = (out["masks"] >= self.mask_threshold).to(torch.uint8)
+                    # torch bool is one byte holding 0/1, so reinterpreting it as uint8 is
+                    # free; .to(uint8) would copy a tensor the size of the source image.
+                    out["masks"] = (out["masks"] >= self.mask_threshold).view(torch.uint8)
+                else:
+                    out["masks"] = out["masks"].float()
                 # clean up masks outside of the corresponding bbox
                 out["masks"] = cleanup_masks(out["masks"], out["boxes"])
 
@@ -410,20 +419,19 @@ def scale_boxes(boxes, orig_shape, resized_shape):
 
 
 def cleanup_masks(masks: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
-    # clean up masks outside of the corresponding bbox
+    """Zero each mask outside its own bbox, in place.
+
+    The box test separates into a column term (N,1,W) and a row term (N,H,1), so it is
+    applied as two broadcast multiplies. Building the full (N,H,W) `inside` indicator
+    instead costs several extra tensors that size at the *original* image resolution.
+    """
     N, H, W = masks.shape
-    device = masks.device
-    dtype = masks.dtype
+    device, dtype = masks.device, masks.dtype
 
     ys = torch.arange(H, device=device)[None, :, None]  # (1, H, 1)
     xs = torch.arange(W, device=device)[None, None, :]  # (1, 1, W)
 
     x1, y1, x2, y2 = boxes.T  # each (N,)
-    inside = (
-        (xs >= x1[:, None, None])
-        & (xs < x2[:, None, None])
-        & (ys >= y1[:, None, None])
-        & (ys < y2[:, None, None])
-    )  # (N, H, W), bool
-    masks = masks * inside.to(dtype)
-    return masks
+    in_x = ((xs >= x1[:, None, None]) & (xs < x2[:, None, None])).to(dtype)  # (N, 1, W)
+    in_y = ((ys >= y1[:, None, None]) & (ys < y2[:, None, None])).to(dtype)  # (N, H, 1)
+    return masks.mul_(in_x).mul_(in_y)

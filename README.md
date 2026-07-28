@@ -284,8 +284,9 @@ A web UI for uploading images and running inference interactively.
 - **mIoU** (decision metric) - macro-averaged: per-class pixel IoU = TP / (TP + FP + FN), averaged over classes present in GT, so every class has equal weight regardless of pixel count.
 - **pixel_acc** - micro: fraction of all valid pixels classified correctly, so it is dominated by large classes.
 
-### Cityscapes - vs YOLO26 and RF-DETR
+### Cityscapes - vs YOLO26 and RF-DETR (fine-tuning)
 
+This is the main dataset where numbers are being updated. Other benchmarks are older and are not updated with every latency/accuracy improvement in this repo.
 500 Cityscapes val images at original 2048x1024, TensorRT 10.13 FP16, batch 1, RTX 5070 Ti. Every framework runs its **own shipped inference code**, scored by one validator against the same GT. Confidence thresholds were calculated for each framework separately to maximixe the F1. Two latency columns - **e2e** (end-to-end, including each framework's CPU preprocessing) and **engine** (pure TensorRT execute) - because they can disagree. Full protocol and every known asymmetry: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
 
 #### Detection
@@ -300,7 +301,7 @@ A web UI for uploading images and running inference interactively.
 
 | model | params (M) | input | conf | **F1** | precision | recall | IoU | e2e ms | engine ms |
 |---|---|---|---|---|---|---|---|---|---|
-| **D-FINE-seg S** | 11.87 | 640x640 | 0.5 | **0.661** | 0.749 | 0.591 | 0.376 | **4.1** | 1.91 |
+| **D-FINE-seg S** | 11.87 | 640x640 | 0.5 | **0.661** | 0.748 | 0.592 | 0.375 | **3.09** | 1.9 |
 | YOLO26-M | 26.98 | 640x640 | 0.25 | 0.599 | 0.688 | 0.53 | 0.312 | 5.24 | 2.08 |
 | RF-DETR-seg-medium | 35.4 | 432x432 | 0.35 | 0.62 | 0.789 | 0.51 | 0.346 | 16.33 | **1.8** |
 
@@ -315,7 +316,7 @@ RF-DETR has no semantic segmentation task, so this one is D-FINE-seg vs YOLO26.
 | YOLO26-L | 17.87 | 640x640 | 0.739 | 0.949 | 3.56 | 1.63 |
 | YOLO26-M | 14.32 | 640x640 | 0.733 | 0.947 | 3.08 | **1.16** |
 
-### Other datasets (fine-tuning)
+### Other datasets
 
 <details>
 <summary><b>VisDrone - object detection</b></summary>

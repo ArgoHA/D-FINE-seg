@@ -103,7 +103,7 @@ class LiteRT_model:
 
         out = []
         for b in range(B):
-            H0, W0 = int(orig_sizes[b, 0].item()), int(orig_sizes[b, 1].item())
+            H0, W0 = int(orig_sizes[b][0]), int(orig_sizes[b][1])
             m = pred_masks[b]
 
             if keep_ratio:
@@ -117,10 +117,14 @@ class LiteRT_model:
                 x2 = int((proc_w - max(padw, 0)) * scale_w)
                 m = m[:, y1:y2, x1:x2]
 
+            # fp16 on GPU: this is the largest tensor in postprocess and it is only compared
+            # against a threshold. No clamp — bilinear of [0,1] values cannot leave [0,1].
+            if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
+                m = m.half()
             m = torch.nn.functional.interpolate(
                 m.unsqueeze(0), size=(H0, W0), mode="bilinear", align_corners=False
             ).squeeze(0)
-            out.append(m.clamp_(0, 1))
+            out.append(m)
 
         return [out[0]] if single else out
 
@@ -258,9 +262,11 @@ class LiteRT_model:
                 lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
                 keep &= torch.isin(lb, lbl_set)
 
-            sb = sb[keep]
-            lb = lb[keep]
-            qb = qb[keep]
+            # index once and reuse: boolean indexing would re-run nonzero (and re-sync) per tensor
+            keep_idx = torch.nonzero(keep, as_tuple=True)[0]
+            sb = sb[keep_idx]
+            lb = lb[keep_idx]
+            qb = qb[keep_idx]
             bb = boxes[b].gather(0, qb.unsqueeze(-1).repeat(1, 4))
 
             if self.apply_nms and bb.numel() > 0:
@@ -272,16 +278,19 @@ class LiteRT_model:
 
             if has_masks and qb.numel() > 0:
                 mb = pred_masks[b, qb]
-                orig_sizes_tensor = torch.tensor([original_sizes[b]])
                 masks_list = self.process_masks(
                     mb.unsqueeze(0),
                     processed_size=processed_sizes[b],
-                    orig_sizes=orig_sizes_tensor,
+                    orig_sizes=[original_sizes[b]],  # host-side (H, W)
                     keep_ratio=self.keep_ratio,
                 )
                 out["masks"] = masks_list[0]
                 if self.binarize_masks:
-                    out["masks"] = (out["masks"] >= self.mask_threshold).to(torch.uint8)
+                    # torch bool is one byte holding 0/1, so reinterpreting it as uint8 is
+                    # free; .to(uint8) would copy a tensor the size of the source image.
+                    out["masks"] = (out["masks"] >= self.mask_threshold).view(torch.uint8)
+                else:
+                    out["masks"] = out["masks"].float()
                 out["masks"] = cleanup_masks(out["masks"], out["boxes"])
 
             results.append(out)
@@ -413,19 +422,19 @@ def norm_xywh_to_abs_xyxy(
 
 
 def cleanup_masks(masks: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+    """Zero each mask outside its own bbox, in place.
+
+    The box test separates into a column term (N,1,W) and a row term (N,H,1), so it is
+    applied as two broadcast multiplies. Building the full (N,H,W) `inside` indicator
+    instead costs several extra tensors that size at the *original* image resolution.
+    """
     N, H, W = masks.shape
-    device = masks.device
-    dtype = masks.dtype
+    device, dtype = masks.device, masks.dtype
 
     ys = torch.arange(H, device=device)[None, :, None]
     xs = torch.arange(W, device=device)[None, None, :]
 
     x1, y1, x2, y2 = boxes.T
-    inside = (
-        (xs >= x1[:, None, None])
-        & (xs < x2[:, None, None])
-        & (ys >= y1[:, None, None])
-        & (ys < y2[:, None, None])
-    )
-    masks = masks * inside.to(dtype)
-    return masks
+    in_x = ((xs >= x1[:, None, None]) & (xs < x2[:, None, None])).to(dtype)  # (N, 1, W)
+    in_y = ((ys >= y1[:, None, None]) & (ys < y2[:, None, None])).to(dtype)  # (N, H, 1)
+    return masks.mul_(in_x).mul_(in_y)
