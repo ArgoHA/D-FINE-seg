@@ -77,3 +77,7 @@ Minor improvement - now pretrained weigts automatically download from HuggingFac
 |--------|------|---------|
 | PyTorch fp32 | 0.728 | 9.8 ms |
 | TensorRT fp16 | 0.728 | 2.0 ms |
+
+## 2026-07-28 - Instance segmentation postprocessing speedup
+
+E2E inference latency of instance segmentation model improved by 25% (4.1ms -> 3.09ms) for TensorRT. Minor speedups for other formats too.
