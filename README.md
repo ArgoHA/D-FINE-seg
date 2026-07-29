@@ -42,10 +42,8 @@ One frame, three tasks, one config flag:
 </p>
 
 <p align="center">
-  <sub><a href="#cityscapes---vs-yolo26-and-rf-detr">Full tables below</a></sub>
+  <sub><a href="#cityscapes---vs-yolo26-and-rf-detr-fine-tuning">Full tables below</a></sub>
 </p>
-
-
 
 ## Highlights
 
