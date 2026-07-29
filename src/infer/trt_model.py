@@ -18,9 +18,6 @@ class TRT_model:
         conf_thresh: float | List[float] = 0.5,
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
-        # soft masks at native (Hm, Wm), pads cropped; no upsample/binarize/bbox-crop
-        # binarize_masks will be ignored if return_raw_masks=True
-        return_raw_masks: bool = False,
         rect: bool = False,
         keep_ratio: bool = False,
         device: str = None,
@@ -35,7 +32,6 @@ class TRT_model:
         self.keep_ratio = keep_ratio
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
-        self.return_raw_masks = return_raw_masks  # takes precedence over binarize_masks
         self.np_dtype = np.float32
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
@@ -220,14 +216,12 @@ class TRT_model:
         processed_size,  # (H, W) of network input (after your A.Compose)
         orig_sizes,  # sequence of B (H, W) pairs — keep it on the host, it is only read there
         keep_ratio: bool,
-        raw: bool = False,  # keep masks at their native (Hm, Wm) instead of resizing
     ) -> List[torch.Tensor]:
         """
         Returns list of length B with masks resized to original image sizes:
         Each item: [Q, H_orig, W_orig] in [0,1], half on CUDA / float on CPU (not thresholded).
         - Handles letterbox padding removal if keep_ratio=True.
         - Works for both batched and single-image inputs.
-        - raw=True: skip the resize, return [Q, Hm, Wm] float (pads still cropped).
         """
         single = pred_masks.dim() == 3  # [Q,Hm,Wm]
         if single:
@@ -254,10 +248,6 @@ class TRT_model:
                 x1 = int(max(padw, 0) * scale_w)
                 x2 = int((proc_w - max(padw, 0)) * scale_w)
                 m = m[:, y1:y2, x1:x2]  # [Q, cropped_h, cropped_w]
-
-            if raw:
-                out.append(m.float())
-                continue
 
             # Single resize directly to original size, in fp16 on GPU: this is the largest
             # tensor in postprocess ([Q, H0, W0]) and it is only compared against a
@@ -487,18 +477,16 @@ class TRT_model:
                     processed_size=processed_sizes[b],  # (Hin, Win)
                     orig_sizes=[original_sizes[b]],  # host-side (H, W)
                     keep_ratio=self.keep_ratio,
-                    raw=self.return_raw_masks,
                 )
-                out["masks"] = masks_list[0]  # [K, H, W], half — [K, Hm, Wm] float if raw
-                if not self.return_raw_masks:  # boxes are in original space, so no crop either
-                    if self.binarize_masks:
-                        # torch bool is one byte holding 0/1, so reinterpreting it as uint8 is
-                        # free; .to(uint8) would copy a tensor the size of the source image.
-                        out["masks"] = (out["masks"] >= self.mask_threshold).view(torch.uint8)
-                    else:
-                        out["masks"] = out["masks"].float()
-                    # clean up masks outside of the corresponding bbox
-                    out["masks"] = cleanup_masks(out["masks"], out["boxes"])
+                out["masks"] = masks_list[0]  # [K, H, W], half
+                if self.binarize_masks:
+                    # torch bool is one byte holding 0/1, so reinterpreting it as uint8 is
+                    # free; .to(uint8) would copy a tensor the size of the source image.
+                    out["masks"] = (out["masks"] >= self.mask_threshold).view(torch.uint8)
+                else:
+                    out["masks"] = out["masks"].float()
+                # clean up masks outside of the corresponding bbox
+                out["masks"] = cleanup_masks(out["masks"], out["boxes"])
 
             results.append(out)
         return results
