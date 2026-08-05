@@ -343,12 +343,12 @@ def random_affine(img, targets, segments, target_size, degrees, translate, scale
     Args:
       img: (Hbig, Wbig, 3)
       targets: (N, 5) -> [cls, x1, y1, x2, y2] ABS on the mosaic canvas
-      segments: list[np.ndarray] of length N; each (K,2) ABS polygon on the mosaic canvas
-                If an object comes from bbox-only annotation, pass an empty array for it.
+      segments: list of length N; entry i is that object's list of (K,2) ABS polygon parts
+                (islands) on the mosaic canvas — empty list for a bbox-only annotation.
     Returns:
       img_aff: final (target_h, target_w, 3)
       targets_aff: (M, 5) filtered + transformed
-      segments_aff: list[np.ndarray] length=M, transformed polygons
+      segments_aff: list length=M of transformed part lists
     """
     M, scale = get_transform_matrix(img.shape[:2], target_size, degrees, scales, shear, translate)
 
@@ -375,30 +375,34 @@ def random_affine(img, targets, segments, target_size, degrees, translate, scale
 
         # transform segments (if provided)
         segs_out = []
+        # False only for rows that had parts and lost every one to clipping
+        alive = np.ones(n, dtype=bool)
         if segments is None or len(segments) == 0:
-            segs_out = [np.empty((0, 2), dtype=np.float32) for _ in range(n)]
+            segs_out = [[] for _ in range(n)]
         else:
             # keep 1:1 with targets
-            for idx, s in enumerate(segments):
-                if s.size == 0:
-                    segs_out.append(np.empty((0, 2), dtype=np.float32))
+            for idx, parts in enumerate(segments):
+                if not len(parts):
+                    segs_out.append([])  # detection-only annotation
                     continue
-                pts = np.concatenate([s, np.ones((len(s), 1), dtype=np.float32)], axis=1)  # (K,3)
-                pts = pts @ M.T
-                pts = pts[:, :2]
-                # Properly clip polygon to the target frame
-                clipped = clip_polygon_to_rect(pts, target_size[0], target_size[1])
-                if clipped.size >= 6:  # At least 3 points for a valid polygon
-                    segs_out.append(clipped)
-                    # Update bounding box from clipped polygon
-                    x_min, y_min = clipped.min(axis=0)
-                    x_max, y_max = clipped.max(axis=0)
-                    new[idx] = [x_min, y_min, x_max, y_max]
+                kept = []
+                for s in parts:
+                    pts = np.concatenate([s, np.ones((len(s), 1), dtype=np.float32)], axis=1)
+                    pts = (pts @ M.T)[:, :2]
+                    # Properly clip polygon to the target frame
+                    clipped = clip_polygon_to_rect(pts, target_size[0], target_size[1])
+                    if clipped.size >= 6:  # At least 3 points for a valid polygon
+                        kept.append(clipped)
+                segs_out.append(kept)
+                if kept:
+                    # Update bounding box from the union of the clipped parts
+                    all_pts = np.concatenate(kept, axis=0)
+                    new[idx] = [*all_pts.min(axis=0), *all_pts.max(axis=0)]
                 else:
-                    segs_out.append(np.empty((0, 2), dtype=np.float32))
+                    alive[idx] = False  # else an all-zero mask would supervise a live box
 
         # filter candidates and keep segments in sync
-        i = box_candidates(box1=targets[:, 1:5].T * scale, box2=new.T, area_thr=0.1)
+        i = box_candidates(box1=targets[:, 1:5].T * scale, box2=new.T, area_thr=0.1) & alive
         targets = targets[i]
         targets[:, 1:5] = new[i]
         segs_out = [segs_out[k] for k, keep in enumerate(i) if keep]
@@ -1285,11 +1289,20 @@ def norm_poly_to_abs(poly_norm_flat: np.ndarray, H: int, W: int) -> np.ndarray:
     return pts.astype(np.float32)
 
 
-def poly_abs_to_mask(poly_abs: np.ndarray, h: int, w: int) -> np.ndarray:
-    pts = np.round(poly_abs).astype(np.int32)
+def poly_abs_to_mask(parts, h: int, w: int) -> np.ndarray:
+    """Rasterize one instance's polygon parts (islands) into a single (h,w) uint8 mask.
+
+    Accepts a (K,2) array or a list of them. Parts are filled one per call: a single
+    multi-contour fillPoly applies the even-odd rule and punches a hole where parts
+    nest, while pycocotools merges an instance's parts by OR.
+    """
+    if isinstance(parts, np.ndarray):
+        parts = [parts]
     m = np.zeros((h, w), dtype=np.uint8)
-    if len(pts) >= 3:  # cv2.fillPoly segfaults on empty/degenerate contours
-        cv2.fillPoly(m, [pts], 1)
+    for poly_abs in parts:
+        pts = np.round(poly_abs).astype(np.int32)
+        if len(pts) >= 3:  # cv2.fillPoly segfaults on empty/degenerate contours
+            cv2.fillPoly(m, [pts], 1)
     return m
 
 

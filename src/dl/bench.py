@@ -182,15 +182,7 @@ def test_model(
                 W0 = int(target["orig_size"][1])
                 if polys:
                     gt_masks = torch.from_numpy(
-                        np.stack(
-                            [
-                                poly_abs_to_mask(p, H0, W0)
-                                if getattr(p, "size", 0)
-                                else np.zeros((H0, W0), dtype=np.uint8)
-                                for p in polys
-                            ],
-                            axis=0,
-                        )
+                        np.stack([poly_abs_to_mask(parts, H0, W0) for parts in polys], axis=0)
                     ).to(torch.uint8)
                 else:
                     gt_masks = torch.zeros((0, H0, W0), dtype=torch.uint8)

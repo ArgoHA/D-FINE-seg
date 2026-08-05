@@ -82,7 +82,8 @@ def parse_yolo_label_file(path: Path):
     Supports both pure detection lines (5 cols) and YOLO-Seg lines (>=7 cols).
     Returns:
       boxes_norm: np.ndarray (N,5) -> [cls, xc, yc, w, h] in norm (float32)
-      polys_norm: list[np.ndarray] -> each (K,2) normalized polygon (float32) or [] if none
+      polys_norm: list of length N; entry i is that object's list of (K,2) normalized polygon
+                  parts (float32). One YOLO line = one part, so entries hold 0 or 1 part.
     """
     boxes_norm = []
     polys_norm = []  # keep normalized here
@@ -98,7 +99,7 @@ def parse_yolo_label_file(path: Path):
             nums = [float(x) for x in parts[1:]]  # variable length
             if len(nums) == 4:  # bbox annotations
                 boxes_norm.append([cl, *nums[:4]])
-                polys_norm.append(np.empty((0, 2), dtype=np.float32))  # no polygon
+                polys_norm.append([])  # no polygon
             elif len(nums) >= 6:  # segmentation annotations
                 if len(nums) % 2 == 1:
                     nums = nums[:-1]
@@ -107,7 +108,7 @@ def parse_yolo_label_file(path: Path):
                         "Dropping the last value."
                     )
                 poly = np.array(nums).reshape(-1, 2)  # (K, 2)
-                polys_norm.append(poly)
+                polys_norm.append([poly])
                 x_min, y_min = poly.min(axis=0)
                 x_max, y_max = poly.max(axis=0)
                 boxes_norm.append(
@@ -130,7 +131,8 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
       entries: list of dicts, each with:
           'file_name': str
           'targets': np.ndarray (N, 5) [class_id, x1, y1, x2, y2] absolute
-          'polys_abs': list of np.ndarray (K, 2) absolute polygon coordinates
+          'polys_abs': list of length N; entry i is that instance's list of (K, 2) absolute
+                       polygon parts (a COCO instance may be split into several islands)
       cat_id_to_class_id: dict mapping COCO category_id -> 0-based contiguous class_id
     """
     with open(json_path, "r") as f:
@@ -144,6 +146,7 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
         img_to_anns[ann["image_id"]].append(ann)
 
     entries = []
+    escaped_box = []  # anns whose mask sticks out of ann['bbox'] — see warning below
     for img_info in coco.get("images", []):
         img_id = img_info["id"]
         file_name = img_info["file_name"]
@@ -166,15 +169,24 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
             targets.append([class_id, bx, by, bx + bw, by + bh])
 
             seg = ann.get("segmentation")
-            if isinstance(seg, list) and len(seg) > 0:
-                largest = max(seg, key=len)
-                if len(largest) >= 6:
-                    poly = np.array(largest, dtype=np.float32).reshape(-1, 2)
-                    polys_abs.append(poly)
-                else:
-                    polys_abs.append(np.empty((0, 2), dtype=np.float32))
-            else:
-                polys_abs.append(np.empty((0, 2), dtype=np.float32))
+            if isinstance(seg, dict):
+                raise ValueError(
+                    f"{json_path}: ann {ann.get('id')} stores segmentation as RLE; only polygon "
+                    "lists are supported (iscrowd anns are skipped before this point)."
+                )
+            # every part is kept: one instance can be split into several islands by occluders
+            parts = []
+            if isinstance(seg, list):
+                parts = [np.array(p, dtype=np.float32).reshape(-1, 2) for p in seg if len(p) >= 6]
+            polys_abs.append(parts)
+
+            if parts:
+                all_pts = np.concatenate(parts, axis=0)
+                out = (all_pts.min(axis=0) < (bx - 1, by - 1)).any() or (
+                    all_pts.max(axis=0) > (bx + bw + 1, by + bh + 1)
+                ).any()
+                if out:
+                    escaped_box.append(ann.get("id"))
 
         if len(targets) == 0:
             targets_arr = np.zeros((0, 5), dtype=np.float32)
@@ -188,6 +200,15 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
                 "targets": targets_arr,
                 "polys_abs": polys_abs,
             }
+        )
+
+    if escaped_box and is_main_process():
+        # inference crops each mask to its own box (cleanup_masks), so mask area outside
+        # ann['bbox'] can never be predicted
+        logger.warning(
+            f"{json_path.name}: {len(escaped_box)} ann(s) have mask area outside ann['bbox'] "
+            f"(ids: {escaped_box[:5]}{', …' if len(escaped_box) > 5 else ''}). That area is "
+            "unreachable at inference — boxes should contain their segmentation."
         )
 
     return entries, cat_id_to_class_id
@@ -440,7 +461,7 @@ class CustomDataset(Dataset):
         # Get labels
         labels_path = self.root_path / "labels" / f"{image_path.stem}.txt"
         targets = np.zeros((0, 5), dtype=np.float32)
-        polys_abs = []  # list[(K, 2)] normalized; may be []
+        polys_abs = []  # per target row: list of (K, 2) abs polygon parts; may be []
 
         if labels_path.exists() and labels_path.stat().st_size > 1:
             boxes_norm, polys_norm = parse_yolo_label_file(labels_path)
@@ -450,7 +471,9 @@ class CustomDataset(Dataset):
 
             xyxy_abs = norm_xywh_to_abs_xyxy(boxes_norm[:, 1:5], height, width).astype(np.float32)
             targets = np.concatenate([boxes_norm[:, [0]], xyxy_abs], axis=1)  # [N,5]
-            polys_abs = [norm_poly_to_abs(p, height, width) for p in polys_norm]
+            polys_abs = [
+                [norm_poly_to_abs(p, height, width) for p in parts] for parts in polys_norm
+            ]
         return image, targets, orig_size, polys_abs
 
     def _get_data_coco(self, idx) -> Tuple[np.ndarray, np.ndarray, torch.Tensor, list]:
@@ -473,7 +496,7 @@ class CustomDataset(Dataset):
         orig_size = torch.tensor([height, width])
 
         targets = entry["targets"].copy()
-        polys_abs = [p.copy() for p in entry["polys_abs"]]
+        polys_abs = [[p.copy() for p in parts] for parts in entry["polys_abs"]]
         return image, targets, orig_size, polys_abs
 
     def _load_mosaic(self, idx):
@@ -526,15 +549,15 @@ class CustomDataset(Dataset):
                 targets[:, 4] = scale_h * targets[:, 4] + padh
             mosaic_targets.append(targets)
 
-            # adjust polygons 1:1 with targets rows
-            for p in polys_abs:
-                if p.size == 0:
-                    mosaic_segments.append(np.empty((0, 2), dtype=np.float32))
-                    continue
-                pp = p.astype(np.float32).copy()
-                pp[:, 0] = pp[:, 0] * scale_w + padw
-                pp[:, 1] = pp[:, 1] * scale_h + padh
-                mosaic_segments.append(pp)
+            # adjust polygons 1:1 with targets rows (each row = list of parts)
+            for parts in polys_abs:
+                scaled = []
+                for p in parts:
+                    pp = p.astype(np.float32).copy()
+                    pp[:, 0] = pp[:, 0] * scale_w + padw
+                    pp[:, 1] = pp[:, 1] * scale_h + padh
+                    scaled.append(pp)
+                mosaic_segments.append(scaled)
 
         if len(mosaic_targets):
             mosaic_targets = np.concatenate(mosaic_targets, 0)
@@ -543,21 +566,24 @@ class CustomDataset(Dataset):
             canvas_w, canvas_h = 2 * self.target_w, 2 * self.target_h
             clipped_segments = []
             valid_indices = []
-            for i, poly in enumerate(mosaic_segments):
-                if poly.size == 0:
+            for i, parts in enumerate(mosaic_segments):
+                if not parts:
                     # detection-only annotation (no polygon) — keep the box
-                    clipped_segments.append(np.empty((0, 2), dtype=np.float32))
+                    clipped_segments.append([])
                     valid_indices.append(i)
                     continue
-                clipped = clip_polygon_to_rect(poly, canvas_w, canvas_h)
-                if clipped.size >= 6:  # At least 3 points for a valid polygon
-                    clipped_segments.append(clipped)
+                kept = [
+                    c
+                    for c in (clip_polygon_to_rect(p, canvas_w, canvas_h) for p in parts)
+                    if c.size >= 6  # At least 3 points for a valid polygon
+                ]
+                if kept:
+                    clipped_segments.append(kept)
                     valid_indices.append(i)
-                    # Update bbox from clipped polygon
-                    x_min, y_min = clipped.min(axis=0)
-                    x_max, y_max = clipped.max(axis=0)
-                    mosaic_targets[i, 1:5] = [x_min, y_min, x_max, y_max]
-                # else: polygon fully clipped away — drop box and segment
+                    # Update bbox from the union of the surviving parts
+                    all_pts = np.concatenate(kept, axis=0)
+                    mosaic_targets[i, 1:5] = [*all_pts.min(axis=0), *all_pts.max(axis=0)]
+                # else: every part clipped away — drop box and segment
 
             # keep only rows whose polygon survived clipping (det-only rows always kept)
             mosaic_targets = mosaic_targets[valid_indices]
@@ -597,10 +623,7 @@ class CustomDataset(Dataset):
         # rasterize masks from transformed polygons
         if self.return_masks and len(mosaic_segs):
             H, W = self.target_h, self.target_w
-            masks = [
-                poly_abs_to_mask(p, H, W) if p.size else np.zeros((H, W), np.uint8)
-                for p in mosaic_segs
-            ]
+            masks = [poly_abs_to_mask(parts, H, W) for parts in mosaic_segs]
             masks_t = torch.from_numpy(np.stack(masks, 0)).to(torch.uint8)
         else:
             masks_t = torch.zeros((0, self.target_h, self.target_w), dtype=torch.uint8)
@@ -620,8 +643,8 @@ class CustomDataset(Dataset):
             masks_t: (N,H,W) uint8 (possibly N=0)
             image_path: Path
             orig_size: torch.tensor([H, W])
-            polys_out: list[(K,2)] absolute polygons at ORIGINAL resolution, aligned with
-                labels/boxes — only populated for val/test segmentation eval, else None.
+            polys_out: per row, list of (K,2) absolute polygon parts at ORIGINAL resolution,
+                aligned with labels/boxes — only for val/test segmentation eval, else None.
         """
         image_path = Path(self.split.iloc[idx].values[0])
         # Original-resolution GT polygons, for val/test eval.
@@ -653,7 +676,7 @@ class CustomDataset(Dataset):
             masks_list = []
             if self.return_masks and len(polys_abs) > 0:
                 H, W = image.shape[0], image.shape[1]
-                masks_list = [poly_abs_to_mask(p, H, W) for p in polys_abs]  # original shape
+                masks_list = [poly_abs_to_mask(parts, H, W) for parts in polys_abs]  # orig shape
 
             # Apply transformations
             if self.return_masks:
