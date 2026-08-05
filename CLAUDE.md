@@ -110,7 +110,13 @@ True` is rejected for sem_seg.
   test.json         # optional
 ```
 
-Then set `train.coco_dataset: True`. No `make split` needed.
+Then set `train.coco_dataset: True`. Already-split JSONs need no `make split`.
+
+If instead you have a single `coco.json`, `make split` splits it into `train.json` / `val.json`
+(+ `test.json` when `split.val_split < 1 - split.train_split`) using the same ratios, seed and
+`ignore_negatives` as the YOLO path — it splits by image, carries each image's annotations along,
+and copies `categories` / `info` / `licenses` into every output, so each file is a standalone COCO
+dataset. `train.coco_dataset: True` selects this branch; the source filename must be `coco.json`.
 
 ### 5.3 Conversion / cleanup utilities
 
@@ -328,7 +334,7 @@ uv run python -m tests.generate_fixtures
 
 | Task | Command |
 |---|---|
-| Prepare YOLO splits | `make split` |
+| Prepare splits (YOLO CSVs, or `coco.json` → train/val/test.json) | `make split` |
 | Train (single GPU) | `python -m src.dl.train exp_name=<name> model_name=<size>` |
 | Train (multi-GPU) | set `train.ddp.enabled=True`, `train.ddp.n_gpus=N`, then `make train` |
 | Fine-tune from checkpoint | `python -m src.dl.train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
