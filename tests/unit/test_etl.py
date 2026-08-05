@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from src.etl.png_mask_to_yolo import find_contours, mask_to_yolo_lines, to_yolo_poly
+from src.etl.split import split
 
 
 def _binary_square(h=64, w=64, x0=10, y0=10, x1=40, y1=50):
@@ -76,3 +77,29 @@ def test_mask_to_yolo_lines_filters_small_blobs():
         n_points_max=None,
     )
     assert lines == []
+
+
+def test_split_ignore_negatives_drops_every_unlabeled_image(tmp_path):
+    """Regression: the filter used to mutate the list it was iterating, so each removal
+    skipped the next element and consecutive negatives survived.
+
+    The negatives must be *consecutive* to expose it — with alternating negatives each
+    removal happens to shift the next one into the index about to be read, so the buggy
+    version passes.
+    """
+    (tmp_path / "images").mkdir()
+    (tmp_path / "labels").mkdir()
+    labeled = {0, 1, 2, 3, 4}
+    for i in range(20):
+        (tmp_path / "images" / f"im_{i:03d}.jpg").touch()
+        if i in labeled:
+            (tmp_path / "labels" / f"im_{i:03d}.txt").write_text("0 0.5 0.5 0.1 0.1\n")
+
+    split(tmp_path, 0.5, 0.25, tmp_path / "images", True, seed=42, shuffle=False)
+
+    kept = {
+        n
+        for name in ("train", "val", "test")
+        for n in (tmp_path / f"{name}.csv").read_text().split()
+    }
+    assert kept == {f"im_{i:03d}.jpg" for i in labeled}
