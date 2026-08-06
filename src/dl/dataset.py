@@ -254,7 +254,7 @@ class CustomDataset(Dataset):
         self.ignore_background = False
         self.label_to_name = cfg.train.label_to_name
         self.return_masks = str(cfg.task).lower() == "segment"
-        if self.return_masks and not self.coco_mode:
+        if self.return_masks:
             self._assert_has_polygons()
 
         self.mosaic_prob = resolve_mosaic_prob(cfg)
@@ -272,6 +272,14 @@ class CustomDataset(Dataset):
 
     def _assert_has_polygons(self) -> None:
         """bbox-only labels parse to empty polygons, so masks would silently be all-zero."""
+        if self.coco_mode:
+            if any(parts for e in self._coco_entries for parts in e["polys_abs"]):
+                return
+            raise ValueError(
+                f"task=segment but no polygon annotations in the COCO json ({self.mode} split): "
+                "every ann is bbox-only (missing/empty 'segmentation'). "
+                "Point train.data_path at the segmentation dataset."
+            )
         for img_path in self.split.iloc[:, 0]:
             labels_path = self.root_path / "labels" / f"{Path(img_path).stem}.txt"
             if not labels_path.exists():
@@ -1166,12 +1174,14 @@ class Loader:
 
         return dataloader
 
-    def _make_dataset(self, mode: str) -> Dataset:
+    def _make_dataset(self, split: str, mode: Optional[str] = None) -> Dataset:
+        """`split` picks the data; `mode` overrides the dataset mode (bench reuses val/test)."""
+        mode = mode or split
         if self.task == "sem_seg":
             return SemSegDataset(
                 self.img_size,
                 self.root_path,
-                self.splits[mode],
+                self.splits[split],
                 self.debug_img_processing,
                 mode=mode,
                 cfg=self.cfg,
@@ -1179,11 +1189,11 @@ class Loader:
         return CustomDataset(
             self.img_size,
             self.root_path,
-            self.splits[mode],
+            self.splits[split],
             self.debug_img_processing,
             mode=mode,
             cfg=self.cfg,
-            coco_annotations=self.coco_annotations[mode],
+            coco_annotations=self.coco_annotations[split],
         )
 
     def build_dataloaders(
