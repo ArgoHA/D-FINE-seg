@@ -122,6 +122,20 @@ dataset. `train.coco_dataset: True` selects this branch; the source filename mus
 
 In [src/etl/](src/etl/): `yolo2coco.py`, `coco2yolo.py`, `polys2bbox.py`, `png_mask_to_yolo.py`, `remove_dups.py`, `clean_csv.py`, `split_from_yolo.py`. Run as `python -m src.etl.<name>`.
 
+### 5.4 SAM3 pre-annotation
+
+[src/etl/sam_labels.py](src/etl/sam_labels.py) labels a folder from text prompts with a local SAM3 ([src/infer/sam3_model.py](src/infer/sam3_model.py)) — `--task detect|segment` x `--format coco|yolo`, one class per `--prompt` in the order given:
+
+```bash
+python -m src.etl.sam_labels /abs/path/images --prompt person --prompt car --format coco --task segment
+```
+
+COCO output is `coco.json` (feeds `make split` directly), with one polygon per island of an instance; YOLO output is one `.txt` per image plus `labels.txt`, and islands are spliced into the single ring per line that format allows (zero-width bridges, so the filled ring covers the same pixels). `--visualize` writes overlays of the emitted geometry to `vis/`.
+
+Box source differs by task, deliberately. `detect` writes SAM3's box head (`res["boxes"]`). `segment` measures its boxes off the polygons it writes, because SAM3's box clips real mask area on ~1/3 of instances (mean 1.3%, up to 18% — measured over 646 Finow instances) and the COCO loader flags mask outside `ann['bbox']` as unreachable at inference. Never derive a box from the raw mask extent: a stray SAM3 speck 968 px off the object produced a 994x207 box for a 26x23 person (344x the area).
+
+Needs `transformers`, which the project venv lacks. `facebook/sam3` is gated, but `SAM3_model` loads `local_files_only=True` first, so a cached snapshot needs no token.
+
 ## 6. Training
 
 ### 6.1 Single-GPU

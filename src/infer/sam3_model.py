@@ -29,10 +29,28 @@ class SAM3_model:
         self.conf_thresh = conf_thresh
         self.mask_threshold = mask_threshold
 
-        self.processor = Sam3Processor.from_pretrained(model_path)
-        self.model = Sam3Model.from_pretrained(model_path, dtype=torch.bfloat16)
+        self.processor, self.model = self._load(model_path)
         self.model = self.model.to(self.device).eval()
         logger.info(f"SAM3 model, Device: {self.device}")
+
+    @staticmethod
+    def _load(model_path: str):
+        """Load from the HF cache first, hub second.
+
+        A repo id is otherwise always resolved through the hub, so a gated one (`facebook/sam3`)
+        demands a valid token on every run even when the snapshot is already on disk.
+        """
+        try:
+            return (
+                Sam3Processor.from_pretrained(model_path, local_files_only=True),
+                Sam3Model.from_pretrained(model_path, dtype=torch.bfloat16, local_files_only=True),
+            )
+        except OSError:
+            logger.info(f"{model_path} not in the local HF cache, fetching from the hub")
+            return (
+                Sam3Processor.from_pretrained(model_path),
+                Sam3Model.from_pretrained(model_path, dtype=torch.bfloat16),
+            )
 
     @torch.inference_mode()
     def __call__(
