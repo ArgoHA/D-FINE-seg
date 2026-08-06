@@ -11,7 +11,7 @@ train:
   root: /home/argo/Desktop/Projects/cityscapes # project root with dataset and outputs
   pretrained_dataset: coco # coco, obj2coco
   # detect: dfine_${model_name}_${train.pretrained_dataset}.pt; sem_seg/segment: use dfine_seg_*
-  pretrained_model_path: pretrained/dfine_seg_${model_name}_coco.pt
+  pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt
 
   imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
   coco_dataset: False # set True when annotations are in COCO JSON format (train/val/test)
