@@ -16,7 +16,7 @@ from tabulate import tabulate
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dl.dataset import CustomDataset, Loader, SemSegDataset, read_image_hwc
+from src.dl.dataset import Loader, read_image_hwc
 from src.dl.utils import (
     encode_sample_masks_to_rle,
     get_latest_experiment_name,
@@ -31,25 +31,13 @@ IS_MACOS = platform.system() == "Darwin"
 
 
 class BenchLoader(Loader):
-    def _bench_dataset(self, split):
-        ds_cls = SemSegDataset if self.task == "sem_seg" else CustomDataset
-        return ds_cls(
-            self.img_size,
-            self.root_path,
-            split,
-            self.debug_img_processing,
-            mode="bench",
-            cfg=self.cfg,
-        )
-
-    def build_dataloaders(self) -> Tuple[DataLoader, DataLoader, DataLoader]:
-        val_ds = self._bench_dataset(self.splits["val"])
+    def build_dataloaders(self) -> Tuple[DataLoader, DataLoader]:
+        val_loader = self._build_dataloader_impl(self._make_dataset("val", mode="bench"))
 
         test_loader = None
         if len(self.splits["test"]):
-            test_loader = self._build_dataloader_impl(self._bench_dataset(self.splits["test"]))
+            test_loader = self._build_dataloader_impl(self._make_dataset("test", mode="bench"))
 
-        val_loader = self._build_dataloader_impl(val_ds)
         return val_loader, test_loader
 
 
