@@ -23,7 +23,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.d_fine.dfine import build_loss, build_model, build_optimizer
+from src.d_fine.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
 from src.d_fine.dist_utils import (
     broadcast_scalar,
     cleanup_distributed,
@@ -206,6 +206,21 @@ class Trainer:
             pretrained_backbone=cfg.train.get("imagenet_backbone", False),
             task=self.task,
         )
+
+        # unfreeze only mask head
+        self.frozen_modules = []
+        if cfg.train.get("freeze_except_mask", False):
+            if not enable_mask_head:
+                raise ValueError("train.freeze_except_mask requires task=segment")
+            self.frozen_modules = freeze_except_mask(self.model)
+            if self.is_main:
+                n_train = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+                n_all = sum(p.numel() for p in self.model.parameters())
+                logger.info(
+                    f"Frozen all but the mask head: {n_train / 1e6:.2f}M / {n_all / 1e6:.2f}M "
+                    f"params trainable ({100 * n_train / n_all:.1f}%)"
+                )
+
         if self.distributed:
             if torch.cuda.is_available():
                 if cfg.train.batch_size < 4:  # SyncBatch is useful for small batches
@@ -697,6 +712,8 @@ class Trainer:
 
             epoch_start_time = time.time()
             self.model.train()
+            for m in self.frozen_modules:  # train() re-enables BN stat updates; undo it
+                m.eval()
             self.loss_fn.train()
             losses = []
 

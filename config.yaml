@@ -68,12 +68,13 @@ train:
 
   batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
   b_accum_steps: 1 # grad accumulation (n * bs)
-  epochs: 75
+  epochs: 55
   max_walltime_min: null # research: stop training after N minutes (best epoch kept); null = no cap
   early_stopping: 0 # 0 - no early stopping
   ignore_background_epochs: 0 # background images not used for N epochs in train set. Ignored for sem_seg
   num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
   mask_batch_size: 150 # number of images to process at once when computing mask metrics
+  freeze_except_mask: False # freeze everything except MaskDecoder
 
   ### Validation ###
   conf_thresh: 0.5

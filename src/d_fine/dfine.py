@@ -165,6 +165,29 @@ def _is_muon_param(name, param):
     )
 
 
+# The only randomly-initialized modules when a detection checkpoint is loaded for
+# task=segment — everything else comes pretrained (see train.freeze_except_mask).
+MASK_PREFIXES = ("decoder.mask_decoder", "decoder.mask_head")
+
+
+def freeze_except_mask(model):
+    """Freeze every parameter outside the mask head. Returns the fully-frozen submodules.
+
+    Call before any DDP wrap — named_parameters() gains a "module." prefix after it.
+    requires_grad=False does not stop BatchNorm from updating its running stats, so the
+    caller must re-apply .eval() to the returned modules after every model.train() or
+    the "frozen" features still drift epoch to epoch.
+    """
+    for name, p in model.named_parameters():
+        p.requires_grad_(name.startswith(MASK_PREFIXES))
+    return [
+        m
+        for m in model.modules()
+        if list(m.parameters(recurse=True))
+        and not any(p.requires_grad for p in m.parameters(recurse=True))
+    ]
+
+
 def build_optimizer(
     model,
     lr,
