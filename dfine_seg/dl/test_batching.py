@@ -9,8 +9,8 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from tqdm import tqdm
 
-from src.dl.utils import get_latest_experiment_name
-from src.infer.torch_model import Torch_model
+from dfine_seg.dl.utils import get_latest_experiment_name
+from dfine_seg.infer.torch_model import Torch_model
 
 
 @hydra.main(version_base=None, config_path="../../", config_name="config")

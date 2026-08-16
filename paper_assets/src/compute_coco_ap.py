@@ -33,15 +33,15 @@ import torch
 from faster_coco_eval.core import mask as mask_utils
 from loguru import logger
 from omegaconf import DictConfig
-from src.infer.yolo_trt_model import YOLO_TRT_model
+from dfine_seg.infer.yolo_trt_model import YOLO_TRT_model
 from tabulate import tabulate
 from torch.utils.data import DataLoader
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
 
-from src.dl.dataset import CustomDataset, Loader
-from src.dl.utils import get_latest_experiment_name, process_boxes, process_masks, seed_worker
-from src.infer.trt_model import TRT_model
+from dfine_seg.dl.dataset import CustomDataset, Loader
+from dfine_seg.dl.utils import get_latest_experiment_name, process_boxes, process_masks, seed_worker
+from dfine_seg.infer.trt_model import TRT_model
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 

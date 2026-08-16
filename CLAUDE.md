@@ -12,7 +12,7 @@ Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in 
 
 ```
 config.yaml                  # main Hydra config (edit this for most tasks)
-Makefile                     # thin wrappers around python -m src.dl.*
+Makefile                     # thin wrappers around python -m dfine_seg.dl.*
 pretrained/                  # dfine_{n,s,m,l,x}_{coco,obj2coco}.pt — must exist before training
 src/
   etl/                       # dataset prep: split, yolo2coco, coco2yolo, polys2bbox, …
@@ -26,14 +26,14 @@ src/
 - Python 3.11–3.13, CUDA 12.x. Dependencies (incl. PyTorch) live in [pyproject.toml](pyproject.toml); [uv.lock](uv.lock) is the source of truth for versions.
 - Install with `uv sync` (creates `.venv/`). All Makefile targets shell out via `uv run`, so no manual activation is needed for `make train` / `make bench` / etc. For ad-hoc commands either prefix with `uv run` or activate the venv (`source .venv/bin/activate`).
 - Platform-specific deps are gated by markers in `pyproject.toml`: `tensorrt` installs on Linux only. `coremltools` ships wheels for both platforms (Linux can run the converter for `make export`, even though the CoreML runtime itself is macOS-only). `uv.lock` covers both so the same lockfile works on the dev mac and the lab box.
-- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [src/d_fine/utils.py](src/d_fine/utils.py). Triggered from `build_model` in [src/d_fine/dfine.py](src/d_fine/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt` or `dfine_seg_<size>_coco.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
+- Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [dfine_seg/model/utils.py](dfine_seg/model/utils.py). Triggered from `build_model` in [dfine_seg/model/dfine.py](dfine_seg/model/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt` or `dfine_seg_<size>_coco.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
 
 ## 4. Configuration model
 
 All CLI commands use Hydra, so any config key is overridable on the command line with dotted paths:
 
 ```bash
-python -m src.dl.train exp_name=my_exp model_name=s train.batch_size=12 train.epochs=50
+python -m dfine_seg.dl.train exp_name=my_exp model_name=s train.batch_size=12 train.epochs=50
 ```
 
 Key top-level fields in [config.yaml](config.yaml):
@@ -78,7 +78,7 @@ Supported input types: 3-channel `.jpg`/`.png` (BGR, `cv2.imread`), 3-channel `.
 Generate splits:
 
 ```bash
-make split        # == python -m src.etl.split
+make split        # == python -m dfine_seg.etl.split
 ```
 
 Produces `train.csv`, `val.csv` (and `test.csv` if `split.val_split < 1 - split.train_split`) inside `train.data_path`. Ratios live under the top-level `split:` section in `config.yaml`.
@@ -120,14 +120,14 @@ dataset. `train.coco_dataset: True` selects this branch; the source filename mus
 
 ### 5.3 Conversion / cleanup utilities
 
-In [src/etl/](src/etl/): `yolo2coco.py`, `coco2yolo.py`, `polys2bbox.py`, `png_mask_to_yolo.py`, `remove_dups.py`, `clean_csv.py`, `split_from_yolo.py`. Run as `python -m src.etl.<name>`.
+In [dfine_seg/etl/](dfine_seg/etl/): `yolo2coco.py`, `coco2yolo.py`, `polys2bbox.py`, `png_mask_to_yolo.py`, `remove_dups.py`, `clean_csv.py`, `split_from_yolo.py`. Run as `python -m dfine_seg.etl.<name>`.
 
 ### 5.4 SAM3 pre-annotation
 
-[src/etl/sam_labels.py](src/etl/sam_labels.py) labels a folder from text prompts with a local SAM3 ([src/infer/sam3_model.py](src/infer/sam3_model.py)) — `--task detect|segment` x `--format coco|yolo`, one class per `--prompt` in the order given:
+[dfine_seg/etl/sam_labels.py](dfine_seg/etl/sam_labels.py) labels a folder from text prompts with a local SAM3 ([dfine_seg/infer/sam3_model.py](dfine_seg/infer/sam3_model.py)) — `--task detect|segment` x `--format coco|yolo`, one class per `--prompt` in the order given:
 
 ```bash
-python -m src.etl.sam_labels /abs/path/images --prompt person --prompt car --format coco --task segment
+python -m dfine_seg.etl.sam_labels /abs/path/images --prompt person --prompt car --format coco --task segment
 ```
 
 COCO output is `coco.json` (feeds `make split` directly), with one polygon per island of an instance; YOLO output is one `.txt` per image plus `labels.txt`, and islands are spliced into the single ring per line that format allows (zero-width bridges, so the filled ring covers the same pixels). `--visualize` writes overlays of the emitted geometry to `vis/`.
@@ -143,9 +143,9 @@ Needs `transformers`, which the project venv lacks. `facebook/sam3` is gated, bu
 ```bash
 make train
 # or explicit:
-python -m src.dl.train
+python -m dfine_seg.dl.train
 # with overrides:
-python -m src.dl.train exp_name=fine_s model_name=s task=detect train.batch_size=12 train.epochs=30
+python -m dfine_seg.dl.train exp_name=fine_s model_name=s task=detect train.batch_size=12 train.epochs=30
 ```
 
 ### 6.2 Multi-GPU (DDP)
@@ -154,7 +154,7 @@ Set `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in `config.yaml`, then:
 
 ```bash
 make train
-# Makefile auto-detects DDP and launches: torchrun --nproc_per_node=N --master_port=29500 -m src.dl.train
+# Makefile auto-detects DDP and launches: torchrun --nproc_per_node=N --master_port=29500 -m dfine_seg.dl.train
 ```
 
 `batch_size` is **per GPU** in DDP. Effective batch = `batch_size × n_gpus × b_accum_steps`.
@@ -182,7 +182,7 @@ Under `${train.path_to_save}` (= `${train.root}/output/models/<exp>`):
 There is **no built-in resume flag**. To continue training from a checkpoint:
 
 ```bash
-python -m src.dl.train \
+python -m dfine_seg.dl.train \
   exp_name=continue_run \
   train.pretrained_model_path=/abs/path/to/previous/model.pt
 ```
@@ -198,9 +198,9 @@ One entrypoint handles both images and videos based on file extension in `train.
 ```bash
 make infer
 # or:
-python -m src.dl.infer
+python -m dfine_seg.dl.infer
 # with overrides:
-python -m src.dl.infer train.path_to_test_data=/abs/path/to/folder infer.to_crop=False
+python -m dfine_seg.dl.infer train.path_to_test_data=/abs/path/to/folder infer.to_crop=False
 ```
 
 Supported inputs: `.jpg`, `.png`, `.jpeg`, `.mp4`, `.avi`, `.mov`, `.mkv`.
@@ -209,7 +209,7 @@ Outputs land under `${train.infer_path}`:
 - `images/` — annotated frames (boxes + masks + labels)
 - `labels/` — YOLO-format predictions per frame
 - `crops/` — per-object crops (when `infer.to_crop: True`, padded by `infer.paddings.{w,h}`)
-- `<stem>_tracked.mp4` — for videos, when `infer.to_track: True` (default): persistent IDs via ByteTrack ([src/infer/byte_track.py](src/infer/byte_track.py)). Defaults are baked into [src/dl/infer.py](src/dl/infer.py); override any of them via a top-level `track:` block (e.g. `track.track_buffer=60`). A fresh tracker is instantiated per video so IDs don't bleed across clips.
+- `<stem>_tracked.mp4` — for videos, when `infer.to_track: True` (default): persistent IDs via ByteTrack ([dfine_seg/infer/byte_track.py](dfine_seg/infer/byte_track.py)). Defaults are baked into [dfine_seg/dl/infer.py](dfine_seg/dl/infer.py); override any of them via a top-level `track:` block (e.g. `track.track_buffer=60`). A fresh tracker is instantiated per video so IDs don't bleed across clips.
 - `labels.txt` — classes seen across the run
 
 For `task: sem_seg` the outputs are `images/` (palette overlays) + `labels/` (GT-style grayscale
@@ -218,7 +218,7 @@ skipped (videos get `<stem>_sem_seg.mp4` overlays instead). Wrapper output contr
 masks live under `out["masks"]` `[N,H,W]`; sem_seg returns `out["sem_seg"]` — a uint8 `[H,W]`
 dense label map at original resolution.
 
-Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [src/infer/torch_model.py](src/infer/torch_model.py).
+Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [dfine_seg/infer/torch_model.py](dfine_seg/infer/torch_model.py).
 
 For interactive threshold tweaking, the Gradio UI in [demo/](demo/) exposes a threshold slider.
 
@@ -227,19 +227,19 @@ Important to note: inference wrappers under /infer are standalone scripts that a
 ## 9. Benchmarking
 
 ```bash
-make bench        # == python -m src.dl.bench
+make bench        # == python -m dfine_seg.dl.bench
 ```
 
-Runs the val/test set through each backend listed in `formats_to_bench` inside [src/dl/bench.py](src/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT — for `task: sem_seg`, mIoU + pixel_acc instead (original-resolution protocol, same as training eval). Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
+Runs the val/test set through each backend listed in `formats_to_bench` inside [dfine_seg/dl/bench.py](dfine_seg/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT — for `task: sem_seg`, mIoU + pixel_acc instead (original-resolution protocol, same as training eval). Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
 
 Related:
-- `python -m src.dl.test_batching` — sweeps batch sizes, writes `batched_infer.csv`
-- `python -m src.dl.check_errors` — dumps FP/FN mismatches against GT
+- `python -m dfine_seg.dl.test_batching` — sweeps batch sizes, writes `batched_infer.csv`
+- `python -m dfine_seg.dl.check_errors` — dumps FP/FN mismatches against GT
 
 ## 10. Export / conversion
 
 ```bash
-make export       # == python -m src.dl.export
+make export       # == python -m dfine_seg.dl.export
 ```
 
 Produces, under `${train.path_to_save}`:
@@ -339,25 +339,25 @@ uv run python -m tests.generate_fixtures
 9. **DDP rank-0 writes everything.** Don't assume per-rank directories; logs, checkpoints, and WandB calls are gated to rank 0.
 10. **`model.pt` is best, `last.pt` is the last epoch.** `model.pt` is the best checkpoint by `train.decision_metrics` — use it for inference, export, and bench. `last.pt` is just the final-epoch snapshot; nothing reads it automatically.
 11. **Multi-channel images live in `.npy`, not TIFF.** `cv2.imread(IMREAD_UNCHANGED)` is not byte-faithful for 4-channel TIFFs — it treats channel 4 as alpha, swaps the first three per the photometric tag, and pre-multiplies values, so any TIFF from a non-cv2 writer is silently mangled. `.npy` is byte-faithful and ~25× faster to read.
-12. **Stem freeze auto-bypassed for inflated stems.** `freeze_at >= 0` in [src/d_fine/configs.py](src/d_fine/configs.py) only freezes the stem when `train.in_channels == 3`; for `in_channels > 3` the freeze is skipped so the inflated extra-channel weights can train.
+12. **Stem freeze auto-bypassed for inflated stems.** `freeze_at >= 0` in [dfine_seg/model/configs.py](dfine_seg/model/configs.py) only freezes the stem when `train.in_channels == 3`; for `in_channels > 3` the freeze is skipped so the inflated extra-channel weights can train.
 13. **Run TensorRT engines at batch 1.** On TRT 10.13.3.9 a batched engine does not compute batch elements independently: four byte-identical images in one `execute_async_v3` call return four different results (score spread up to 0.20, different labels), so a detection's score depends on what it was batched with and flickers frame to frame. Batch 1 is exact — reproduced in raw TensorRT for FP16 and FP32 and for every optimization-profile shape (min/opt/max = 1/1/4, 1/4/4, 4/4/4), while torch and ONNXRuntime stay identical across slots. Tracked upstream in [NVIDIA/TensorRT#4813](https://github.com/NVIDIA/TensorRT/issues/4813); batching also buys nothing here, since batch 1 benched faster.
 
-14. **`task: segment` mask cost lives in postprocess, and fusing more into TRT does not pay.** Measured on cityscapes `seg_s` @640, RTX 5070 Ti, 2048×1024 inputs: engine 1.56 ms vs client postprocess 1.65 ms. Engine-side options were built and timed and all rejected — emitting `mask_feat` + `mask_embed` instead of 300 materialized masks saves 0.13 ms, an fp16 `masks` output saves 0.03 ms (the 30.7 MB write overlaps compute), and `MaskDecoder` itself is ~0.39 ms and irreducible; `builder_optimization_level` 3→5 is noise (-0.9%) for a 3× longer build. NMS can't be fused either: `EfficientNMS_TRT` is deprecated since TRT 10.12 and emits no source indices (so masks can't be gathered), and `INMSLayer` has a data-dependent output shape, which CUDA-graph capture doesn't support. The wins were all client-side and are applied in **every** `/infer` wrapper: fp16 interpolate, no `clamp_` (bilinear of values already in [0,1] is a convex combination), `.view(torch.uint8)` rather than `.to(torch.uint8)` on the threshold result, a separable box crop in `cleanup_masks`, and no host↔device round-trip for `orig_sizes`. The fp16 cast is gated on `m.is_cuda` — on CPU half `interpolate` is ~1.7× *slower* than float, so onnx/openvino/coreml/litert keep fp32 and stay bit-identical to the old code. Measured on the same 500-image cityscapes val, all four benchable backends unchanged on every metric and on TP/FP/FN: TensorRT 4.1 → 3.0 ms, ONNX 241.5 → 212.0, OpenVINO 183.3 → 166.4, PyTorch 16.2 → 15.3. The training-eval copies in [src/dl/utils.py](src/dl/utils.py) were deliberately left alone — they use a different two-stage resize (proto → input size → original) and a CPU-only `cleanup_masks`, so they are not a mechanical port.
+14. **`task: segment` mask cost lives in postprocess, and fusing more into TRT does not pay.** Measured on cityscapes `seg_s` @640, RTX 5070 Ti, 2048×1024 inputs: engine 1.56 ms vs client postprocess 1.65 ms. Engine-side options were built and timed and all rejected — emitting `mask_feat` + `mask_embed` instead of 300 materialized masks saves 0.13 ms, an fp16 `masks` output saves 0.03 ms (the 30.7 MB write overlaps compute), and `MaskDecoder` itself is ~0.39 ms and irreducible; `builder_optimization_level` 3→5 is noise (-0.9%) for a 3× longer build. NMS can't be fused either: `EfficientNMS_TRT` is deprecated since TRT 10.12 and emits no source indices (so masks can't be gathered), and `INMSLayer` has a data-dependent output shape, which CUDA-graph capture doesn't support. The wins were all client-side and are applied in **every** `/infer` wrapper: fp16 interpolate, no `clamp_` (bilinear of values already in [0,1] is a convex combination), `.view(torch.uint8)` rather than `.to(torch.uint8)` on the threshold result, a separable box crop in `cleanup_masks`, and no host↔device round-trip for `orig_sizes`. The fp16 cast is gated on `m.is_cuda` — on CPU half `interpolate` is ~1.7× *slower* than float, so onnx/openvino/coreml/litert keep fp32 and stay bit-identical to the old code. Measured on the same 500-image cityscapes val, all four benchable backends unchanged on every metric and on TP/FP/FN: TensorRT 4.1 → 3.0 ms, ONNX 241.5 → 212.0, OpenVINO 183.3 → 166.4, PyTorch 16.2 → 15.3. The training-eval copies in [dfine_seg/dl/utils.py](dfine_seg/dl/utils.py) were deliberately left alone — they use a different two-stage resize (proto → input size → original) and a CPU-only `cleanup_masks`, so they are not a mechanical port.
 
 ## 13. Quick reference
 
 | Task | Command |
 |---|---|
 | Prepare splits (YOLO CSVs, or `coco.json` → train/val/test.json) | `make split` |
-| Train (single GPU) | `python -m src.dl.train exp_name=<name> model_name=<size>` |
+| Train (single GPU) | `python -m dfine_seg.dl.train exp_name=<name> model_name=<size>` |
 | Train (multi-GPU) | set `train.ddp.enabled=True`, `train.ddp.n_gpus=N`, then `make train` |
-| Fine-tune from checkpoint | `python -m src.dl.train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
-| Infer on folder (images or video) | `python -m src.dl.infer train.path_to_test_data=/abs/path` |
+| Fine-tune from checkpoint | `python -m dfine_seg.dl.train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
+| Infer on folder (images or video) | `python -m dfine_seg.dl.infer train.path_to_test_data=/abs/path` |
 | Export all formats | `make export` |
 | Benchmark exports | `make bench` |
 | Full pipeline | `make` (train → export → bench) |
-| Find best batch size | `python -m src.dl.test_batching` |
-| Inspect FP/FN | `python -m src.dl.check_errors` |
+| Find best batch size | `python -m dfine_seg.dl.test_batching` |
+| Inspect FP/FN | `python -m dfine_seg.dl.check_errors` |
 | OpenVINO INT8 | `make ov_int8` |
 | TensorRT INT8 | `make trt_int8` |
 | Run unit + smoke tests | `make test-fast` |

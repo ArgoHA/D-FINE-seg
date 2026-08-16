@@ -186,7 +186,7 @@ def load_model(
     device = get_device()
 
     if ext == ".pt":
-        from src.infer.torch_model import Torch_model
+        from dfine_seg.infer.torch_model import Torch_model
 
         return Torch_model(
             model_name=model_name,
@@ -199,7 +199,7 @@ def load_model(
             device=device,
         )
     elif ext == ".engine":
-        from src.infer.trt_model import TRT_model
+        from dfine_seg.infer.trt_model import TRT_model
 
         return TRT_model(
             model_path=model_path,
@@ -208,7 +208,7 @@ def load_model(
             device=device,
         )
     elif ext == ".xml":
-        from src.infer.ov_model import OV_model
+        from dfine_seg.infer.ov_model import OV_model
 
         return OV_model(
             model_path=model_path,
@@ -228,7 +228,7 @@ def _get_sam_model():
     """Lazy-load SAM3 on first use (heavy download)."""
     global _sam_model
     if _sam_model is None:
-        from src.infer.sam3_model import SAM3_model
+        from dfine_seg.infer.sam3_model import SAM3_model
 
         print(f"Loading {SAM3_MODEL_ID} …")
         _sam_model = SAM3_model(model_path=SAM3_MODEL_ID, conf_thresh=DEFAULT_CONF_THRESH)

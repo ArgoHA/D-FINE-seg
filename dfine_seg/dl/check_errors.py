@@ -10,8 +10,8 @@ from omegaconf import DictConfig
 from torchvision.ops import box_iou
 from tqdm import tqdm
 
-from src.dl.dataset import Loader, parse_yolo_label_file, read_image_hwc
-from src.dl.utils import (
+from dfine_seg.dl.dataset import Loader, parse_yolo_label_file, read_image_hwc
+from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
     norm_xywh_to_abs_xyxy,
@@ -19,7 +19,7 @@ from src.dl.utils import (
     sem_seg_palette,
     vis_one_box,
 )
-from src.infer.torch_model import Torch_model
+from dfine_seg.infer.torch_model import Torch_model
 
 
 def norm_xywh_to_xyxy(norm_boxes: torch.Tensor) -> torch.Tensor:

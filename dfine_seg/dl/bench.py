@@ -16,8 +16,8 @@ from tabulate import tabulate
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dl.dataset import Loader, read_image_hwc
-from src.dl.utils import (
+from dfine_seg.dl.dataset import Loader, read_image_hwc
+from dfine_seg.dl.utils import (
     encode_sample_masks_to_rle,
     get_latest_experiment_name,
     poly_abs_to_mask,
@@ -25,7 +25,7 @@ from src.dl.utils import (
     visualize,
     visualize_sem_seg,
 )
-from src.dl.validator import SemSegValidator, Validator
+from dfine_seg.dl.validator import SemSegValidator, Validator
 
 IS_MACOS = platform.system() == "Darwin"
 
@@ -257,7 +257,7 @@ def main(cfg: DictConfig):
     models_path = Path(cfg.train.path_to_save)
 
     if "torch" in formats_to_bench:
-        from src.infer.torch_model import Torch_model
+        from dfine_seg.infer.torch_model import Torch_model
 
         torch_model = Torch_model(
             model_name=cfg.model_name,
@@ -276,7 +276,7 @@ def main(cfg: DictConfig):
     if IS_MACOS:
         coreml_path = models_path / "model.mlpackage"
         if coreml_path.exists() and "coreml" in formats_to_bench:
-            from src.infer.coreml_model import CoreML_model
+            from dfine_seg.infer.coreml_model import CoreML_model
 
             coreml_model = CoreML_model(
                 model_path=coreml_path,
@@ -299,7 +299,7 @@ def main(cfg: DictConfig):
     else:
         trt_path = models_path / "model.engine"
         if trt_path.exists() and "tensorrt" in formats_to_bench:
-            from src.infer.trt_model import TRT_model
+            from dfine_seg.infer.trt_model import TRT_model
 
             trt_model = TRT_model(
                 model_path=trt_path,
@@ -322,7 +322,7 @@ def main(cfg: DictConfig):
 
     ov_path = models_path / "model.xml"
     if ov_path.exists() and "openvino" in formats_to_bench:
-        from src.infer.ov_model import OV_model
+        from dfine_seg.infer.ov_model import OV_model
 
         ov_model = OV_model(
             model_path=ov_path,
@@ -336,7 +336,7 @@ def main(cfg: DictConfig):
 
     onnx_path = models_path / "model.onnx"
     if onnx_path.exists() and "onnx" in formats_to_bench:
-        from src.infer.onnx_model import ONNX_model
+        from dfine_seg.infer.onnx_model import ONNX_model
 
         onnx_model = ONNX_model(
             model_path=onnx_path,
@@ -361,7 +361,7 @@ def main(cfg: DictConfig):
 
     litert_path = models_path / "model.tflite"
     if litert_path.exists() and "litert" in formats_to_bench:
-        from src.infer.litert_model import LiteRT_model
+        from dfine_seg.infer.litert_model import LiteRT_model
 
         litert_model = LiteRT_model(
             model_path=litert_path,

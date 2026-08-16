@@ -15,8 +15,8 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
-from src.d_fine.dist_utils import is_main_process
-from src.dl.utils import (
+from dfine_seg.model.dist_utils import is_main_process
+from dfine_seg.dl.utils import (
     LetterboxRect,
     abs_xyxy_to_norm_xywh,
     clip_polygon_to_rect,

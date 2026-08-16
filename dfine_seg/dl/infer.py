@@ -8,16 +8,16 @@ from loguru import logger
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from src.dl.dataset import read_image_hwc
-from src.dl.utils import (
+from dfine_seg.dl.dataset import read_image_hwc
+from dfine_seg.dl.utils import (
     Visualizer,
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
     overlay_sem_seg,
     sem_seg_palette,
 )
-from src.infer.byte_track import ByteTrack, Detection
-from src.infer.torch_model import Torch_model
+from dfine_seg.infer.byte_track import ByteTrack, Detection
+from dfine_seg.infer.torch_model import Torch_model
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 
@@ -26,7 +26,7 @@ def figure_input_type(folder_path: Path):
     video_types = ["mp4", "avi", "mov", "mkv"]
     # .tif/.tiff intentionally excluded: cv2.imread mangles 4-channel TIFFs
     # (alpha pre-multiplication + photometric-tag swap). Convert to .npy first
-    # (see src/etl/preprocess.py for a PIL-based TIFF->JPG path for 3-channel).
+    # (see dfine_seg/etl/preprocess.py for a PIL-based TIFF->JPG path for 3-channel).
     img_types = ["jpg", "png", "jpeg", "npy"]
 
     for f in folder_path.iterdir():

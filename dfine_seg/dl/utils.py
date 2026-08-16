@@ -573,7 +573,7 @@ def visualize_sem_seg(
     max_side: int = 1280,
 ) -> None:
     """Save a GT | pred side-by-side overlay, downscaled to max_side."""
-    from src.dl.dataset import read_image_hwc  # local to avoid circular import
+    from dfine_seg.dl.dataset import read_image_hwc  # local to avoid circular import
 
     img = read_image_hwc(dataset_path / img_path)
     if img is None:
@@ -647,7 +647,7 @@ def visualize(
       - Preds: brown boxes + colored masks per class
     Expects pred dicts possibly containing "masks" (uint8)
     """
-    from src.dl.dataset import read_image_hwc  # local to avoid circular import
+    from dfine_seg.dl.dataset import read_image_hwc  # local to avoid circular import
 
     path_to_save.mkdir(parents=True, exist_ok=True)
 
@@ -1485,8 +1485,8 @@ def auto_batch_size(
     from torch.amp import GradScaler, autocast
     from torch.utils.data import DataLoader
 
-    from src.d_fine.dfine import build_loss, build_model
-    from src.dl.dataset import Loader
+    from dfine_seg.model.dfine import build_loss, build_model
+    from dfine_seg.dl.dataset import Loader
 
     if device.type != "cuda":
         logger.warning("Auto batch size only works on CUDA devices, defaulting to batch_size=4")
@@ -1532,7 +1532,7 @@ def auto_batch_size(
         train_ds = base_loader.build_dataloaders(distributed=False)[0].dataset
     finally:
         logger.enable("src")
-    from src.dl.dataset import sem_seg_collate_fn
+    from dfine_seg.dl.dataset import sem_seg_collate_fn
 
     probe_loader = DataLoader(
         train_ds,

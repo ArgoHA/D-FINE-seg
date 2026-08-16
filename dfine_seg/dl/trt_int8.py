@@ -8,7 +8,7 @@ Mirrors the ov_int8.py workflow:
   4. Saves a calibration cache so subsequent rebuilds are instant.
 
 Usage:
-    make trt_int8          # or:  python -m src.dl.trt_int8
+    make trt_int8          # or:  python -m dfine_seg.dl.trt_int8
 """
 
 from pathlib import Path
@@ -23,10 +23,10 @@ from loguru import logger
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from src.dl.dataset import Loader
-from src.dl.train import Trainer
-from src.dl.utils import get_latest_experiment_name
-from src.dl.validator import Validator
+from dfine_seg.dl.dataset import Loader
+from dfine_seg.dl.train import Trainer
+from dfine_seg.dl.utils import get_latest_experiment_name
+from dfine_seg.dl.validator import Validator
 
 
 # ---------------------------------------------------------------------------

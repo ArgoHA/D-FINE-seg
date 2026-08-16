@@ -7,8 +7,8 @@ without any error message.
 import cv2
 import numpy as np
 
-from src.etl.png_mask_to_yolo import find_contours, mask_to_yolo_lines, to_yolo_poly
-from src.etl.split import split
+from dfine_seg.etl.png_mask_to_yolo import find_contours, mask_to_yolo_lines, to_yolo_poly
+from dfine_seg.etl.split import split
 
 
 def _binary_square(h=64, w=64, x0=10, y0=10, x1=40, y1=50):

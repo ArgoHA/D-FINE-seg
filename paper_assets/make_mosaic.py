@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from src.dl.utils import Visualizer, overlay_sem_seg, sem_seg_palette
-from src.infer.torch_model import Torch_model
+from dfine_seg.dl.utils import Visualizer, overlay_sem_seg, sem_seg_palette
+from dfine_seg.infer.torch_model import Torch_model
 
 ROOT = Path("/home/argo/Desktop/Projects/cityscapes")
 IMG_DIR = ROOT / "data/dataset/images"

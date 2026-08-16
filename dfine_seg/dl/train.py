@@ -23,8 +23,8 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.d_fine.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
-from src.d_fine.dist_utils import (
+from dfine_seg.model.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
+from dfine_seg.model.dist_utils import (
     broadcast_scalar,
     cleanup_distributed,
     gather_predictions,
@@ -36,8 +36,8 @@ from src.d_fine.dist_utils import (
     is_main_process,
     synchronize,
 )
-from src.dl.dataset import Loader
-from src.dl.utils import (
+from dfine_seg.dl.dataset import Loader
+from dfine_seg.dl.utils import (
     auto_batch_size,
     calculate_remaining_time,
     cleanup_masks,
@@ -54,7 +54,7 @@ from src.dl.utils import (
     visualize_sem_seg,
     wandb_logger,
 )
-from src.dl.validator import SemSegValidator, Validator
+from dfine_seg.dl.validator import SemSegValidator, Validator
 
 
 class ModelEMA:

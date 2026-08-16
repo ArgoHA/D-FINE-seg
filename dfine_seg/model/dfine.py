@@ -4,9 +4,9 @@ from pathlib import Path
 import torch.nn as nn
 import torch.optim as optim
 
-from src.d_fine.dfine_criterion import DFINECriterion
-from src.d_fine.sem_seg_criterion import SemSegCriterion
-from src.d_fine.utils import ensure_pretrained
+from dfine_seg.model.dfine_criterion import DFINECriterion
+from dfine_seg.model.sem_seg_criterion import SemSegCriterion
+from dfine_seg.model.utils import ensure_pretrained
 
 from .arch.dfine_decoder import DFINETransformer, SemSegDecoder
 from .arch.hgnetv2 import HGNetv2

@@ -67,7 +67,7 @@ structured numbers live in `ledger.csv`; this file is the reasoning.
   4e-4,4e-3]` with the flag REMOVED → run-3 validates `model_name=x` size-swap. **PROMOTED to main_exp
   2026-06-15 (commit `e2e5ef9`: dfine.py+train.py+config.yaml, S byte-identical, 78 unit tests pass).**
   The cleaner follow-up (also cover `enable_mask_head`, drop the flag entirely) is open.
-  🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `src/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
+  🔬 **QK-norm arc CLOSED → SHELVED, knowledge preserved (2026-06-10, see `experiments/qk_norm.md`).** QK-norm solves the issue-#64 NaN class and at full 75-ep scale even **beats muon_full75 on training metrics (test mAP_50_95 0.2388 vs 0.2359, +0.0029)** — but TensorRT **mis-executes the fully-trained checkpoint at ALL precisions** (fp32 0.552 / fp16 0.545 vs torch/ORT-true 0.582; TRT 10.16/11.0 strictly worse). It's a *weights-dependent* TRT compiler defect: a structurally identical ONNX from the screen checkpoint compiles correctly; every op is fine in isolation; ORT/torch always agree. Since the deliverable is the fp16 TRT engine → code stays OFF the trunk (full impl + revisit conditions in `qk_norm.md`; branch `exp/qk-norm-lr`). **Muon stays best.** Two durable wins landed on the way: (1) **TRT fp16 export hardening** in `dfine_seg/dl/export.py` — strong-typed engine with GridSample pinned fp32; without it full-fp16 silently costs even the muon model −0.026 f1 (0.585→0.559), with it muon is at exact parity 0.585 @ 2.1 ms (TRT 11 removes auto-FP16, so this is also the forward-compatible path); (2) the f1 guard reads the **TensorRT** bench row (guide §3 + `run_candidate.py`), which is exactly what caught all of this.
   ✅ **Full 75-epoch Muon confirmation DONE (2026-06-08)** — COCO-init, 75ep,
   no cap, single seed (`experiments/runs/muon_full75/seed42`). **test mAP_50_95 0.2359 vs ref 0.2316
   (+0.0043), val 0.2965 vs 0.2882 (+0.0083), mAP_50 0.4063 vs 0.3995, f1 0.5633 vs 0.5621, latency
@@ -234,7 +234,7 @@ Entry template:
   the enc/dec matrices; the **aux groups** (backbone + det/mask heads + norms/biases) still run vanilla
   AdamW. Swap them to Adan — its gradient-difference (Nesterov) term + per-coord second moment should give
   better per-step progress on exactly those params. Train-only, zero latency/TRT risk.
-- Change (files): vendored single-tensor `_adan_update` in `src/d_fine/muon.py` (3 buffers m/v/n +
+- Change (files): vendored single-tensor `_adan_update` in `dfine_seg/model/muon.py` (3 buffers m/v/n +
   `neg_pre_grad`, betas (0.98,0.92,0.99), eps 1e-8, decoupled post-prox WD — faithful to the sail-sg
   reference, minus global-grad-clip/restart); branched into `MuonWithAuxAdam.step()` for aux groups via a
   per-group `aux_optimizer` flag. `dfine.py:build_optimizer` gains `aux_optimizer="adamw"` → flags the 4
@@ -385,7 +385,7 @@ Entry template:
   base_lr×10). Today's fan-shape scaling runs the Muon group ~3× hotter than AdamW-RMS parity; the
   rescale is cooler overall + a per-shape reallocation (square attn ×3.2, wide FFN down-proj ×6.4) a
   global multiplier can't express. Closes the "muon_lr is a blind ×10" open question either way.
-- Change (files): `src/d_fine/muon.py:38` scaling line → `0.2*max(A,B)**0.5`; new `train.muon_lr`
+- Change (files): `dfine_seg/model/muon.py:38` scaling line → `0.2*max(A,B)**0.5`; new `train.muon_lr`
   knob (`config.yaml` default null → legacy base_lr×10) read in `train.py`; `research_visdrone.yaml`
   set `train.muon_lr: ${train.base_lr}` (= 0.00025 for s, vs legacy 0.0025). exp/moonlight-rms sha
   `4e68f07`. `make test` 89/89; verified the interpolation resolves to a numeric LR (not a string).
@@ -410,7 +410,7 @@ Entry template:
 - Hypothesis: zero AdamW-group update coords whose sign disagrees with the live grad, renorm by
   mask density ("don't step where unsure") → strictly better per-step progress on the half of params
   Muon doesn't touch (backbone + det head + norms/biases/embeds). Train-only, zero latency/TRT risk.
-- Change (files): `src/d_fine/muon.py` AdamW branch — `m=(upd*p.grad>0); m/=m.mean().clamp(1e-3);
+- Change (files): `dfine_seg/model/muon.py` AdamW branch — `m=(upd*p.grad>0); m/=m.mean().clamp(1e-3);
   upd*=m`, gated by `cautious` flag; threaded via `dfine.py:build_optimizer` + `train.py`;
   `config.yaml` default `train.cautious: False` (Hydra struct-mode needs the key declared); enabled
   via `train.cautious: true` in `research_visdrone.yaml`. exp/cautious sha `ea1bffd`. `make test` 89/89.
@@ -441,7 +441,7 @@ Entry template:
   to kill the confident-but-misplaced-query-steals-GT failure and matching churn. On the 55% of
   objects < 16 px (IoU near-binary, L1 flat) the score-driven class cost dominates pair ranking —
   exactly what PMC is meant to fix. Train-only (matcher is `@torch.no_grad`), zero latency/TRT risk.
-- Change (files): `src/d_fine/matcher.py` — hoisted pairwise GIoU above the class cost, modulated
+- Change (files): `dfine_seg/model/matcher.py` — hoisted pairwise GIoU above the class cost, modulated
   `out_prob` in the focal branch by `((giou+1)/2).clamp(0,1).pow(0.5)`, reused giou for `cost_giou`.
   ~6 lines. exp/pmc sha `d392c80`. `make test` 89/89.
 - Result (test, 2 seeds): mAP_50_95 **0.2122±0.0014** (seeds .2108/.2135, gain **+0.0003**, ≪ 0.003
@@ -481,7 +481,7 @@ Entry template:
 - **Part 1 — the fp16 0-detection collapse, root-caused & fixed.** Not SDPA math, not fp16 range, not
   the kernel: a **TensorRT fusion bug around GridSample in fp16**. Same full-fp16 ONNX is correct in
   onnxruntime; the full-fp16 TRT engine becomes correct the moment GridSample's edges are unfused.
-  Fix landed in `src/dl/export.py`: `half=True` → fp16 ONNX (`op_block_list=["GridSample"]`,
+  Fix landed in `dfine_seg/dl/export.py`: `half=True` → fp16 ONNX (`op_block_list=["GridSample"]`,
   `keep_io_types`) parsed into a **STRONGLY_TYPED** engine. Validated (full test set): screen qk-norm
   s42 0.0→0.552 / s123 0.0→0.549 @ 2.1 ms; **muon_full75 0.585 @ 2.1 ms = auto-FP16 parity** — and the
   pin is load-bearing for *every* model: strong-typed full-fp16 silently drops muon to **0.559** (no
@@ -570,7 +570,7 @@ Entry template:
   walltime-cap bottleneck is per-step **optimization efficiency**, not supervision density. Muon
   attacks exactly that — orthogonalized updates on the high-condition-number enc/dec attention/MLP
   linears, where per-step gains compound most under ~22 epochs. Optimizer-only → zero inference latency.
-- Change (files): new `src/d_fine/muon.py` (`MuonWithAuxAdam`, single-device, one `.step()` so the
+- Change (files): new `dfine_seg/model/muon.py` (`MuonWithAuxAdam`, single-device, one `.step()` so the
   train loop is untouched); `dfine.py` `build_optimizer` gains a gated Muon path with an **allowlist**
   (`self_attn`/`cross_attn`/`linear1`/`linear2`/`gateway.gate`, ndim==2) so det/mask heads, embeddings,
   LQE, norms, biases can never leak in (verified: 25 matrices, 0 leaks); `train.py` passes the flag and
@@ -615,7 +615,7 @@ Entry template:
   (`arch/utils.py:380`) floors to 1 — we run the *minimum* denoising. Raising `num_denoising` 100→300
   restores multiple noised-GT groups → denser, stable positives early when O2O is sparse. Train-only
   (`dfine_decoder.py:971` gates on `self.training`) → byte-identical export, zero latency cost.
-- Change (files): `src/d_fine/configs.py:19` `num_denoising` 100→300 (1 line). exp/cdn-denoising sha `21970e4`.
+- Change (files): `dfine_seg/model/configs.py:19` `num_denoising` 100→300 (1 line). exp/cdn-denoising sha `21970e4`.
 - Result (test, 3 seeds): mAP_50_95 0.2004±0.0003 (gain **−0.0014**, below 0.003 margin — a slight
   *decrease*), f1@val-optimal 0.5403±0.0005 (gain −0.003, at margin edge), lat trt 2.1ms (ratio 1.0),
   params 10.302M. 🔴 KEEP BEST.
@@ -649,8 +649,8 @@ Entry template:
 - Paper / source: n/a (unchanged control architecture).
 - Hypothesis: establish the one-time control per EXPERIMENT_GUIDE §4.
 - Change (files): none to the model. Infra fixes required to make the control runnable/comparable:
-  `src/d_fine/arch/hgnetv2.py` (dist-safe pretrained-backbone load), `configs/research_visdrone.yaml`
-  (`train.batch_size=8`, `train.epochs=100`), `src/dl/train.py` (fail loudly on mid-train CUDA OOM).
+  `dfine_seg/model/arch/hgnetv2.py` (dist-safe pretrained-backbone load), `configs/research_visdrone.yaml`
+  (`train.batch_size=8`, `train.epochs=100`), `dfine_seg/dl/train.py` (fail loudly on mid-train CUDA OOM).
 - Result (test, 3 seeds): mAP_50_95 0.2018±0.0005 (seeds .2025/.2016/.2012), f1 0.5433±0.0017,
   lat torch 13.57 ms / trt 2.1 ms, params 10.30M. All seeds hit walltime cap at epoch 22.
 - Read: First two launch attempts produced a *degenerate* baseline (mAP 0.054±0.065, std > mean)

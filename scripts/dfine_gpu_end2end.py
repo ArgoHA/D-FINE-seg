@@ -3,7 +3,7 @@ GPU-resident script: NVDEC -> TensorRT (batch 1) -> GPU annotate -> NVENC.
 
 This is an example script that fully utilizes a GPU. Detections are drawn the way
 the rest of the repo draws them (mask overlay under boxes under labels, same
-per-class colours as src/dl/utils.py Visualizer) without ever leaving the device.
+per-class colours as dfine_seg/dl/utils.py Visualizer) without ever leaving the device.
 
 Concurrency: MAX_CONCURRENT_CLIPS worker threads, one CUDA stream each, decode /
 resize / paint / encode one clip apiece and submit frames to a single shared queue.
@@ -74,7 +74,7 @@ def autobackend(
     labels_to_use: list,
 ):
     if ".engine" in model_path:
-        from src.infer.trt_model import TRT_model
+        from dfine_seg.infer.trt_model import TRT_model
 
         logger.info("TensorRT backend")
         return TRT_model(
@@ -87,7 +87,7 @@ def autobackend(
     elif ".pt" in model_path:
         import torch
 
-        from src.infer.torch_model import Torch_model
+        from dfine_seg.infer.torch_model import Torch_model
 
         device = "cpu"
         if torch.cuda.is_available():
@@ -183,9 +183,9 @@ def resize_rgb(rgb: torch.Tensor, out_w: int, out_h: int) -> torch.Tensor:
 def class_colors(n: int) -> List[tuple]:
     """Evenly spaced hues on a violet->red arc -> RGB tuples. Class 0 = deep purple.
 
-    Mirrors Visualizer.generate_colors in src/dl/utils.py (which returns BGR, for
+    Mirrors Visualizer.generate_colors in dfine_seg/dl/utils.py (which returns BGR, for
     cv2) so annotations match the rest of the repo. Kept inline rather than
-    imported because src.dl.utils pulls in wandb / pandas / albumentations.
+    imported because dfine_seg.dl.utils pulls in wandb / pandas / albumentations.
     """
     colors = []
     n = max(n, 1)
@@ -200,7 +200,7 @@ def class_colors(n: int) -> List[tuple]:
 
 
 class Annotator:
-    """Draws detections onto device frames, mirroring src/dl/utils.py Visualizer:
+    """Draws detections onto device frames, mirroring dfine_seg/dl/utils.py Visualizer:
     mask overlay (body + contour) under boxes under "<class> <score>" tags.
 
     Tags are rasterised once at startup into GPU alpha masks — cv2 cannot draw

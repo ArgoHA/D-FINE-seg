@@ -19,9 +19,9 @@ import numpy as np
 import pytest
 import torch
 
-from src.dl.utils import norm_xywh_to_abs_xyxy
-from src.dl.validator import Validator
-from src.infer.torch_model import Torch_model
+from dfine_seg.dl.utils import norm_xywh_to_abs_xyxy
+from dfine_seg.dl.validator import Validator
+from dfine_seg.infer.torch_model import Torch_model
 
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 BASELINE_PATH = ASSETS_DIR / "baseline.json"

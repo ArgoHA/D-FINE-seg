@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Pre-annotate a folder of images with a local SAM3 and write COCO or YOLO labels.
 
-Runs the local SAM3 wrapper ([src/infer/sam3_model.py](src/infer/sam3_model.py), HF
+Runs the local SAM3 wrapper ([dfine_seg/infer/sam3_model.py](dfine_seg/infer/sam3_model.py), HF
 weights, GPU when available) over every image, turns the returned masks into polygons
 and writes one of four dataset shapes:
 
@@ -17,7 +17,7 @@ polygons it writes, so every box contains its own segmentation.
 
 Usage:
 
-    python -m src.etl.sam_labels ~/data/frames --prompt person --format coco --task segment
+    python -m dfine_seg.etl.sam_labels ~/data/frames --prompt person --format coco --task segment
 
 Output lands in `~/data/frames_labels` unless `--out` says otherwise; the COCO file is
 named `coco.json` so `make split` can consume it directly. Repeat `--prompt` for a
@@ -42,10 +42,10 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from src.infer.sam3_model import SAM3_model
+from dfine_seg.infer.sam3_model import SAM3_model
 
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"})
-COCO_NAME = "coco.json"  # what src.etl.split expects as its single-file COCO source
+COCO_NAME = "coco.json"  # what dfine_seg.etl.split expects as its single-file COCO source
 
 MASK_COLORS = ((0, 200, 255), (255, 100, 0), (0, 255, 100), (200, 0, 255), (255, 255, 0))
 MASK_ALPHA = 0.45

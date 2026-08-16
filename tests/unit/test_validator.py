@@ -11,7 +11,7 @@ import copy
 import pytest
 import torch
 
-from src.dl.validator import Validator
+from dfine_seg.dl.validator import Validator
 
 LABEL_TO_NAME = {0: "cat", 1: "dog"}
 

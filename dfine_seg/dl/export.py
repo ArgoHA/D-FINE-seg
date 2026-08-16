@@ -12,10 +12,10 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from torch import nn
 
-from src.d_fine.configs import base_cfg
-from src.d_fine.dfine import build_model
-from src.d_fine.utils import ensure_pretrained, load_tuning_state
-from src.dl.utils import get_latest_experiment_name
+from dfine_seg.model.configs import base_cfg
+from dfine_seg.model.dfine import build_model
+from dfine_seg.model.utils import ensure_pretrained, load_tuning_state
+from dfine_seg.dl.utils import get_latest_experiment_name
 
 
 class DFINEPostProcessor(nn.Module):
@@ -530,11 +530,11 @@ def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
     conf, kr = cfg.train.conf_thresh, cfg.train.keep_ratio
     common = dict(model_path=str(path), conf_thresh=conf, keep_ratio=kr, apply_nms=False)
     if key == "onnx":
-        from src.infer.onnx_model import ONNX_model
+        from dfine_seg.infer.onnx_model import ONNX_model
 
         return ONNX_model(n_outputs=n_out, rect=False, **common)
     if key == "openvino":
-        from src.infer.ov_model import OV_model
+        from dfine_seg.infer.ov_model import OV_model
 
         return OV_model(
             rect=cfg.export.dynamic_input,
@@ -543,14 +543,14 @@ def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
             **common,
         )
     if key == "litert":
-        from src.infer.litert_model import LiteRT_model
+        from dfine_seg.infer.litert_model import LiteRT_model
 
         return LiteRT_model(n_outputs=n_out, rect=False, **common)
     if key == "coreml":
-        from src.infer.coreml_model import CoreML_model
+        from dfine_seg.infer.coreml_model import CoreML_model
 
         return CoreML_model(n_outputs=n_out, rect=False, **common)
-    from src.infer.trt_model import TRT_model
+    from dfine_seg.infer.trt_model import TRT_model
 
     return TRT_model(n_outputs=n_out, rect=False, **common)
 

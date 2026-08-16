@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from src.d_fine.utils import inflate_stem_weight, maybe_inflate_stem
+from dfine_seg.model.utils import inflate_stem_weight, maybe_inflate_stem
 
 
 def test_inflate_shape_and_values():

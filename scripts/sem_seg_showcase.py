@@ -40,9 +40,9 @@ import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 
-from src.dl.utils import overlay_sem_seg, sem_seg_palette
-from src.infer.byte_track import ByteTrack, Detection
-from src.infer.torch_model import Torch_model
+from dfine_seg.dl.utils import overlay_sem_seg, sem_seg_palette
+from dfine_seg.infer.byte_track import ByteTrack, Detection
+from dfine_seg.infer.torch_model import Torch_model
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 TITLE_FADE_IN, TITLE_FADE_OUT = 0.4, 0.5

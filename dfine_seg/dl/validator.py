@@ -12,7 +12,7 @@ from loguru import logger
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from torchvision.ops import box_iou
 
-from src.dl.utils import filter_preds, rle_to_masks
+from dfine_seg.dl.utils import filter_preds, rle_to_masks
 
 # Suppress verbose output from faster_coco_eval
 logging.getLogger("faster_coco_eval").setLevel(logging.WARNING)
@@ -930,7 +930,7 @@ def main():
     print("Testing RLE Encoding/Decoding...")
     print("=" * 50)
 
-    from src.dl.utils import encode_sample_masks_to_rle, masks_to_rle, rle_to_masks
+    from dfine_seg.dl.utils import encode_sample_masks_to_rle, masks_to_rle, rle_to_masks
 
     # Test 1: RLE encode/decode roundtrip
     test_masks = torch.stack([gt1_mask, gt2_mask], dim=0)  # [2, H, W]
@@ -940,7 +940,7 @@ def main():
     print("✓ RLE encode/decode roundtrip works")
 
     # Test 2: Memory savings estimation
-    from src.dl.utils import get_dense_mask_memory_size, get_rle_memory_size
+    from dfine_seg.dl.utils import get_dense_mask_memory_size, get_rle_memory_size
 
     dense_size = get_dense_mask_memory_size(2, test_masks.shape[1], test_masks.shape[2])
     rle_size = get_rle_memory_size(rles)

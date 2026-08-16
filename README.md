@@ -112,19 +112,19 @@ data/dataset/
 └── labels/    # YOLO .txt (same as 3-channel case)
 ```
 
-Loader rules (see [src/dl/dataset.py](src/dl/dataset.py)):
+Loader rules (see [dfine_seg/dl/dataset.py](dfine_seg/dl/dataset.py)):
 
 - `np.load` is byte-faithful - channels come back exactly as you saved them.
 - A file whose channel count doesn't match `train.in_channels` is skipped with a `loguru.warning` line (path + reason). Mosaic re-samples another index automatically.
-- Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [src/d_fine/utils.py](src/d_fine/utils.py)), so fine-tuning from COCO still works.
-- Stem freeze (`freeze_at` in [src/d_fine/configs.py](src/d_fine/configs.py)) is auto-bypassed when `in_channels > 3` so the inflated extra-channel weights can train; the size-configured `freeze_at` still applies for plain 3-channel RGB.
+- Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [dfine_seg/model/utils.py](dfine_seg/model/utils.py)), so fine-tuning from COCO still works.
+- Stem freeze (`freeze_at` in [dfine_seg/model/configs.py](dfine_seg/model/configs.py)) is auto-bypassed when `in_channels > 3` so the inflated extra-channel weights can train; the size-configured `freeze_at` still applies for plain 3-channel RGB.
 
 Channel-order convention: write the RGB triplet in the first three planes
 (channels `0..2`) so they line up with the pretrained RGB stem; extra
 modalities go in channels `3..N-1`. Example for RGB + thermal: stack as
 `[R, G, B, T]`.
 
-Example: [src/etl/m3fd_to_yolo.py](src/etl/m3fd_to_yolo.py) converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal detection benchmark (PASCAL VOC XML + paired `Vis/`/`Ir/` PNGs) into this exact layout.
+Example: [dfine_seg/etl/m3fd_to_yolo.py](dfine_seg/etl/m3fd_to_yolo.py) converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal detection benchmark (PASCAL VOC XML + paired `Vis/`/`Ir/` PNGs) into this exact layout.
 
 #### COCO JSON format
 
@@ -193,7 +193,7 @@ make                 # train -> export -> bench (does not run split)
 Or run overwriting configs from CLI
 
 ```bash
-uv run python -m src.dl.train exp_name=my_exp
+uv run python -m dfine_seg.dl.train exp_name=my_exp
 ```
 
 Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` - it auto-launches with `torchrun`.
@@ -239,7 +239,7 @@ For `task: sem_seg` every backend gets the same fused-argmax graph: a single int
 
 ### Backends
 
-Six inference backends in `src/infer/`:
+Six inference backends in `dfine_seg/infer/`:
 
 | Backend | Format | Devices |
 |:--------|:-------|:--------|

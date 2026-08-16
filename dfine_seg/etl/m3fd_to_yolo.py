@@ -15,7 +15,7 @@ reader can consume the file directly with no swap. (TIFF was rejected because
 see ``scripts/test_tiff_channel_order.py``.)
 
 Usage:
-    uv run python -m src.etl.m3fd_to_yolo \\
+    uv run python -m dfine_seg.etl.m3fd_to_yolo \\
         --src /path/to/M3FD.zip \\
         --dst /path/to/dataset
 

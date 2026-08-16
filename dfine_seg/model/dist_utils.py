@@ -25,7 +25,7 @@ def init_distributed_mode() -> None:
         warnings.warn(
             "DDP is enabled in config but RANK/WORLD_SIZE environment variables are not set. "
             "Make sure to launch with torchrun, e.g.: "
-            "torchrun --nproc_per_node=8 src/dl/train.py"
+            "torchrun --nproc_per_node=8 dfine_seg/dl/train.py"
         )
         return
 

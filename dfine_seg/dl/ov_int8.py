@@ -9,10 +9,10 @@ import torch
 from loguru import logger
 from omegaconf import DictConfig
 
-from src.dl.dataset import Loader
-from src.dl.train import Trainer
-from src.dl.utils import get_latest_experiment_name
-from src.dl.validator import Validator
+from dfine_seg.dl.dataset import Loader
+from dfine_seg.dl.train import Trainer
+from dfine_seg.dl.utils import get_latest_experiment_name
+from dfine_seg.dl.validator import Validator
 
 
 @hydra.main(version_base=None, config_path="../../", config_name="config")

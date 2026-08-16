@@ -8,7 +8,7 @@ Output: <stem>.txt with one line per instance: `cls x1 y1 x2 y2 ... xn yn`.
 Run polys2bbox afterwards for detection bboxes.
 
 Usage:
-    python -m src.etl.cityscapes_to_yolo \
+    python -m dfine_seg.etl.cityscapes_to_yolo \
         --gtfine /path/to/raw/gtFine \
         --images /path/to/dataset/images \
         --out   /path/to/dataset_seg/labels

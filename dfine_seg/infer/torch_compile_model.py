@@ -1,3 +1,41 @@
+"""Torch inference wrapper with torch.compile + AMP + channels_last.
+
+Same API and output contract as Torch_model — drop-in replacement — but the forward
+runs through inductor instead of eager. Needs the model source (dfine_seg/model/) at
+runtime like Torch_model does; torch.compile is a JIT, not an exported artifact.
+
+Measured on D-FINE-S detect @640, batch 1, RTX 5070 Ti, torch 2.13+cu130
+(pure GPU forward, CUDA-synced; latency = sync every call, throughput = queue then sync):
+
+    eager fp32                     8.70 ms
+    eager autocast fp16           10.59 ms   <- SLOWER than fp32, see below
+    compile fp16 (default)         4.33 ms
+    compile fp16 reduce-overhead   2.65 / 2.12 ms
+    compile fp16 max-autotune      2.22 / 1.75 ms
+    TensorRT fp16 (reference)      1.39 / 1.35 ms
+
+Two things worth knowing before tuning:
+
+1. AMP without compile is a pessimisation. At batch 1 this model is launch-bound, so
+   the extra cast kernels cost more than fp16 saves. fp16 only pays once compiled.
+2. Accuracy is BETTER than TensorRT, not worse. Against eager fp32 over 200 real
+   frames (3155 detections >= 0.5), compiled fp16 lost 7 and TensorRT fp16 lost 38 —
+   at the same precision. Compiled output is also bit-identical across batch slots,
+   which batched TensorRT engines are not.
+
+Costs: first max-autotune build takes ~3 min (~6 s afterwards from the inductor
+cache, which persists across processes). Every distinct input shape triggers its own
+compile, so `keep_ratio`/`rect` — which vary the input size per image — pay one build
+per distinct size. `compile_dynamic=True` would avoid that in principle but inductor
+cannot lower this model with symbolic shapes (CantSplit on the encoder reshape), so it
+is left off; leave it off unless a future torch fixes that. For fixed-size input (the
+default `keep_ratio=False` path) none of this applies — one shape, one build.
+
+max-autotune also dumps a ranked kernel table per tuned op (~700 lines here) directly
+to stderr during the build. It is progress output, not a problem, and it stops once the
+cache is warm — `quiet_compile=True` (default) turns it off.
+"""
+
 from typing import Dict, List, Tuple
 
 import cv2
@@ -7,10 +45,12 @@ from loguru import logger
 from numpy.typing import NDArray
 from torchvision.ops import nms
 
-from src.d_fine.dfine import build_model
+from dfine_seg.model.dfine import build_model
+
+_AMP_DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16}
 
 
-class Torch_model:
+class Torch_compile_model:
     def __init__(
         self,
         model_name: str,
@@ -30,6 +70,12 @@ class Torch_model:
         device: str = None,
         channels: int = 3,
         task: str = None,  # detect | segment | sem_seg; overrides enable_mask_head
+        # --- compile / AMP knobs (the only additions over Torch_model) ---
+        compile_mode: str = "max-autotune",  # None -> eager; "reduce-overhead", "default"
+        compile_dynamic: bool = False,  # keep False: symbolic shapes don't lower (see docstring)
+        amp_dtype: str = "float16",  # None -> fp32; "bfloat16" for wider range
+        channels_last: bool = True,
+        quiet_compile: bool = True,  # mute inductor's per-kernel autotune tables
     ):
         self.input_size = (input_height, input_width)
         self.n_outputs = n_outputs
@@ -63,6 +109,27 @@ class Torch_model:
 
         self.np_dtype = np.float32
 
+        self.compile_mode = compile_mode
+        self.compile_dynamic = compile_dynamic
+        if quiet_compile and compile_mode:
+            # max-autotune writes a ranked table per tuned kernel (~700 lines for this
+            # model) straight to sys.stderr, not through logging — so only these two
+            # inductor config flags can turn it off.
+            import torch._inductor.config as inductor_config
+
+            inductor_config.autotune_num_choices_displayed = 0
+            inductor_config.max_autotune_report_choices_stats = False
+        self.channels_last = channels_last and self.device == "cuda"
+        self.amp_dtype = _AMP_DTYPES.get(amp_dtype) if amp_dtype else None
+        if self.amp_dtype is not None and self.device != "cuda":
+            logger.warning(f"AMP requested but device is {self.device}; running fp32")
+            self.amp_dtype = None
+        if self.amp_dtype is not None and self.compile_mode is None:
+            # Measured 10.59 ms vs 8.70 ms fp32 on S@640 batch 1: the cast kernels cost
+            # more than fp16 saves while the model is launch-bound.
+            logger.warning("AMP without compile is slower than fp32 at batch 1")
+        self._warned_shapes: set = set()
+
         self._load_model()
         self._test_pred()
 
@@ -83,13 +150,35 @@ class Torch_model:
         self.model.eval()
         self.model.to(self.device)
 
-        logger.info(f"Torch model, Device: {self.device}")
+        # NB: .half() is not an option here — HybridEncoder builds its sincos pos_embed
+        # as a plain fp32 attribute via setattr (not a registered buffer), so .to(dtype)
+        # silently misses it and the first attention matmul hits a dtype mismatch.
+        # autocast is the supported fp16 path.
+        if self.channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
+        if self.compile_mode:
+            # dynamic must be an explicit bool, never None. None means "let dynamo decide",
+            # and dynamo switches to symbolic shapes the moment it sees a second input size —
+            # which inductor cannot lower for this model (CantSplit on the encoder reshape).
+            # False keeps every shape on its own static graph: recompiles, but it works.
+            self.model = torch.compile(
+                self.model, mode=self.compile_mode, dynamic=self.compile_dynamic
+            )
+
+        logger.info(
+            f"Torch compile model, Device: {self.device}, mode: {self.compile_mode}, "
+            f"amp: {self.amp_dtype}, channels_last: {self.channels_last}"
+        )
 
     def _test_pred(self) -> None:
+        # Also the compile warmup: this triggers the inductor build (minutes on a cold
+        # cache with max-autotune) so the first real call isn't the one that pays it.
         random_image = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(random_image)
         preds = self._predict(processed_inputs)
         self._postprocess(preds, processed_sizes, original_sizes)
+        if self.device == "cuda":
+            torch.cuda.synchronize()
 
     @staticmethod
     def process_boxes(boxes, processed_sizes, orig_sizes, keep_ratio):
@@ -357,11 +446,35 @@ class Torch_model:
                 .div_(255.0)
                 .to(self.device)
             )
+        if self.channels_last:
+            tensor = tensor.to(memory_format=torch.channels_last)
         return tensor, processed_sizes, original_sizes
 
     @torch.no_grad()
     def _predict(self, inputs) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
-        return self.model(inputs)
+        self._warn_on_new_shape(tuple(inputs.shape))
+        if self.amp_dtype is not None:
+            with torch.autocast(self.device, dtype=self.amp_dtype):
+                out = self.model(inputs)
+        else:
+            out = self.model(inputs)
+        # Postprocess (sigmoid -> topk -> NMS) in fp32 regardless of AMP, so results
+        # match the eager fp32 path instead of tie-breaking differently in fp16.
+        return {
+            k: v.float() if torch.is_tensor(v) and v.is_floating_point() else v
+            for k, v in out.items()
+        }
+
+    def _warn_on_new_shape(self, shape: tuple) -> None:
+        """Each distinct input shape costs a fresh inductor compile."""
+        if not self.compile_mode or self.compile_dynamic or shape in self._warned_shapes:
+            return
+        if self._warned_shapes:
+            logger.warning(
+                f"New input shape {shape} (already compiled {sorted(self._warned_shapes)}); "
+                "each new shape costs a fresh compile — use fixed-size input if you can"
+            )
+        self._warned_shapes.add(shape)
 
     def _postprocess(
         self,
