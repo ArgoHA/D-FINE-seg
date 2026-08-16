@@ -43,7 +43,7 @@ SEM_SEG_ALPHA = 0.5  # utils.overlay_sem_seg blend weight for dense label maps
 IGNORE_INDEX = 255  # sem_seg void id; these pixels are left unblended
 DRAW_LABELS = False  # "<class> <score>" tags above each box
 BATCH_WINDOW_S = 0.004  # how long the server waits to fill a batch before firing
-MAX_CONCURRENT_CLIPS = 8  # pool width == NVENC session cap on GeForce
+MAX_CONCURRENT_CLIPS = 4  # pool width < NVENC session cap on GeForce (8)
 # there is a bug in TensorRT with batcehd inferece, so use 1. Check readme for more details
 MAX_TRT_BATCH = 1  # engine's optimization-profile max batch (independent of pool width)
 # Concurrent engine instances. Each owns an engine + execution context + stream, so
