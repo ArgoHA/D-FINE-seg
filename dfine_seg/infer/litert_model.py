@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from torchvision.ops import nms
 
 
-class LiteRT_model:
+class LiteRTModel:
     def __init__(
         self,
         model_path: str,

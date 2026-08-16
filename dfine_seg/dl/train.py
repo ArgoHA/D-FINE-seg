@@ -23,6 +23,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.model.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
 from dfine_seg.model.dist_utils import (
     broadcast_scalar,
@@ -856,7 +857,7 @@ class Trainer:
                 break
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig) -> None:
     ddp_enabled = hasattr(cfg.train, "ddp") and cfg.train.ddp.enabled
     if ddp_enabled:

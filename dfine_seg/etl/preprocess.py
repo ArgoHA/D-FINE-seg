@@ -8,6 +8,8 @@ from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
 from tqdm import tqdm
 
+from dfine_seg._config import CONFIG_NAME, config_dir
+
 
 def convert_image_to_jpg(filepath: Path) -> None:
     """
@@ -67,7 +69,7 @@ def remove_empty_labels(dir_path: Path) -> None:
         logger.info(f"Removed {counter} empty labels")
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig) -> None:
     paths = {"root_path": Path(cfg.train.data_path) / "images"}
     if test_path := cfg.train.path_to_test_data:

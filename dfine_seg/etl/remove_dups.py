@@ -5,6 +5,8 @@ import difPy
 import hydra
 from tqdm import tqdm
 
+from dfine_seg._config import CONFIG_NAME, config_dir
+
 
 def run(dir_path: str, remove_dups: bool):
     dif = difPy.build(dir_path)
@@ -38,7 +40,7 @@ def run(dir_path: str, remove_dups: bool):
             json.dump(clean_data, f)
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg):
     remove_dups = True
     data_path = Path(cfg.train.data_path) / "images"

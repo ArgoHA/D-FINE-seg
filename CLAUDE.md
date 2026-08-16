@@ -12,20 +12,28 @@ Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in 
 
 ```
 config.yaml                  # main Hydra config (edit this for most tasks)
-Makefile                     # thin wrappers around python -m dfine_seg.dl.*
+Makefile                     # thin wrappers around dfine-seg <command>
 pretrained/                  # dfine_{n,s,m,l,x}_{coco,obj2coco}.pt — must exist before training
-src/
+dfine_seg/                   # import root (installable package)
+  __init__.py                # public API: load_model(), read_image()
+  loader.py                  # weight resolution + backend dispatch (returns infer/ wrappers)
   etl/                       # dataset prep: split, yolo2coco, coco2yolo, polys2bbox, …
   dl/                        # train.py, export.py, bench.py, infer.py, validator.py, ov_int8.py, …
-  d_fine/                    # model architecture (backbone, encoder, decoder, matcher, losses)
+  model/                     # model architecture (backbone, encoder, decoder, matcher, losses)
   infer/                     # multi-backend inference wrappers (torch, onnx, ov, trt, coreml, litert)
+  cli.py                     # `dfine-seg` console script
+  data/coco_names.py         # bundled COCO class map
+  config/default.yaml        # packaged config emitted by `dfine-seg init`
 ```
 
 ## 3. Environment
 
 - Python 3.11–3.13, CUDA 12.x. Dependencies (incl. PyTorch) live in [pyproject.toml](pyproject.toml); [uv.lock](uv.lock) is the source of truth for versions.
-- Install with `uv sync` (creates `.venv/`). All Makefile targets shell out via `uv run`, so no manual activation is needed for `make train` / `make bench` / etc. For ad-hoc commands either prefix with `uv run` or activate the venv (`source .venv/bin/activate`).
+- Install with `uv sync` (creates `.venv/`, package installed editable + every extra). All Makefile targets shell out via `uv run`, so no manual activation is needed for `make train` / `make bench` / etc. For ad-hoc commands either prefix with `uv run` or activate the venv (`source .venv/bin/activate`).
+- **Dependency split.** Core (`pip install dfine-seg`) = torch inference **and** training. Extras are opt-in: `[export]` (onnx/onnxruntime/openvino/nncf/coremltools), `[trt]` (tensorrt, Linux), `[label]` (transformers, SAM3), `[demo]` (gradio), `[extra]` (difPy/pillow-heif for two ETL scripts), `[all]`. The `dev` dependency-group depends on `dfine-seg[all]`, which is why a plain `uv sync` still gets everything — uv 0.11 has no `default-extras` key.
+- **Never add an unknown key to `[tool.uv]`.** uv discards the *entire* table on a parse error with only a warning, silently dropping `dependency-metadata` (which pins tensorrt to cu12) and `environments`. That flipped a lock to `tensorrt-cu13` once; see [PYPI_PLAN.md](PYPI_PLAN.md).
 - Platform-specific deps are gated by markers in `pyproject.toml`: `tensorrt` installs on Linux only. `coremltools` ships wheels for both platforms (Linux can run the converter for `make export`, even though the CoreML runtime itself is macOS-only). `uv.lock` covers both so the same lockfile works on the dev mac and the lab box.
+- Build artifacts with `make build` (`uv build` → `dist/`). Nothing is published yet.
 - Pretrained weights auto-download from Hugging Face (`ArgoSA/D-FINE-seg`) into `pretrained/` on first use via `ensure_pretrained` in [dfine_seg/model/utils.py](dfine_seg/model/utils.py). Triggered from `build_model` in [dfine_seg/model/dfine.py](dfine_seg/model/dfine.py) only when the filename matches `dfine_<size>_<dataset>.pt` or `dfine_seg_<size>_coco.pt`; custom checkpoint paths still raise `FileNotFoundError` if missing.
 
 ## 4. Configuration model
@@ -33,7 +41,7 @@ src/
 All CLI commands use Hydra, so any config key is overridable on the command line with dotted paths:
 
 ```bash
-python -m dfine_seg.dl.train exp_name=my_exp model_name=s train.batch_size=12 train.epochs=50
+dfine-seg train exp_name=my_exp model_name=s train.batch_size=12 train.epochs=50
 ```
 
 Key top-level fields in [config.yaml](config.yaml):
@@ -57,7 +65,20 @@ Key top-level fields in [config.yaml](config.yaml):
 
 LRs are indexed by model size under `train.lrs.<size>.{backbone_lr, base_lr}`.
 
-Preset dataset configs in [configs/](configs/) can be used as templates — copy one to `config.yaml` and edit paths / classes.
+**Where `config.yaml` comes from.** [dfine_seg/_config.py](dfine_seg/_config.py) resolves the Hydra
+config dir at import time — `$DFINE_SEG_CONFIG_DIR`, then cwd, then the repo root (editable
+installs only). All nine `@hydra.main` entrypoints use `config_path=config_dir()`, so the clone
+workflow is unchanged (cwd == repo root) and pip users run `dfine-seg init` to write a
+`config.yaml` into cwd. There is deliberately **no fallback to the packaged template** — training
+against someone else's defaults is worse than Hydra's own "cannot find config" error.
+
+Two configs, kept in lockstep: root `config.yaml` is the live dev config (real paths + classes);
+[dfine_seg/config/default.yaml](dfine_seg/config/default.yaml) is its sanitized twin, what
+`dfine-seg init` emits. `tests/unit/test_config_template.py` fails if their key structures or
+shared default values drift apart (`ALLOWED_VALUE_DIFFS` lists the keys allowed to differ).
+
+Local preset dataset configs may exist in `configs/`, but that directory is **gitignored** — it is
+not in a fresh clone, so don't reference it in shipped docs.
 
 ## 5. Dataset preparation
 
@@ -78,7 +99,7 @@ Supported input types: 3-channel `.jpg`/`.png` (BGR, `cv2.imread`), 3-channel `.
 Generate splits:
 
 ```bash
-make split        # == python -m dfine_seg.etl.split
+make split        # == dfine-seg split
 ```
 
 Produces `train.csv`, `val.csv` (and `test.csv` if `split.val_split < 1 - split.train_split`) inside `train.data_path`. Ratios live under the top-level `split:` section in `config.yaml`.
@@ -134,7 +155,7 @@ COCO output is `coco.json` (feeds `make split` directly), with one polygon per i
 
 Box source differs by task, deliberately. `detect` writes SAM3's box head (`res["boxes"]`). `segment` measures its boxes off the polygons it writes, because SAM3's box clips real mask area on ~1/3 of instances (mean 1.3%, up to 18% — measured over 646 Finow instances) and the COCO loader flags mask outside `ann['bbox']` as unreachable at inference. Never derive a box from the raw mask extent: a stray SAM3 speck 968 px off the object produced a 994x207 box for a 26x23 person (344x the area).
 
-Needs `transformers`, which the project venv lacks. `facebook/sam3` is gated, but `SAM3_model` loads `local_files_only=True` first, so a cached snapshot needs no token.
+Needs `transformers` (the `[label]` extra; `uv sync` installs it). `facebook/sam3` is gated, but `SAM3Model` loads `local_files_only=True` first, so a cached snapshot needs no token.
 
 ## 6. Training
 
@@ -143,9 +164,9 @@ Needs `transformers`, which the project venv lacks. `facebook/sam3` is gated, bu
 ```bash
 make train
 # or explicit:
-python -m dfine_seg.dl.train
+dfine-seg train
 # with overrides:
-python -m dfine_seg.dl.train exp_name=fine_s model_name=s task=detect train.batch_size=12 train.epochs=30
+dfine-seg train exp_name=fine_s model_name=s task=detect train.batch_size=12 train.epochs=30
 ```
 
 ### 6.2 Multi-GPU (DDP)
@@ -182,7 +203,7 @@ Under `${train.path_to_save}` (= `${train.root}/output/models/<exp>`):
 There is **no built-in resume flag**. To continue training from a checkpoint:
 
 ```bash
-python -m dfine_seg.dl.train \
+dfine-seg train \
   exp_name=continue_run \
   train.pretrained_model_path=/abs/path/to/previous/model.pt
 ```
@@ -198,9 +219,9 @@ One entrypoint handles both images and videos based on file extension in `train.
 ```bash
 make infer
 # or:
-python -m dfine_seg.dl.infer
+dfine-seg infer
 # with overrides:
-python -m dfine_seg.dl.infer train.path_to_test_data=/abs/path/to/folder infer.to_crop=False
+dfine-seg infer train.path_to_test_data=/abs/path/to/folder infer.to_crop=False
 ```
 
 Supported inputs: `.jpg`, `.png`, `.jpeg`, `.mp4`, `.avi`, `.mov`, `.mkv`.
@@ -227,19 +248,19 @@ Important to note: inference wrappers under /infer are standalone scripts that a
 ## 9. Benchmarking
 
 ```bash
-make bench        # == python -m dfine_seg.dl.bench
+make bench        # == dfine-seg bench
 ```
 
 Runs the val/test set through each backend listed in `formats_to_bench` inside [dfine_seg/dl/bench.py](dfine_seg/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT — for `task: sem_seg`, mIoU + pixel_acc instead (original-resolution protocol, same as training eval). Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
 
 Related:
-- `python -m dfine_seg.dl.test_batching` — sweeps batch sizes, writes `batched_infer.csv`
-- `python -m dfine_seg.dl.check_errors` — dumps FP/FN mismatches against GT
+- `dfine-seg test-batching` — sweeps batch sizes, writes `batched_infer.csv`
+- `dfine-seg check-errors` — dumps FP/FN mismatches against GT
 
 ## 10. Export / conversion
 
 ```bash
-make export       # == python -m dfine_seg.dl.export
+make export       # == dfine-seg export
 ```
 
 Produces, under `${train.path_to_save}`:
@@ -295,7 +316,7 @@ make test        # full suite incl. the ~5s CPU pretrained accuracy regression
 Layout:
 - `tests/unit/` — pin pure helpers (box conversions, IoU, RLE, letterbox, NMS, matcher, losses, Validator, ETL). No model or weights loaded.
 - `tests/integration/test_cpu_forward.py` — shapes + a loose CPU forward latency ceiling. GPU variant is marked `@pytest.mark.gpu` and auto-skips when CUDA isn't present.
-- `tests/integration/test_pretrained_accuracy.py` (marked `slow`) — loads `dfine_s_coco.pt` on CPU, runs through `Torch_model` on the source images in `tests/assets/`, asserts `mAP_50 ≥ baseline_min` from `tests/assets/baseline.json`. Catches any silent drift in the model arch / weights loader / postprocess / letterbox / NMS / Validator math.
+- `tests/integration/test_pretrained_accuracy.py` (marked `slow`) — loads `dfine_s_coco.pt` on CPU, runs through `TorchModel` on the source images in `tests/assets/`, asserts `mAP_50 ≥ baseline_min` from `tests/assets/baseline.json`. Catches any silent drift in the model arch / weights loader / postprocess / letterbox / NMS / Validator math.
 
 Pytest markers (declared in [pyproject.toml](pyproject.toml)): `slow`, `gpu`. Use `-m "gpu"` on the lab box to target GPU tests, `-m "not slow"` to skip the pretrained regression on a flaky network.
 
@@ -344,20 +365,81 @@ uv run python -m tests.generate_fixtures
 
 14. **`task: segment` mask cost lives in postprocess, and fusing more into TRT does not pay.** Measured on cityscapes `seg_s` @640, RTX 5070 Ti, 2048×1024 inputs: engine 1.56 ms vs client postprocess 1.65 ms. Engine-side options were built and timed and all rejected — emitting `mask_feat` + `mask_embed` instead of 300 materialized masks saves 0.13 ms, an fp16 `masks` output saves 0.03 ms (the 30.7 MB write overlaps compute), and `MaskDecoder` itself is ~0.39 ms and irreducible; `builder_optimization_level` 3→5 is noise (-0.9%) for a 3× longer build. NMS can't be fused either: `EfficientNMS_TRT` is deprecated since TRT 10.12 and emits no source indices (so masks can't be gathered), and `INMSLayer` has a data-dependent output shape, which CUDA-graph capture doesn't support. The wins were all client-side and are applied in **every** `/infer` wrapper: fp16 interpolate, no `clamp_` (bilinear of values already in [0,1] is a convex combination), `.view(torch.uint8)` rather than `.to(torch.uint8)` on the threshold result, a separable box crop in `cleanup_masks`, and no host↔device round-trip for `orig_sizes`. The fp16 cast is gated on `m.is_cuda` — on CPU half `interpolate` is ~1.7× *slower* than float, so onnx/openvino/coreml/litert keep fp32 and stay bit-identical to the old code. Measured on the same 500-image cityscapes val, all four benchable backends unchanged on every metric and on TP/FP/FN: TensorRT 4.1 → 3.0 ms, ONNX 241.5 → 212.0, OpenVINO 183.3 → 166.4, PyTorch 16.2 → 15.3. The training-eval copies in [dfine_seg/dl/utils.py](dfine_seg/dl/utils.py) were deliberately left alone — they use a different two-stage resize (proto → input size → original) and a CPU-only `cleanup_masks`, so they are not a mechanical port.
 
+## 12.1 Public API and CLI (packaging surface)
+
+Two entry surfaces on top of the pipeline, both thin:
+
+**Python** — [dfine_seg/loader.py](dfine_seg/loader.py), re-exported from `dfine_seg/__init__.py`:
+
+```python
+from dfine_seg import load_model, read_image
+model = load_model("s")                              # size string -> registry -> HF download
+model = load_model("s", task="segment")
+model = load_model("output/models/exp/model.pt")     # TorchModel
+model = load_model("output/models/exp/model.engine") # TRTModel — backend by file suffix
+out = model(read_image("img.jpg"))             # the wrapper's own contract: list[dict]
+```
+
+**`load_model` is a factory, not a wrapper.** It returns the *same* `TorchModel` / `TRTModel` / …
+object you would construct by hand, so there is exactly one inference API in the repo and no
+second parameter vocabulary. Its whole job is: resolve `"s"` → HF weights, pick the backend from
+the file suffix (`_BACKENDS`), pass `**kwargs` through verbatim, and attach `.names`. Outputs stay
+on whatever device the wrapper used — never force `.cpu()`, mask D2H is ~14 MB/image and belongs
+to the caller. Image loading is a separate helper (`read_image`) so the wrappers keep taking plain
+HWC uint8 arrays. **Do not reintroduce a class that wraps the wrappers.**
+
+Consequence to know: kwargs are not normalized, so a caller must match the target backend's
+signature. `OVModel` takes no `n_outputs` (it reads the graph) while onnx/trt/coreml/litert do —
+a pre-existing inconsistency between the wrappers that `load_model` deliberately does not paper over.
+
+**Checkpoint auto-detect** — [dfine_seg/_ckpt.py](dfine_seg/_ckpt.py). A `.pt` is a bare
+`state_dict()`, so `TorchModel` recovers its architecture the way the other backends read theirs
+from a graph: `num_classes` from `decoder.enc_score_head.weight.shape[0]` (or
+`decoder.classifier.weight` for sem_seg); `task` from mask-decoder / sem-seg head key presence;
+`in_channels` from the stem conv; `model_name` from a 5-row fingerprint table keyed on
+`(backbone key count, encoder hidden dim)` — `(312,128)=n (312,256)=s (442,256)=m (400,256)=l
+(650,384)=x`, task-invariant, pinned by a slow test against all 10 released checkpoints. This is
+why `TorchModel(path)` now needs nothing but a path, matching its 5 siblings; `model_name`,
+`n_outputs`, `task` and `channels` remain as optional overrides. `load_and_describe` reads the
+file once and hands the state_dict on, so the checkpoint is not parsed twice.
+
+Class names, which weights cannot carry, resolve: explicit `names=` → the frozen `config.yaml`
+training saves beside the checkpoint → bundled [COCO map](dfine_seg/data/coco_names.py) when the
+filename is a released one → `None`. There is deliberately **no** reader for metadata embedded in
+the `.pt`: nothing writes that format, and four other places load checkpoints directly
+(`dl/export.py`, `dl/train.py`, `model/utils.py`, `infer/torch_compile_model.py`), so a reader
+here alone would give a false impression of readiness. If that format is ever introduced, unwrap
+it in one shared helper all five call.
+
+**CLI** — [dfine_seg/cli.py](dfine_seg/cli.py), console script `dfine-seg`. `init` writes a
+`config.yaml`; every other subcommand imports the matching module and calls its `@hydra.main`
+`main()` with `sys.argv` rewritten, so Hydra overrides pass through untouched. `train` reads
+`train.ddp.enabled` and re-launches under `torchrun` — the Makefile no longer duplicates that
+shell logic, it just calls `uv run dfine-seg <command>`.
+
+**Import discipline:** `import dfine_seg` must stay torch-only. Not just export backends —
+hydra, wandb, albumentations, matplotlib, pandas, sklearn and torchmetrics are core deps but
+belong to *training*, and none may be reachable from the API's module scope.
+`tests/integration/test_light_import.py` enforces this in a subprocess, and the `core-install`
+CI job re-checks it against a real core-only wheel install.
+
 ## 13. Quick reference
 
 | Task | Command |
 |---|---|
+| Predict from Python | `load_model("s")(read_image("img.jpg"))` |
+| Create a config (pip installs) | `dfine-seg init` |
+| Build sdist + wheel | `make build` |
 | Prepare splits (YOLO CSVs, or `coco.json` → train/val/test.json) | `make split` |
-| Train (single GPU) | `python -m dfine_seg.dl.train exp_name=<name> model_name=<size>` |
+| Train (single GPU) | `dfine-seg train exp_name=<name> model_name=<size>` |
 | Train (multi-GPU) | set `train.ddp.enabled=True`, `train.ddp.n_gpus=N`, then `make train` |
-| Fine-tune from checkpoint | `python -m dfine_seg.dl.train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
-| Infer on folder (images or video) | `python -m dfine_seg.dl.infer train.path_to_test_data=/abs/path` |
+| Fine-tune from checkpoint | `dfine-seg train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
+| Infer on folder (images or video) | `dfine-seg infer train.path_to_test_data=/abs/path` |
 | Export all formats | `make export` |
 | Benchmark exports | `make bench` |
 | Full pipeline | `make` (train → export → bench) |
-| Find best batch size | `python -m dfine_seg.dl.test_batching` |
-| Inspect FP/FN | `python -m dfine_seg.dl.check_errors` |
+| Find best batch size | `dfine-seg test-batching` |
+| Inspect FP/FN | `dfine-seg check-errors` |
 | OpenVINO INT8 | `make ov_int8` |
 | TensorRT INT8 | `make trt_int8` |
 | Run unit + smoke tests | `make test-fast` |

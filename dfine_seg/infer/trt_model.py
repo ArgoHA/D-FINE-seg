@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 from torchvision.ops import nms
 
 
-class TRT_model:
+class TRTModel:
     def __init__(
         self,
         model_path: str,
@@ -38,7 +38,7 @@ class TRT_model:
         self.labels_to_use = labels_to_use or []
         self.use_cuda_graph = use_cuda_graph
 
-        assert not rect, "rect=True is not supported by the current TRT_model implementation"
+        assert not rect, "rect=True is not supported by the current TRTModel implementation"
 
         if not device:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"

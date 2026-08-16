@@ -8,6 +8,8 @@ from loguru import logger
 from omegaconf import DictConfig
 from sklearn.model_selection import train_test_split
 
+from dfine_seg._config import CONFIG_NAME, config_dir
+
 COCO_SRC = "coco.json"  # single-file COCO annotations, split into train/val(/test).json
 
 
@@ -107,7 +109,7 @@ def split_coco(
         logger.info(f"{split_name}: {len(imgs)} images, {len(anns)} annotations")
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig) -> None:
     data_path = Path(cfg.train.data_path)
 

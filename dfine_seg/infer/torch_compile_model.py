@@ -1,8 +1,8 @@
 """Torch inference wrapper with torch.compile + AMP + channels_last.
 
-Same API and output contract as Torch_model — drop-in replacement — but the forward
+Same API and output contract as TorchModel — drop-in replacement — but the forward
 runs through inductor instead of eager. Needs the model source (dfine_seg/model/) at
-runtime like Torch_model does; torch.compile is a JIT, not an exported artifact.
+runtime like TorchModel does; torch.compile is a JIT, not an exported artifact.
 
 Measured on D-FINE-S detect @640, batch 1, RTX 5070 Ti, torch 2.13+cu130
 (pure GPU forward, CUDA-synced; latency = sync every call, throughput = queue then sync):
@@ -50,7 +50,7 @@ from dfine_seg.model.dfine import build_model
 _AMP_DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16}
 
 
-class Torch_compile_model:
+class TorchCompileModel:
     def __init__(
         self,
         model_name: str,
@@ -70,7 +70,7 @@ class Torch_compile_model:
         device: str = None,
         channels: int = 3,
         task: str = None,  # detect | segment | sem_seg; overrides enable_mask_head
-        # --- compile / AMP knobs (the only additions over Torch_model) ---
+        # --- compile / AMP knobs (the only additions over TorchModel) ---
         compile_mode: str = "max-autotune",  # None -> eager; "reduce-overhead", "default"
         compile_dynamic: bool = False,  # keep False: symbolic shapes don't lower (see docstring)
         amp_dtype: str = "float16",  # None -> fp32; "bfloat16" for wider range

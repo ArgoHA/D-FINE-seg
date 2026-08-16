@@ -60,12 +60,53 @@ One frame, three tasks, one config flag:
 ### Installation
 
 ```bash
+pip install dfine-seg
+```
+
+That covers **inference and training**. Export backends are opt-in, because they are large and platform-specific:
+
+| Install | Adds | For |
+|:--|:--|:--|
+| `pip install dfine-seg` | torch, torchvision, opencv, hydra, wandb, albumentations, … | inference + training |
+| `pip install 'dfine-seg[export]'` | onnx, onnxruntime, openvino, nncf, coremltools | `dfine-seg export` |
+| `pip install 'dfine-seg[trt]'` | tensorrt *(Linux)* | TensorRT engines - build on the target GPU |
+| `pip install 'dfine-seg[label]'` | transformers | SAM3 auto-labeling |
+| `pip install 'dfine-seg[demo]'` | gradio | the Gradio UI |
+| `pip install 'dfine-seg[all]'` | everything above | full setup |
+
+Two-line predict:
+
+```python
+from dfine_seg import load_model, read_image
+
+model = load_model("s")                              # COCO detection, weights auto-downloaded
+model = load_model("s", task="segment")              # COCO instance segmentation
+model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes auto-detected
+model = load_model("output/models/exp/model.engine") # any exported artifact, picked by extension
+
+out = model(read_image("path/to/image.jpg"))[0]
+print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
+```
+
+`load_model` returns the very same wrapper you would construct by hand ([dfine_seg/infer/](dfine_seg/infer/)) - it resolves the weights and picks the backend, then gets out of the way. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app.
+
+To train from a pip install, materialize a config and go:
+
+```bash
+dfine-seg init          # writes ./config.yaml - edit train.root and train.label_to_name
+dfine-seg split
+dfine-seg train         # Hydra overrides work: dfine-seg train model_name=m train.epochs=100
+```
+
+#### From source (contributors)
+
+```bash
 git clone https://github.com/ArgoHA/D-FINE-seg.git
 cd D-FINE-seg
 uv sync
 ```
 
-This creates a `.venv/` with all dependencies pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
+This creates a `.venv/` with the package installed editable and every extra present, pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
 
 Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) into `pretrained/` on first use, so no manual setup is needed. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
 
@@ -190,10 +231,10 @@ Or run in sequence:
 make                 # train -> export -> bench (does not run split)
 ```
 
-Or run overwriting configs from CLI
+Every `make` target maps to a `dfine-seg` subcommand (`make train` == `dfine-seg train`), and any config key can be overridden inline:
 
 ```bash
-uv run python -m dfine_seg.dl.train exp_name=my_exp
+dfine-seg train exp_name=my_exp model_name=m train.epochs=100
 ```
 
 Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` - it auto-launches with `torchrun`.

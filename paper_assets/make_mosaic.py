@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from dfine_seg.dl.utils import Visualizer, overlay_sem_seg, sem_seg_palette
-from dfine_seg.infer.torch_model import Torch_model
+from dfine_seg.infer.torch_model import TorchModel
 
 ROOT = Path("/home/argo/Desktop/Projects/cityscapes")
 IMG_DIR = ROOT / "data/dataset/images"
@@ -161,9 +161,9 @@ if __name__ == "__main__":
     colors = Visualizer.generate_colors(len(DET_NAMES))
     kw = dict(device=args.device)
     models = (
-        Torch_model("s", str(latest("det_s")), n_outputs=8, task="detect", **kw),
-        Torch_model("s", str(latest("seg_s")), n_outputs=8, task="segment", **kw),
-        Torch_model("s", str(latest("sem_seg_s")), n_outputs=19, task="sem_seg", **kw),
+        TorchModel(str(latest("det_s")), **kw),
+        TorchModel(str(latest("seg_s")), **kw),
+        TorchModel(str(latest("sem_seg_s")), **kw),
     )
 
     for name in args.images:

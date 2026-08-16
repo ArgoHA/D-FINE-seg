@@ -23,6 +23,7 @@ from loguru import logger
 from omegaconf import DictConfig
 from tqdm import tqdm
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader
 from dfine_seg.dl.train import Trainer
 from dfine_seg.dl.utils import get_latest_experiment_name
@@ -325,7 +326,7 @@ def _trt_to_torch_dtype(trt_dtype):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig):
     """
     Build a TensorRT INT8 engine from the ONNX model using the val set for calibration.

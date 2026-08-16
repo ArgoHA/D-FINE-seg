@@ -16,6 +16,7 @@ from tabulate import tabulate
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader, read_image_hwc
 from dfine_seg.dl.utils import (
     encode_sample_masks_to_rle,
@@ -232,7 +233,7 @@ def test_model(
     return metrics
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig):
     torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -257,9 +258,9 @@ def main(cfg: DictConfig):
     models_path = Path(cfg.train.path_to_save)
 
     if "torch" in formats_to_bench:
-        from dfine_seg.infer.torch_model import Torch_model
+        from dfine_seg.infer.torch_model import TorchModel
 
-        torch_model = Torch_model(
+        torch_model = TorchModel(
             model_name=cfg.model_name,
             model_path=models_path / "model.pt",
             n_outputs=len(cfg.train.label_to_name),
@@ -276,9 +277,9 @@ def main(cfg: DictConfig):
     if IS_MACOS:
         coreml_path = models_path / "model.mlpackage"
         if coreml_path.exists() and "coreml" in formats_to_bench:
-            from dfine_seg.infer.coreml_model import CoreML_model
+            from dfine_seg.infer.coreml_model import CoreMLModel
 
-            coreml_model = CoreML_model(
+            coreml_model = CoreMLModel(
                 model_path=coreml_path,
                 n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
@@ -288,7 +289,7 @@ def main(cfg: DictConfig):
             )
         coreml_int8_path = models_path / "model_int8.mlpackage"
         if coreml_int8_path.exists() and "coreml" in formats_to_bench:
-            coreml_int8_model = CoreML_model(
+            coreml_int8_model = CoreMLModel(
                 model_path=coreml_int8_path,
                 n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
@@ -299,9 +300,9 @@ def main(cfg: DictConfig):
     else:
         trt_path = models_path / "model.engine"
         if trt_path.exists() and "tensorrt" in formats_to_bench:
-            from dfine_seg.infer.trt_model import TRT_model
+            from dfine_seg.infer.trt_model import TRTModel
 
-            trt_model = TRT_model(
+            trt_model = TRTModel(
                 model_path=trt_path,
                 n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
@@ -311,7 +312,7 @@ def main(cfg: DictConfig):
             )
         trt_int8_path = models_path / "model_int8.engine"
         if trt_int8_path.exists() and "tensorrt" in formats_to_bench:
-            trt_int8_model = TRT_model(
+            trt_int8_model = TRTModel(
                 model_path=trt_int8_path,
                 n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
@@ -322,9 +323,9 @@ def main(cfg: DictConfig):
 
     ov_path = models_path / "model.xml"
     if ov_path.exists() and "openvino" in formats_to_bench:
-        from dfine_seg.infer.ov_model import OV_model
+        from dfine_seg.infer.ov_model import OVModel
 
-        ov_model = OV_model(
+        ov_model = OVModel(
             model_path=ov_path,
             conf_thresh=conf_thresh,
             rect=cfg.export.dynamic_input,
@@ -336,9 +337,9 @@ def main(cfg: DictConfig):
 
     onnx_path = models_path / "model.onnx"
     if onnx_path.exists() and "onnx" in formats_to_bench:
-        from dfine_seg.infer.onnx_model import ONNX_model
+        from dfine_seg.infer.onnx_model import ONNXModel
 
-        onnx_model = ONNX_model(
+        onnx_model = ONNXModel(
             model_path=onnx_path,
             n_outputs=len(cfg.train.label_to_name),
             conf_thresh=conf_thresh,
@@ -349,7 +350,7 @@ def main(cfg: DictConfig):
 
     ov_int8_path = models_path / "model_int8.xml"
     if ov_int8_path.exists() and "openvino" in formats_to_bench:
-        ov_int8_model = OV_model(
+        ov_int8_model = OVModel(
             model_path=ov_int8_path,
             conf_thresh=conf_thresh,
             rect=cfg.export.dynamic_input,
@@ -361,9 +362,9 @@ def main(cfg: DictConfig):
 
     litert_path = models_path / "model.tflite"
     if litert_path.exists() and "litert" in formats_to_bench:
-        from dfine_seg.infer.litert_model import LiteRT_model
+        from dfine_seg.infer.litert_model import LiteRTModel
 
-        litert_model = LiteRT_model(
+        litert_model = LiteRTModel(
             model_path=litert_path,
             n_outputs=len(cfg.train.label_to_name),
             conf_thresh=conf_thresh,
@@ -374,7 +375,7 @@ def main(cfg: DictConfig):
 
     litert_int8_path = models_path / "model_int8.tflite"
     if litert_int8_path.exists() and "litert" in formats_to_bench:
-        litert_int8_model = LiteRT_model(
+        litert_int8_model = LiteRTModel(
             model_path=litert_int8_path,
             n_outputs=len(cfg.train.label_to_name),
             conf_thresh=conf_thresh,

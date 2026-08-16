@@ -5,6 +5,8 @@ from pathlib import Path
 import hydra
 from PIL import Image
 
+from dfine_seg._config import CONFIG_NAME, config_dir
+
 
 def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=None):
     # Initialize COCO structure
@@ -102,7 +104,7 @@ def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=Non
         json.dump(data_coco, f_out, indent=4)
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg):
     categories = cfg.train.label_to_name.values()
     dataset_path = Path(cfg.train.data_path)

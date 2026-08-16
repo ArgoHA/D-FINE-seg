@@ -7,15 +7,15 @@ from loguru import logger
 from numpy.typing import NDArray
 from torchvision.ops import nms
 
+from dfine_seg._ckpt import load_and_describe
 from dfine_seg.model.dfine import build_model
 
 
-class Torch_model:
+class TorchModel:
     def __init__(
         self,
-        model_name: str,
         model_path: str,
-        n_outputs: int,
+        n_outputs: int = None,  # None -> read from the checkpoint's class head
         input_width: int = 640,
         input_height: int = 640,
         conf_thresh: float = 0.5,
@@ -28,21 +28,26 @@ class Torch_model:
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
         device: str = None,
-        channels: int = 3,
-        task: str = None,  # detect | segment | sem_seg; overrides enable_mask_head
+        channels: int = None,  # None -> read from the checkpoint's stem conv
+        task: str = None,  # detect | segment | sem_seg; None -> read from the checkpoint
+        model_name: str = None,  # n|s|m|l|x; None -> read from the checkpoint
     ):
+        # A .pt is a bare state_dict, so architecture is recovered from its key structure
+        # (see _ckpt.py) — the same way the other backends read it from their graph.
+        self._state_dict, info = load_and_describe(model_path)
         self.input_size = (input_height, input_width)
-        self.n_outputs = n_outputs
-        self.model_name = model_name
+        self.n_outputs = n_outputs if n_outputs is not None else info["num_classes"]
+        self.model_name = model_name or info["model_name"]
+        self.names = info["names"]
         self.model_path = model_path
         self.rect = rect
         self.keep_ratio = keep_ratio
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
         self.labels_to_use = labels_to_use or []
-        self.task = task or ("segment" if enable_mask_head else "detect")
+        self.task = task or ("segment" if enable_mask_head else info["task"])
         self.enable_mask_head = self.task == "segment"
-        self.channels = channels
+        self.channels = channels if channels is not None else info["in_channels"]
         self.debug_mode = False
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
@@ -76,10 +81,8 @@ class Torch_model:
             in_channels=self.channels,
             task=self.task,
         )
-        self.model.load_state_dict(
-            torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu")),
-            strict=False,
-        )
+        self.model.load_state_dict(self._state_dict, strict=False)
+        del self._state_dict  # loaded once in __init__; don't keep a second copy alive
         self.model.eval()
         self.model.to(self.device)
 

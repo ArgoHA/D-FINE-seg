@@ -11,7 +11,7 @@ from transformers import Sam3Model, Sam3Processor
 MODEL_ID = "facebook/sam3"
 
 
-class SAM3_model:
+class SAM3Model:
     """Text-promptable instance segmentation via SAM3, exposed with the same
     call signature ( __call__(img) -> [dict] ) as the D-FINE-seg wrappers."""
 

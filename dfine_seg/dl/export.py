@@ -12,6 +12,7 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from torch import nn
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.model.configs import base_cfg
 from dfine_seg.model.dfine import build_model
 from dfine_seg.model.utils import ensure_pretrained, load_tuning_state
@@ -530,29 +531,29 @@ def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
     conf, kr = cfg.train.conf_thresh, cfg.train.keep_ratio
     common = dict(model_path=str(path), conf_thresh=conf, keep_ratio=kr, apply_nms=False)
     if key == "onnx":
-        from dfine_seg.infer.onnx_model import ONNX_model
+        from dfine_seg.infer.onnx_model import ONNXModel
 
-        return ONNX_model(n_outputs=n_out, rect=False, **common)
+        return ONNXModel(n_outputs=n_out, rect=False, **common)
     if key == "openvino":
-        from dfine_seg.infer.ov_model import OV_model
+        from dfine_seg.infer.ov_model import OVModel
 
-        return OV_model(
+        return OVModel(
             rect=cfg.export.dynamic_input,
             half=cfg.export.half and platform.system() != "Darwin",
             max_batch_size=1,
             **common,
         )
     if key == "litert":
-        from dfine_seg.infer.litert_model import LiteRT_model
+        from dfine_seg.infer.litert_model import LiteRTModel
 
-        return LiteRT_model(n_outputs=n_out, rect=False, **common)
+        return LiteRTModel(n_outputs=n_out, rect=False, **common)
     if key == "coreml":
-        from dfine_seg.infer.coreml_model import CoreML_model
+        from dfine_seg.infer.coreml_model import CoreMLModel
 
-        return CoreML_model(n_outputs=n_out, rect=False, **common)
-    from dfine_seg.infer.trt_model import TRT_model
+        return CoreMLModel(n_outputs=n_out, rect=False, **common)
+    from dfine_seg.infer.trt_model import TRTModel
 
-    return TRT_model(n_outputs=n_out, rect=False, **common)
+    return TRTModel(n_outputs=n_out, rect=False, **common)
 
 
 def _run_parity_backends(cfg, x1, x_np, want, models_path: Path, add, extract) -> None:
@@ -667,7 +668,7 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
     _parity_report(rows, low, "pixel_agreement", models_path)
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig):
     input_name = "input"
     sem_seg = cfg.task == "sem_seg"

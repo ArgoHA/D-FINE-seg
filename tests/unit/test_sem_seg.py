@@ -247,19 +247,19 @@ def test_out_of_range_class_ids_fail_loudly(tmp_path):
 
 def test_torch_model_process_sem_seg():
     """Wrapper postprocess: argmax -> NEAREST to original size, uint8, per-image dicts."""
-    from dfine_seg.infer.torch_model import Torch_model
+    from dfine_seg.infer.torch_model import TorchModel
 
     logits = torch.full((1, 4, 8, 8), -5.0)
     logits[:, 2, :4] = 5.0  # top half -> class 2, bottom half -> class 0
     logits[:, 0, 4:] = 5.0
-    out = Torch_model.process_sem_seg(logits, [(8, 8)], [(32, 16)], keep_ratio=False)
+    out = TorchModel.process_sem_seg(logits, [(8, 8)], [(32, 16)], keep_ratio=False)
     m = out[0]["sem_seg"]
     assert m.shape == (32, 16) and m.dtype == torch.uint8
     assert set(torch.unique(m).tolist()) == {0, 2}
     assert (m[:16] == 2).all() and (m[16:] == 0).all()  # NEAREST keeps the hard boundary
 
     # labels_to_use: ids not requested -> 255 (void); keep only class 2, class 0 -> 255
-    out = Torch_model.process_sem_seg(
+    out = TorchModel.process_sem_seg(
         logits, [(8, 8)], [(32, 16)], keep_ratio=False, labels_to_use=[2]
     )
     m = out[0]["sem_seg"]

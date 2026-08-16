@@ -74,10 +74,10 @@ def autobackend(
     labels_to_use: list,
 ):
     if ".engine" in model_path:
-        from dfine_seg.infer.trt_model import TRT_model
+        from dfine_seg.infer.trt_model import TRTModel
 
         logger.info("TensorRT backend")
-        return TRT_model(
+        return TRTModel(
             model_path=model_path,
             n_outputs=n_outputs,
             conf_thresh=conf_thresh,
@@ -87,7 +87,7 @@ def autobackend(
     elif ".pt" in model_path:
         import torch
 
-        from dfine_seg.infer.torch_model import Torch_model
+        from dfine_seg.infer.torch_model import TorchModel
 
         device = "cpu"
         if torch.cuda.is_available():
@@ -96,7 +96,7 @@ def autobackend(
             device = "mps"
 
         logger.info(f"Torch backend, device: {device}")
-        return Torch_model(
+        return TorchModel(
             model_path=model_path,
             n_outputs=n_outputs,
             model_name=model_name,

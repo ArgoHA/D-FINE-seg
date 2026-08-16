@@ -10,6 +10,7 @@ from omegaconf import DictConfig
 from torchvision.ops import box_iou
 from tqdm import tqdm
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader, parse_yolo_label_file, read_image_hwc
 from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,
@@ -19,7 +20,7 @@ from dfine_seg.dl.utils import (
     sem_seg_palette,
     vis_one_box,
 )
-from dfine_seg.infer.torch_model import Torch_model
+from dfine_seg.infer.torch_model import TorchModel
 
 
 def norm_xywh_to_xyxy(norm_boxes: torch.Tensor) -> torch.Tensor:
@@ -328,12 +329,12 @@ def run(model, train_loader, val_loader, cfg: DictConfig) -> None:
             )
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig) -> None:
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
     task = str(cfg.task).lower()
-    model = Torch_model(
+    model = TorchModel(
         model_name=cfg.model_name,
         model_path=Path(cfg.train.path_to_save) / "model.pt",
         n_outputs=len(cfg.train.label_to_name),

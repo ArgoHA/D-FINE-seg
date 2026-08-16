@@ -5,8 +5,10 @@ import hydra
 import pandas as pd
 from omegaconf import DictConfig
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig) -> None:
     data_path = Path(cfg.train.data_path) / "images"
     for split in ["train", "val"]:

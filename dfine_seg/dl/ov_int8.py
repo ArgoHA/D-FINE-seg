@@ -9,13 +9,14 @@ import torch
 from loguru import logger
 from omegaconf import DictConfig
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader
 from dfine_seg.dl.train import Trainer
 from dfine_seg.dl.utils import get_latest_experiment_name
 from dfine_seg.dl.validator import Validator
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig):
     """
     Run INT8 quantization with accuracy control on OpenVINO IR model using f1 score.

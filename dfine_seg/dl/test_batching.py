@@ -9,15 +9,16 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from tqdm import tqdm
 
+from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.dl.utils import get_latest_experiment_name
-from dfine_seg.infer.torch_model import Torch_model
+from dfine_seg.infer.torch_model import TorchModel
 
 
-@hydra.main(version_base=None, config_path="../../", config_name="config")
+@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig):
     cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
-    torch_model = Torch_model(
+    torch_model = TorchModel(
         model_name=cfg.model_name,
         model_path=Path(cfg.train.path_to_save) / "model.pt",
         n_outputs=len(cfg.train.label_to_name),

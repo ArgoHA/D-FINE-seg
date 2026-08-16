@@ -42,7 +42,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from dfine_seg.infer.sam3_model import SAM3_model
+from dfine_seg.infer.sam3_model import SAM3Model
 
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"})
 COCO_NAME = "coco.json"  # what dfine_seg.etl.split expects as its single-file COCO source
@@ -171,7 +171,7 @@ def build_instances(
     return instances
 
 
-def annotate_image(model: SAM3_model, path: Path, name: str, options: Options) -> ImageRecord:
+def annotate_image(model: SAM3Model, path: Path, name: str, options: Options) -> ImageRecord:
     """Segment one image against every prompt and collect the instances found.
 
     SAM3 takes one text prompt per forward, so a multi-class run re-encodes the image
@@ -386,9 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     vis_dir = out / "vis" if args.visualize else None
     print(f"{len(paths)} image(s) -> {out} [{', '.join(options.prompts)}]")
 
-    model = SAM3_model(
-        model_path=args.model, conf_thresh=args.conf, mask_threshold=args.mask_thresh
-    )
+    model = SAM3Model(model_path=args.model, conf_thresh=args.conf, mask_threshold=args.mask_thresh)
 
     records: list[ImageRecord] = []
     failures: list[tuple[Path, Exception]] = []

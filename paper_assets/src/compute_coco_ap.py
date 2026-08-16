@@ -41,7 +41,7 @@ from tqdm import tqdm
 
 from dfine_seg.dl.dataset import CustomDataset, Loader
 from dfine_seg.dl.utils import get_latest_experiment_name, process_boxes, process_masks, seed_worker
-from dfine_seg.infer.trt_model import TRT_model
+from dfine_seg.infer.trt_model import TRTModel
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -492,7 +492,7 @@ def evaluate_single_model(
     Evaluate a model and return COCO-style AP metrics.
 
     Args:
-        model: Inference model (TRT_model or YOLO_TRT_model)
+        model: Inference model (TRTModel or YOLO_TRT_model)
         model_name: Name for logging
         data_loader: DataLoader yielding (_, targets, img_paths)
         data_path: Path to dataset root
@@ -747,7 +747,7 @@ def main(cfg: DictConfig):
             # Load model just-in-time
             logger.info(f"Loading {model_name} from: {model_cfg['path']}")
             if model_cfg["type"] == "dfine":
-                model = TRT_model(
+                model = TRTModel(
                     model_path=model_cfg["path"],
                     n_outputs=len(cfg.train.label_to_name),
                     input_width=cfg.train.img_size[1],

@@ -527,7 +527,7 @@ Entry template:
 - Change (files): `QKNormSelfAttention` (arch/utils.py) — LayerNorm Q,K per head before the SDPA
   dot-product, drop-in for nn.MultiheadAttention on enc + dec **self**-attn (cross-attn is deformable,
   untouched). Gated by `build_model(qk_norm=...)` ← `config.yaml train.qk_norm` (default off, threaded to
-  all 5 build sites); self-describing (q_norm keys → Torch_model auto-detects, crosses frozen bench.py);
+  all 5 build sites); self-describing (q_norm keys → TorchModel auto-detects, crosses frozen bench.py);
   decoder denoising bool mask → SDPA additive −inf. exp/qk-norm f45f71f. This run = qk_norm + muon_lr=0.005
   (peak 0.01) → **2 changes** vs Muon. make test 76/76 (+2 new: shapes/grad + mask-convention).
 - Result (test, 2 seeds): mAP_50_95 0.2043±0.0011 (seeds .2055/.2032, gain −0.0018 vs 0.2061, within

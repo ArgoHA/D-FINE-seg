@@ -42,7 +42,7 @@ from omegaconf import OmegaConf
 
 from dfine_seg.dl.utils import overlay_sem_seg, sem_seg_palette
 from dfine_seg.infer.byte_track import ByteTrack, Detection
-from dfine_seg.infer.torch_model import Torch_model
+from dfine_seg.infer.torch_model import TorchModel
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 TITLE_FADE_IN, TITLE_FADE_OUT = 0.4, 0.5
@@ -316,7 +316,7 @@ def main():
     )
     args.ignore_index = int(cfg.train.get("sem_seg", {}).get("ignore_index", 255))
 
-    sem_tm = Torch_model(
+    sem_tm = TorchModel(
         model_name=args.model_name or cfg.model_name,
         model_path=args.model_path,
         n_outputs=len(names_all),
@@ -341,7 +341,7 @@ def main():
             if args.keep_ratio == "auto"
             else args.keep_ratio == "true"
         )
-        det_tm = Torch_model(
+        det_tm = TorchModel(
             model_name=args.det_name or dcfg.model_name,
             model_path=args.det_model_path,
             n_outputs=len(det_names),

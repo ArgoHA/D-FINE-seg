@@ -529,107 +529,6 @@ wheels = [
 ]
 
 [[package]]
-name = "d-fine-seg"
-version = "0.2.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "albumentations", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "coremltools", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "difpy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "faster-coco-eval", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "gradio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "huggingface-hub", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "hydra-core", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "loguru", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "matplotlib", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "nncf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "numpy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "omegaconf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "onnx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "onnxconverter-common", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "onnxruntime", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "onnxscript", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "onnxsim", marker = "sys_platform == 'linux'" },
-    { name = "opencv-python-headless", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "openvino", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pandas", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pillow", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pillow-heif", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pycocotools", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "python-multipart", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pyyaml", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "scikit-learn", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "scipy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "starlette", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "tabulate", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "tensorrt", marker = "sys_platform == 'linux'" },
-    { name = "torch", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "torchmetrics", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "torchvision", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "tqdm", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "transformers", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "wandb", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pre-commit", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pytest", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "pytest-xdist", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "ruff", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "albumentations", specifier = "==2.0.8" },
-    { name = "coremltools", specifier = "==9.0" },
-    { name = "difpy", specifier = "==4.2.1" },
-    { name = "faster-coco-eval", specifier = "==1.6.5" },
-    { name = "gradio", specifier = "==6.16.0" },
-    { name = "huggingface-hub", specifier = "==1.13.0" },
-    { name = "hydra-core", specifier = "==1.3.2" },
-    { name = "loguru", specifier = "==0.7.2" },
-    { name = "matplotlib", specifier = "==3.10.3" },
-    { name = "nncf", specifier = "==2.18.0" },
-    { name = "numpy", specifier = "==2.1.1" },
-    { name = "omegaconf", specifier = "==2.3.0" },
-    { name = "onnx", specifier = "==1.22.0" },
-    { name = "onnxconverter-common", specifier = "==1.16.0" },
-    { name = "onnxruntime", specifier = "==1.21.1" },
-    { name = "onnxscript", specifier = "==0.7.1" },
-    { name = "onnxsim", marker = "sys_platform == 'linux'", specifier = "==0.4.36" },
-    { name = "opencv-python-headless", specifier = "==4.10.0.84" },
-    { name = "openvino", specifier = "==2025.2.0" },
-    { name = "pandas", specifier = "==2.2.3" },
-    { name = "pillow", specifier = "==12.3.0" },
-    { name = "pillow-heif", specifier = "==1.4.0" },
-    { name = "protobuf", specifier = "==6.33.5" },
-    { name = "pycocotools", specifier = "==2.0.8" },
-    { name = "python-multipart", specifier = "==0.0.31" },
-    { name = "pyyaml", specifier = "==6.0.2" },
-    { name = "scikit-learn", specifier = "==1.7.0" },
-    { name = "scipy", specifier = "==1.15.1" },
-    { name = "starlette", specifier = ">=1.3.1" },
-    { name = "tabulate", specifier = "==0.9.0" },
-    { name = "tensorrt", marker = "sys_platform == 'linux'", specifier = "==10.13.3.9" },
-    { name = "torch", specifier = "==2.13.0" },
-    { name = "torchmetrics", specifier = "==1.9.0" },
-    { name = "torchvision", specifier = "==0.28.0" },
-    { name = "tqdm", specifier = "==4.66.5" },
-    { name = "transformers", specifier = ">=5.15.0" },
-    { name = "wandb", specifier = "==0.26.1" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pre-commit", specifier = ">=4.6.0" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-xdist", specifier = ">=3" },
-    { name = "ruff", specifier = "==0.15.20" },
-]
-
-[[package]]
 name = "deprecated"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -639,6 +538,140 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/49/85/12f0a49a7c4ffb70572b6c2ef13c90c88fd190debda93b23f026b25f9634/deprecated-1.3.1.tar.gz", hash = "sha256:b1b50e0ff0c1fddaa5708a2c6b0a6588bb09b892825ab2b214ac9ea9d92a5223", size = 2932523, upload-time = "2025-10-30T08:19:02.757Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/84/d0/205d54408c08b13550c733c4b85429e7ead111c7f0014309637425520a9a/deprecated-1.3.1-py2.py3-none-any.whl", hash = "sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f", size = 11298, upload-time = "2025-10-30T08:19:00.758Z" },
+]
+
+[[package]]
+name = "dfine-seg"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "albumentations", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "faster-coco-eval", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "huggingface-hub", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "hydra-core", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "loguru", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "matplotlib", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "numpy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "omegaconf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "opencv-python-headless", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pandas", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pillow", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "scikit-learn", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "scipy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "tabulate", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "torch", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "torchmetrics", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "torchvision", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "tqdm", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "wandb", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "coremltools", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "difpy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "gradio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "nncf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxconverter-common", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxruntime", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxscript", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxsim", marker = "sys_platform == 'linux'" },
+    { name = "openvino", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pillow-heif", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "python-multipart", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "starlette", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "tensorrt", marker = "sys_platform == 'linux'" },
+    { name = "transformers", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+demo = [
+    { name = "gradio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "python-multipart", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "starlette", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+export = [
+    { name = "coremltools", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "nncf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxconverter-common", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxruntime", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxscript", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "onnxsim", marker = "sys_platform == 'linux'" },
+    { name = "openvino", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+extra = [
+    { name = "difpy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pillow-heif", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+label = [
+    { name = "transformers", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+trt = [
+    { name = "tensorrt", marker = "sys_platform == 'linux'" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "dfine-seg", extra = ["all"], marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pre-commit", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pytest", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pytest-xdist", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "ruff", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "albumentations", specifier = "==2.0.8" },
+    { name = "coremltools", marker = "extra == 'export'", specifier = "==9.0" },
+    { name = "dfine-seg", extras = ["demo"], marker = "extra == 'all'", editable = "." },
+    { name = "dfine-seg", extras = ["export"], marker = "extra == 'all'", editable = "." },
+    { name = "dfine-seg", extras = ["extra"], marker = "extra == 'all'", editable = "." },
+    { name = "dfine-seg", extras = ["label"], marker = "extra == 'all'", editable = "." },
+    { name = "dfine-seg", extras = ["trt"], marker = "extra == 'all'", editable = "." },
+    { name = "difpy", marker = "extra == 'extra'", specifier = "==4.2.1" },
+    { name = "faster-coco-eval", specifier = "==1.6.5" },
+    { name = "gradio", marker = "extra == 'demo'", specifier = "==6.16.0" },
+    { name = "huggingface-hub", specifier = "==1.13.0" },
+    { name = "hydra-core", specifier = "==1.3.2" },
+    { name = "loguru", specifier = "==0.7.2" },
+    { name = "matplotlib", specifier = "==3.10.3" },
+    { name = "nncf", marker = "extra == 'export'", specifier = "==2.18.0" },
+    { name = "numpy", specifier = "==2.1.1" },
+    { name = "omegaconf", specifier = "==2.3.0" },
+    { name = "onnx", marker = "extra == 'export'", specifier = "==1.22.0" },
+    { name = "onnxconverter-common", marker = "extra == 'export'", specifier = "==1.16.0" },
+    { name = "onnxruntime", marker = "extra == 'export'", specifier = "==1.21.1" },
+    { name = "onnxscript", marker = "extra == 'export'", specifier = "==0.7.1" },
+    { name = "onnxsim", marker = "sys_platform == 'linux' and extra == 'export'", specifier = "==0.4.36" },
+    { name = "opencv-python-headless", specifier = "==4.10.0.84" },
+    { name = "openvino", marker = "extra == 'export'", specifier = "==2025.2.0" },
+    { name = "pandas", specifier = "==2.2.3" },
+    { name = "pillow", specifier = "==12.3.0" },
+    { name = "pillow-heif", marker = "extra == 'extra'", specifier = "==1.4.0" },
+    { name = "python-multipart", marker = "extra == 'demo'", specifier = "==0.0.31" },
+    { name = "pyyaml", specifier = "==6.0.2" },
+    { name = "scikit-learn", specifier = "==1.7.0" },
+    { name = "scipy", specifier = "==1.15.1" },
+    { name = "starlette", marker = "extra == 'demo'", specifier = ">=1.3.1" },
+    { name = "tabulate", specifier = "==0.9.0" },
+    { name = "tensorrt", marker = "sys_platform == 'linux' and extra == 'trt'", specifier = "==10.13.3.9" },
+    { name = "torch", specifier = "==2.13.0" },
+    { name = "torchmetrics", specifier = "==1.9.0" },
+    { name = "torchvision", specifier = "==0.28.0" },
+    { name = "tqdm", specifier = "==4.66.5" },
+    { name = "transformers", marker = "extra == 'label'", specifier = ">=5.15.0" },
+    { name = "wandb", specifier = "==0.26.1" },
+]
+provides-extras = ["export", "trt", "label", "demo", "extra", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "dfine-seg", extras = ["all"], editable = "." },
+    { name = "pre-commit", specifier = ">=4.6.0" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-xdist", specifier = ">=3" },
+    { name = "ruff", specifier = "==0.15.20" },
 ]
 
 [[package]]
@@ -1982,28 +2015,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/38/fb/2b9590512a9d7763620d87171c7531d5295678ce96e57393614b91da8998/pyaml-26.2.1.tar.gz", hash = "sha256:489dd82997235d4cfcf76a6287fce2f075487d77a6567c271e8d790583690c68", size = 30653, upload-time = "2026-02-06T13:49:30.769Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5d/f3/1f8651f23101e6fae41d0d504414c9722b0140bf0fc6acf87ac52e18aa41/pyaml-26.2.1-py3-none-any.whl", hash = "sha256:6261c2f0a2f33245286c794ad6ec234be33a73d2b05427079fd343e2812a87cf", size = 27211, upload-time = "2026-02-06T13:49:29.652Z" },
-]
-
-[[package]]
-name = "pycocotools"
-version = "2.0.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "matplotlib", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "numpy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/1a/cdfce175d663568215b3a6b6170ad2a526932cc1021dffabda56a5c3f189/pycocotools-2.0.8.tar.gz", hash = "sha256:8f2bcedb786ba26c367a3680f9c4eb5b2ad9dccb2b34eaeb205e0a021e1dfb8d", size = 24993, upload-time = "2024-06-17T04:26:51.711Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/56/9eedccfd1cfdaf6553d527bed0b2b5572550567a5786a8beb098027a3e5e/pycocotools-2.0.8-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:92bf788e6936fc52b57ccaaa78ecdaeac81872eebbfc45b6fe16ae18b85709bd", size = 162868, upload-time = "2024-06-17T04:26:25.412Z" },
-    { url = "https://files.pythonhosted.org/packages/d5/9c/09cd808743338db170915deb35fa020b792d583238afe55f27c011f91c3c/pycocotools-2.0.8-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6a07f57f991e379959c0f4a1b9ea35d875876433b7f45c6d8fe6b718e58834bc", size = 443318, upload-time = "2024-06-17T04:26:26.452Z" },
-    { url = "https://files.pythonhosted.org/packages/8b/d4/7279d072c0255d07c541326f6058effb1b08190f49695bf2c22aae666878/pycocotools-2.0.8-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5968a1e5421719af9eb7ccee4c540bfb18b1fc95d30d9a48571d0aaeb159a1ae", size = 458661, upload-time = "2024-06-17T04:26:27.917Z" },
-    { url = "https://files.pythonhosted.org/packages/33/b7/886f5ceb83cfefe52d14b4df7da034deecddf714b4ff2c75d98ee35469cd/pycocotools-2.0.8-cp311-cp311-musllinux_1_1_aarch64.whl", hash = "sha256:59eb7b1839f269262456347b6fe2bb88a8be56b32d87fab946483746e1f18a07", size = 438662, upload-time = "2024-06-17T04:26:29.712Z" },
-    { url = "https://files.pythonhosted.org/packages/cf/0f/890e1e5d6c9f773fb5f5903ca8f75425b1c0cec8f71c1322f481f26a0138/pycocotools-2.0.8-cp311-cp311-musllinux_1_1_x86_64.whl", hash = "sha256:05480f731fcd7c5d05389081f84198f3b8117f4560227185bc462cccb5c79181", size = 456444, upload-time = "2024-06-17T04:26:31.007Z" },
-    { url = "https://files.pythonhosted.org/packages/20/b6/d3287bdb2f1954d5739337035a424b6ec012bc6fed0af476c92309cec001/pycocotools-2.0.8-cp312-cp312-macosx_10_9_universal2.whl", hash = "sha256:dd4616621d062882db677de5c64b1b0f6efbcaed9fd284b61e7ba4b16ab24d7a", size = 162686, upload-time = "2024-06-17T04:26:34.317Z" },
-    { url = "https://files.pythonhosted.org/packages/ce/1d/3f32a8fd8b0d0c6f952f030ac90fceb318204c19de33b1cbc4cccee51a03/pycocotools-2.0.8-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:5683ba2612c39094a2e8453d40349768a3da6673376786651481d6f553ff7b50", size = 429594, upload-time = "2024-06-17T04:26:35.411Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/ce/e51566bce4067327c299fe8b6de18f9275e0c0ceaf8e4820ea9af689101c/pycocotools-2.0.8-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b89f399eb851d18f68dfa7f126380394ec0820915c7b3831dd37563bc58daa95", size = 443497, upload-time = "2024-06-17T04:26:37.05Z" },
-    { url = "https://files.pythonhosted.org/packages/87/f2/038244a12c3297a2a7821bd6e72deaa350831c142b0380a14c9749009d83/pycocotools-2.0.8-cp312-cp312-musllinux_1_1_aarch64.whl", hash = "sha256:e6d528c4f35580347ee3cd57f92cf0926e9b6a688d0904b2ea8a814ae2e57a47", size = 428855, upload-time = "2024-06-17T04:26:38.191Z" },
-    { url = "https://files.pythonhosted.org/packages/74/fd/88025b72eaff58fe4066823ebecb3232c3b59f2a080cb3d4c974e1082732/pycocotools-2.0.8-cp312-cp312-musllinux_1_1_x86_64.whl", hash = "sha256:56bbe8be608def61da0b4430562b8d5ff14525f509631a667cfd8405325193da", size = 444322, upload-time = "2024-06-17T04:26:39.882Z" },
 ]
 
 [[package]]

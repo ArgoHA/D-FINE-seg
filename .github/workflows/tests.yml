@@ -52,3 +52,62 @@ jobs:
 
       - name: Run fast tests (no GPU, no pretrained weights)
         run: uv run --no-sync pytest -q -m "not slow and not gpu"
+
+  core-install:
+    name: core wheel install (no extras)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      # A plain `pip install dfine-seg` must give a working torch inference + training
+      # install with no export backend present. CPU torch keeps the download sane.
+      - name: Install the wheel into a bare venv
+        run: |
+          uv venv --python 3.12 /tmp/core
+          uv pip install --python /tmp/core/bin/python --torch-backend=cpu dist/*.whl
+
+      - name: No export backend may be installed
+        run: |
+          /tmp/core/bin/python - <<'PY'
+          import importlib.util as u
+          present = [m for m in ("onnx", "onnxruntime", "openvino", "tensorrt",
+                                 "coremltools", "nncf", "transformers", "gradio")
+                     if u.find_spec(m) is not None]
+          assert not present, f"core install pulled export backends: {present}"
+          PY
+
+      - name: Importing the package stays torch-only
+        run: |
+          /tmp/core/bin/python - <<'PY'
+          import sys
+          import dfine_seg
+          from dfine_seg import load_model, read_image  # noqa: F401
+          heavy = [m for m in ("onnx", "onnxruntime", "openvino", "tensorrt", "coremltools",
+                               "transformers", "gradio", "hydra", "wandb", "albumentations",
+                               "matplotlib", "pandas", "sklearn", "torchmetrics")
+                   if m in sys.modules]
+          assert not heavy, f"import dfine_seg pulled: {heavy}"
+          print("dfine_seg", dfine_seg.__version__)
+          PY
+
+      - name: CLI works from a clean directory
+        run: |
+          mkdir -p /tmp/userdir && cd /tmp/userdir
+          /tmp/core/bin/dfine-seg version
+          # commands must refuse to run before `init`
+          if /tmp/core/bin/dfine-seg train; then echo "expected failure"; exit 1; fi
+          /tmp/core/bin/dfine-seg init --task segment --model m
+          /tmp/core/bin/python -c "
+          import yaml; c = yaml.safe_load(open('config.yaml'))
+          assert c['task'] == 'segment' and c['model_name'] == 'm', c
+          print('init config OK')"

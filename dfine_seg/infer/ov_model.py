@@ -9,7 +9,7 @@ from openvino import Core
 from torchvision.ops import nms
 
 
-class OV_model:
+class OVModel:
     def __init__(
         self,
         model_path: str,
@@ -528,7 +528,7 @@ def cleanup_masks(masks: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
 
 
 if __name__ == "__main__":
-    model = OV_model(
+    model = OVModel(
         model_path="model.xml",
         conf_thresh=0.5,
         half=False,
