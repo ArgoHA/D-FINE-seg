@@ -84,4 +84,4 @@ E2E inference latency of instance segmentation model improved by 25% (4.1ms -> 3
 
 ## 2026-08-17 - Pypi
 
-D-FINE-seg is now pip-installable, has a public Python API and CLI. Repo folders were renamed, inference class names were standardized (PEP8). Torch model now autodetects `model_name`, `task`, `num_classes` and `in_channels`. Demo is also updated, now has a dropdown menu with 10 pretrained weighst and allows user to load his weights from the UI.
+D-FINE-seg is now pip-installable, has a public Python API and CLI. Repo folders were renamed, inference class names were standardized (PEP8). Torch model now autodetects `model_name`, `task`, `num_classes` and `in_channels`. Demo is also updated, now has a dropdown menu with 10 pretrained weights and allows user to load his weights from the UI.
