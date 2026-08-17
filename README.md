@@ -18,7 +18,7 @@
   <a href="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml"><img src="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <a href="https://arxiv.org/abs/2602.23043"><img src="https://img.shields.io/badge/arXiv-2602.23043-b31b1b.svg" alt="arXiv"></a>
   <a href="https://huggingface.co/ArgoSA/D-FINE-seg"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20Card-yellow.svg" alt="Hugging Face Model Card"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/ArgoHA/D-FINE-seg/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
   <a href="mailto:argo.cve@gmail.com"><img src="https://img.shields.io/badge/Contact%20me-email-green.svg" alt="Contact me"></a>
 </p>
 
@@ -34,11 +34,11 @@ D-FINE-seg is a framework for real-time **object detection**, **instance segment
 One frame, three tasks, one config flag:
 
 <p align="center">
-  <img src="assets/mosaic.jpg" width="100%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/mosaic.jpg" width="100%">
 </p>
 
 <p align="center">
-  <img src="assets/cityscapes_benchmark.png" width="100%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/cityscapes_benchmark.png" width="100%">
 </p>
 
 <p align="center">
@@ -88,7 +88,7 @@ out = model(read_image("path/to/image.jpg"))[0]
 print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
 ```
 
-`load_model` returns the very same wrapper you would construct by hand ([dfine_seg/infer/](dfine_seg/infer/)) - it resolves the weights and picks the backend, then gets out of the way. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app.
+`load_model` returns the very same wrapper you would construct by hand ([dfine_seg/infer/](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/infer/)) - it resolves the weights and picks the backend, then gets out of the way. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app.
 
 To train from a pip install, materialize a config and go:
 
@@ -153,19 +153,19 @@ data/dataset/
 └── labels/    # YOLO .txt (same as 3-channel case)
 ```
 
-Loader rules (see [dfine_seg/dl/dataset.py](dfine_seg/dl/dataset.py)):
+Loader rules (see [dfine_seg/dl/dataset.py](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/dl/dataset.py)):
 
 - `np.load` is byte-faithful - channels come back exactly as you saved them.
 - A file whose channel count doesn't match `train.in_channels` is skipped with a `loguru.warning` line (path + reason). Mosaic re-samples another index automatically.
-- Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [dfine_seg/model/utils.py](dfine_seg/model/utils.py)), so fine-tuning from COCO still works.
-- Stem freeze (`freeze_at` in [dfine_seg/model/configs.py](dfine_seg/model/configs.py)) is auto-bypassed when `in_channels > 3` so the inflated extra-channel weights can train; the size-configured `freeze_at` still applies for plain 3-channel RGB.
+- Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [dfine_seg/model/utils.py](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/model/utils.py)), so fine-tuning from COCO still works.
+- Stem freeze (`freeze_at` in [dfine_seg/model/configs.py](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/model/configs.py)) is auto-bypassed when `in_channels > 3` so the inflated extra-channel weights can train; the size-configured `freeze_at` still applies for plain 3-channel RGB.
 
 Channel-order convention: write the RGB triplet in the first three planes
 (channels `0..2`) so they line up with the pretrained RGB stem; extra
 modalities go in channels `3..N-1`. Example for RGB + thermal: stack as
 `[R, G, B, T]`.
 
-Example: [dfine_seg/etl/m3fd_to_yolo.py](dfine_seg/etl/m3fd_to_yolo.py) converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal detection benchmark (PASCAL VOC XML + paired `Vis/`/`Ir/` PNGs) into this exact layout.
+Example: [dfine_seg/etl/m3fd_to_yolo.py](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/etl/m3fd_to_yolo.py) converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal detection benchmark (PASCAL VOC XML + paired `Vis/`/`Ir/` PNGs) into this exact layout.
 
 #### COCO JSON format
 
@@ -305,10 +305,10 @@ A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.068
 ### Gradio Demo
 
 ```bash
-uv run python -m demo.demo
+make demo          # == dfine-seg demo   (pip: pip install 'dfine-seg[demo]')
 ```
 
-A web UI for uploading images and running inference interactively.
+A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` — no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation.
 
 ## Benchmarks
 
@@ -380,7 +380,7 @@ YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25
 
 > D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~7% higher mean relative F1-score with ~28% latency reduction. Notably, IoU is ~15% higher (mean relative improvement across all models).
 
-![VisDrone](assets/visdrone_bench.png)
+![VisDrone](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/visdrone_bench.png)
 
 </details>
 
@@ -534,21 +534,21 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 
 **Training**
 
-![Training](assets/train.png)
+![Training](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/train.png)
 
 **Benchmarking**
 
-![Benchmarking](assets/bench.png)
+![Benchmarking](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/bench.png)
 
 **WandB dashboard**
 
-![WandB](assets/wandb.png)
+![WandB](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/wandb.png)
 
 **Inference**
 
 <p align="center">
-  <img src="assets/infer_detect.jpg" width="66%">
-  <img src="assets/infer_segment.jpg" width="28%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/infer_detect.jpg" width="66%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/infer_segment.jpg" width="28%">
 </p>
 
 ## Citation
@@ -580,7 +580,7 @@ And the original D-FINE paper:
 
 ## License
 
-This project is licensed under the [Apache 2.0 License](LICENSE).
+This project is licensed under the [Apache 2.0 License](https://github.com/ArgoHA/D-FINE-seg/blob/main/LICENSE).
 
 ## Acknowledgement
 

@@ -241,7 +241,7 @@ dense label map at original resolution.
 
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [dfine_seg/infer/torch_model.py](dfine_seg/infer/torch_model.py).
 
-For interactive threshold tweaking, the Gradio UI in [demo/](demo/) exposes a threshold slider.
+For interactive threshold tweaking, the Gradio UI ([dfine_seg/demo.py](dfine_seg/demo.py), `dfine-seg demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable.
 
 Important to note: inference wrappers under /infer are standalone scripts that are usually taken with the model file and used in users' applications, outside of this repo.
 
@@ -435,6 +435,7 @@ CI job re-checks it against a real core-only wheel install.
 | Train (multi-GPU) | set `train.ddp.enabled=True`, `train.ddp.n_gpus=N`, then `make train` |
 | Fine-tune from checkpoint | `dfine-seg train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
 | Infer on folder (images or video) | `dfine-seg infer train.path_to_test_data=/abs/path` |
+| Try a model in a browser UI | `dfine-seg demo` |
 | Export all formats | `make export` |
 | Benchmark exports | `make bench` |
 | Full pipeline | `make` (train → export → bench) |

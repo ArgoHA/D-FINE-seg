@@ -81,3 +81,7 @@ Minor improvement - now pretrained weigts automatically download from HuggingFac
 ## 2026-07-28 - Instance segmentation postprocessing speedup
 
 E2E inference latency of instance segmentation model improved by 25% (4.1ms -> 3.09ms) for TensorRT. Minor speedups for other formats too.
+
+## 2026-08-17 - Pypi
+
+D-FINE-seg is now pip-installable, has a public Python API and CLI. Repo folders were renamed, inference class names were standardized (PEP8). Torch model now autodetects `model_name`, `task`, `num_classes` and `in_channels`. Demo is also updated, now has a dropdown menu with 10 pretrained weighst and allows user to load his weights from the UI.

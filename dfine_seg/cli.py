@@ -34,14 +34,111 @@ _ROWS = "\n".join(f"  {c:<15} {h}" for c, (_, h) in COMMANDS.items())
 USAGE = f"""dfine-seg <command> [hydra overrides]
 
   init            write a config.yaml into the current directory
+  predict         run a model on an image or folder, no config needed
+  demo            launch the Gradio UI (needs `pip install 'dfine-seg[demo]'`)
 {_ROWS}
   version         print the installed version
 
 Examples:
   dfine-seg init --task segment
+  dfine-seg predict s photo.jpg -o out/
+  dfine-seg demo --port 8080
   dfine-seg train model_name=m train.epochs=100
   dfine-seg export export.formats=[onnx]
 """
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".npy"}
+
+
+def _predict(argv: List[str]) -> int:
+    """Config-free inference, so a pip user can try a model straight after installing."""
+    ap = argparse.ArgumentParser(prog="dfine-seg predict")
+    ap.add_argument("model", help="size (n|s|m|l|x) or path to a .pt/.engine/.onnx/.xml/…")
+    ap.add_argument("source", type=Path, help="image file or a directory of images")
+    ap.add_argument("--task", choices=("detect", "segment", "sem_seg"))
+    ap.add_argument("--conf", type=float, default=0.5, help="confidence threshold")
+    ap.add_argument("--device", help="cuda | cpu | mps (default: best available)")
+    ap.add_argument("-o", "--out", type=Path, help="save annotated images / label maps here")
+    args = ap.parse_args(argv)
+
+    if args.source.is_dir():
+        images = sorted(p for p in args.source.iterdir() if p.suffix.lower() in IMAGE_EXTS)
+    elif args.source.is_file():
+        images = [args.source]
+    else:
+        print(f"{args.source} not found", file=sys.stderr)
+        return 1
+    if not images:
+        print(f"no images ({', '.join(sorted(IMAGE_EXTS))}) in {args.source}", file=sys.stderr)
+        return 1
+
+    import cv2
+    import numpy as np
+
+    from dfine_seg import load_model, read_image
+
+    kwargs = {"conf_thresh": args.conf}
+    if args.device:
+        kwargs["device"] = args.device
+    model = load_model(args.model, task=args.task, **kwargs)
+    names = model.names or {}
+
+    visualizer = None
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+        if model.task != "sem_seg":
+            from dfine_seg.dl.utils import Visualizer
+
+            n_classes = max(names) + 1 if names else 80
+            visualizer = Visualizer(n_classes=n_classes, class_names=names or None)
+
+    for path in images:
+        img = read_image(path)
+        out = model(img, bgr=path.suffix.lower() != ".npy")[0]
+
+        if "sem_seg" in out:
+            label_map = out["sem_seg"].cpu().numpy()
+            ids, counts = np.unique(label_map, return_counts=True)
+            share = ", ".join(
+                f"{names.get(int(i), i)} {c / label_map.size:.0%}" for i, c in zip(ids, counts)
+            )
+            print(f"{path.name}: {len(ids)} classes — {share}")
+            if args.out:  # grayscale label map, same format as `dfine-seg infer`
+                cv2.imwrite(str(args.out / f"{path.stem}.png"), label_map)
+            continue
+
+        scores = out["scores"]
+        found = ", ".join(
+            f"{names.get(int(lbl), int(lbl))} {float(s):.2f}"
+            for lbl, s in zip(out["labels"].cpu(), scores.cpu())
+        )
+        print(f"{path.name}: {len(scores)} objects{' — ' + found if len(scores) else ''}")
+        if visualizer is not None:
+            drawn = visualizer.draw(img, {k: v.cpu() for k, v in out.items()})
+            cv2.imwrite(str(args.out / f"{path.stem}.jpg"), drawn)
+
+    if args.out:
+        print(f"wrote {len(images)} file(s) to {args.out}")
+    return 0
+
+
+def _demo(argv: List[str]) -> int:
+    """Launch the Gradio UI. Every model setting is changeable from the page itself."""
+    ap = argparse.ArgumentParser(prog="dfine-seg demo")
+    ap.add_argument("model", nargs="?", default="s", help="model to open with (size or path)")
+    ap.add_argument("--task", choices=("detect", "segment", "sem_seg"), default="auto")
+    ap.add_argument("--host", default="0.0.0.0", help="bind address (default: all interfaces)")
+    ap.add_argument("--port", type=int, default=7860)
+    ap.add_argument("--share", action="store_true", help="public gradio.live tunnel")
+    args = ap.parse_args(argv)
+
+    try:
+        from dfine_seg.demo import main as demo_main
+    except ImportError as e:
+        print(f"{e}. Install it with `pip install 'dfine-seg[demo]'`", file=sys.stderr)
+        return 1
+    demo_main(args.model, args.task, args.host, args.port, args.share)
+    return 0
 
 
 def _init(argv: List[str]) -> int:
@@ -129,6 +226,10 @@ def main() -> int:
 
     if command == "init":
         return _init(rest)
+    if command == "predict":
+        return _predict(rest)
+    if command == "demo":
+        return _demo(rest)
     if command in ("version", "--version", "-V"):
         from dfine_seg import __version__
 

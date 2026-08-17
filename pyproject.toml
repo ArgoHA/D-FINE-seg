@@ -1,6 +1,6 @@
 [project]
 name = "dfine-seg"
-version = "0.2.0"
+version = "0.3.0"
 description = "D-FINE-seg: detection + instance + semantic segmentation framework"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -27,55 +27,60 @@ classifiers = [
 ]
 
 # Core = torch inference + training. Export backends are opt-in (see optional-dependencies).
+# Floors, not pins: exact pins would force a downgrade on anyone who already has a newer
+# numpy/torch. uv.lock is what keeps dev and CI on exact versions.
 dependencies = [
-    "albumentations==2.0.8",
-    "faster-coco-eval==1.6.5",
-    "huggingface-hub==1.13.0",
-    "hydra-core==1.3.2",
-    "loguru==0.7.2",
-    "matplotlib==3.10.3",
-    "numpy==2.1.1",
-    "omegaconf==2.3.0",
-    "opencv-python-headless==4.10.0.84",
-    "pandas==2.2.3",
-    "pillow==12.3.0",
-    "pyyaml==6.0.2",
-    "scikit-learn==1.7.0",
-    "scipy==1.15.1",
-    "tabulate==0.9.0",
-    "torch==2.13.0",
-    "torchmetrics==1.9.0",
-    "torchvision==0.28.0",
-    "tqdm==4.66.5",
-    "wandb==0.26.1",
+    "albumentations>=2.0.8",
+    "faster-coco-eval>=1.6.5",
+    "huggingface-hub>=1.13.0",
+    "hydra-core>=1.3.2",
+    "loguru>=0.7.2",
+    "matplotlib>=3.10.3",
+    "numpy>=2.1.1",
+    "omegaconf>=2.3.0",
+    "opencv-python-headless>=4.10.0.84",
+    "pandas>=2.2.3",
+    "pillow>=12.3.0",
+    "pyyaml>=6.0.2",
+    "scikit-learn>=1.7.0",
+    "scipy>=1.15.1",
+    "tabulate>=0.9.0",
+    "torch>=2.13.0",
+    "torchmetrics>=1.9.0",
+    "torchvision>=0.28.0",
+    "tqdm>=4.66.5",
+    "wandb>=0.26.1",
 ]
 
 [project.optional-dependencies]
-# `make export` / `dfine-seg export` backends. Large, so opt-in.
+# `make export` / `dfine-seg export` backends. Large, so opt-in. nncf and openvino are
+# capped at the tested major: a silent API change there yields a bad artifact, not an error.
 export = [
-    "coremltools==9.0",
-    "nncf==2.18.0",
-    "onnx==1.22.0",
-    "onnxconverter-common==1.16.0",
-    "onnxruntime==1.21.1",
-    "onnxscript==0.7.1",
-    "onnxsim==0.4.36; sys_platform == 'linux'",
-    "openvino==2025.2.0",
+    "coremltools>=9.0",
+    "nncf>=2.18.0,<3",
+    "onnx>=1.22.0",
+    "onnxconverter-common>=1.16.0",
+    "onnxruntime>=1.21.1",
+    "onnxscript>=0.7.1",
+    "onnxsim>=0.4.36; sys_platform == 'linux'",
+    "openvino>=2025.2.0,<2026",
 ]
 # ~1 GB of CUDA-specific wheels; the engine must be built on the target GPU anyway.
+# Exact on purpose: the [[tool.uv.dependency-metadata]] override that keeps this on cu12
+# is keyed to this version, and a float once flipped the lock to tensorrt-cu13.
 trt = ["tensorrt==10.13.3.9; sys_platform == 'linux'"]
 # SAM3 pre-annotation (dfine_seg/etl/sam_labels.py).
 label = ["transformers>=5.15.0"]
-# Gradio UI under demo/.
+# Gradio UI (dfine_seg/demo.py). Capped: the UI is written against gradio 6 components.
 demo = [
-    "gradio==6.16.0",
-    "python-multipart==0.0.31",
+    "gradio>=6.16.0,<7",
+    "python-multipart>=0.0.31",
     "starlette>=1.3.1",
 ]
 # Niche single-script ETL helpers: remove_dups.py, preprocess.py.
 extra = [
-    "difPy==4.2.1",
-    "pillow-heif==1.4.0",
+    "difPy>=4.2.1",
+    "pillow-heif>=1.4.0",
 ]
 all = [
     "dfine-seg[export]",

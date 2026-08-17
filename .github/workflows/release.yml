@@ -1,0 +1,113 @@
+name: release
+
+# Two paths, both using PyPI Trusted Publishing (OIDC) — no API tokens stored anywhere.
+#   * workflow_dispatch -> TestPyPI. Run this first; PyPI releases are immutable.
+#   * published release  -> PyPI.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Build
+        run: uv build
+
+      # A release tag must match the version in pyproject.toml, or PyPI ends up with a
+      # version nobody can reproduce from git.
+      - name: Tag matches project version
+        if: github.event_name == 'release'
+        run: |
+          VERSION=$(uv run --no-project --with tomli python -c \
+            "import tomli;print(tomli.load(open('pyproject.toml','rb'))['project']['version'])")
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "pyproject=$VERSION tag=$TAG"
+          [ "$VERSION" = "$TAG" ] || { echo "::error::tag $TAG != version $VERSION"; exit 1; }
+
+      - name: Check metadata renders on PyPI
+        run: uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  smoke-test:
+    name: install the built wheel and run it
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Exactly what `pip install dfine-seg` gives a user: core only, no extras.
+      - name: Install core-only from the wheel
+        run: |
+          uv venv --python 3.12 /tmp/rel
+          uv pip install --python /tmp/rel/bin/python --torch-backend=cpu dist/*.whl
+
+      - name: Import is torch-only and the CLI works
+        run: |
+          /tmp/rel/bin/python - <<'PY'
+          import sys, dfine_seg
+          from dfine_seg import load_model, read_image  # noqa: F401
+          heavy = [m for m in ("onnxruntime", "openvino", "tensorrt", "coremltools",
+                               "hydra", "wandb", "pandas", "sklearn") if m in sys.modules]
+          assert not heavy, f"import dfine_seg pulled: {heavy}"
+          print("ok", dfine_seg.__version__)
+          PY
+          mkdir -p /tmp/userdir && cd /tmp/userdir
+          /tmp/rel/bin/dfine-seg version
+          /tmp/rel/bin/dfine-seg init --task segment
+
+  publish:
+    name: publish to ${{ github.event.inputs.target || 'pypi' }}
+    needs: [build, smoke-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ github.event.inputs.target || 'pypi' }}
+    permissions:
+      id-token: write # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: github.event.inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: github.event.inputs.target != 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

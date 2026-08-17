@@ -33,7 +33,6 @@ class TorchModel:
         model_name: str = None,  # n|s|m|l|x; None -> read from the checkpoint
     ):
         # A .pt is a bare state_dict, so architecture is recovered from its key structure
-        # (see _ckpt.py) — the same way the other backends read it from their graph.
         self._state_dict, info = load_and_describe(model_path)
         self.input_size = (input_height, input_width)
         self.n_outputs = n_outputs if n_outputs is not None else info["num_classes"]

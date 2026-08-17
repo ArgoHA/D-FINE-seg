@@ -15,7 +15,8 @@ from dfine_seg._config import DEFAULT_CONFIG
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROOT_CONFIG = REPO_ROOT / "config.yaml"
 
-# Keys deliberately different: paths/classes/logging are user-specific by design.
+# Keys deliberately different: paths, classes and logging are user-specific by design,
+# and the backend lists are narrowed per machine depending on what is installed.
 ALLOWED_VALUE_DIFFS = {
     "project_name",
     "exp_name",
@@ -24,6 +25,8 @@ ALLOWED_VALUE_DIFFS = {
     "train.root",
     "train.use_wandb",
     "train.label_to_name",
+    "bench.formats",
+    "export.formats",
 }
 
 
