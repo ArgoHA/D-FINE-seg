@@ -11,12 +11,10 @@ from tqdm import tqdm
 from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import read_image_hwc
 from dfine_seg.dl.utils import (
-    Visualizer,
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
-    overlay_sem_seg,
-    sem_seg_palette,
 )
+from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
 from dfine_seg.infer.byte_track import ByteTrack, Detection
 from dfine_seg.infer.torch_model import TorchModel
 
@@ -391,7 +389,7 @@ def main(cfg: DictConfig):
     use_tracking = to_track and data_type == "video" and cfg.task != "sem_seg"
 
     if use_tracking:
-        # ByteTrack defaults — picked to exercise the two-stage association.
+        # ByteTrack defaults - picked to exercise the two-stage association.
         tracker_cfg = {
             "track_thresh": float(cfg.train.conf_thresh),  # high/low pool split
             "unmatched_thresh": 0.7,  # min score to start a new track
@@ -417,6 +415,7 @@ def main(cfg: DictConfig):
         input_width=cfg.train.img_size[1],
         input_height=cfg.train.img_size[0],
         conf_thresh=cfg.train.conf_thresh,
+        keep_ratio=cfg.train.keep_ratio,
         rect=cfg.export.dynamic_input,
         channels=cfg.train.in_channels,
         task=cfg.task,

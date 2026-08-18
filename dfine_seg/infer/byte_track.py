@@ -10,7 +10,7 @@ Deviations from the paper:
   drift on noisy detections.
 - Match cost blends IoU and normalized centroid distance so the ordering
   stays meaningful when boxes don't overlap (brief occlusions, fast motion).
-- Per-class matching by default — a deer can't inherit a vehicle's track ID.
+- Per-class matching by default - a deer can't inherit a vehicle's track ID.
 """
 
 from dataclasses import dataclass
@@ -127,7 +127,7 @@ class _Track:
         observed_v = (new_mean - self.mean) / gap
 
         if self.hits < 2:
-            # On the first real update, seed velocity directly — EMA blending
+            # On the first real update, seed velocity directly - EMA blending
             # from zeros would under-shoot and lose inertia for fast movers.
             self.velocity = observed_v
         else:
@@ -153,7 +153,7 @@ class ByteTrack:
             in the second.
         unmatched_thresh: Min score for an unmatched high-pool detection to spawn
             a new track. Higher → fewer spurious IDs.
-        detrack_thresh: Hard floor — detections below this are dropped entirely.
+        detrack_thresh: Hard floor - detections below this are dropped entirely.
             Set below track_thresh to enable the second (low-pool) association.
         tracking_thresh: Max match cost allowed. Pairs above this cost are
             rejected, so Hungarian can't force a bad match. With iou_weight=1,
@@ -162,7 +162,7 @@ class ByteTrack:
         max_age: Absolute cap on total track age in frames (0 = disabled).
         min_hits: Min consecutive/total matched frames before a track is emitted.
         class_aware: If True, detections only match tracks of the same class.
-        iou_weight: Cost mix — iou_weight*(1-IoU) + (1-iou_weight)*centroid.
+        iou_weight: Cost mix - iou_weight*(1-IoU) + (1-iou_weight)*centroid.
         drag: Per-frame velocity damping while a track is LOST (0-1).
         velocity_alpha: EMA weight for the stored velocity on update.
     """
@@ -240,7 +240,7 @@ class ByteTrack:
             pool[t_i].update(high[d_i].bbox, high[d_i].score, self.velocity_alpha)
 
         # ---- 3. Second association: still-TRACKED unmatched tracks vs low pool ----
-        # Lost tracks intentionally skipped here — the paper shows that pairing
+        # Lost tracks intentionally skipped here - the paper shows that pairing
         # lost tracks with low-confidence dets hurts more than it helps.
         second_pool_local = [i for i in unmatched_tracks if pool[i].state == TrackState.TRACKED]
         second_tracks = [pool[i] for i in second_pool_local]
@@ -302,7 +302,7 @@ class ByteTrack:
         Returns the frozen last-observed box by default; ``extrapolate=True`` returns the
         constant-velocity prediction instead (follows a mover, but can drift).
 
-        Call right after ``update()`` — that is when unmatched tracks have just been marked LOST
+        Call right after ``update()`` - that is when unmatched tracks have just been marked LOST
         and stale ones (``time_since_update > track_buffer``) already pruned.
         """
         out: List[Tuple[int, Tuple[float, float, float, float]]] = []

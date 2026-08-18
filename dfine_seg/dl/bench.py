@@ -281,7 +281,6 @@ def main(cfg: DictConfig):
 
             coreml_model = CoreMLModel(
                 model_path=coreml_path,
-                n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
@@ -291,7 +290,6 @@ def main(cfg: DictConfig):
         if coreml_int8_path.exists() and "coreml" in formats_to_bench:
             coreml_int8_model = CoreMLModel(
                 model_path=coreml_int8_path,
-                n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
@@ -304,7 +302,6 @@ def main(cfg: DictConfig):
 
             trt_model = TRTModel(
                 model_path=trt_path,
-                n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
@@ -314,7 +311,6 @@ def main(cfg: DictConfig):
         if trt_int8_path.exists() and "tensorrt" in formats_to_bench:
             trt_int8_model = TRTModel(
                 model_path=trt_int8_path,
-                n_outputs=len(cfg.train.label_to_name),
                 conf_thresh=conf_thresh,
                 rect=False,
                 keep_ratio=cfg.train.keep_ratio,
@@ -341,7 +337,6 @@ def main(cfg: DictConfig):
 
         onnx_model = ONNXModel(
             model_path=onnx_path,
-            n_outputs=len(cfg.train.label_to_name),
             conf_thresh=conf_thresh,
             rect=False,
             keep_ratio=cfg.train.keep_ratio,

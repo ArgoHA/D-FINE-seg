@@ -24,7 +24,7 @@ named `coco.json` so `make split` can consume it directly. Repeat `--prompt` for
 multi-class dataset: COCO category ids and YOLO class indices follow the order the
 prompts are given in, and the YOLO output records the names in `labels.txt`.
 
-Needs `transformers`, which the project venv does not carry — run it with an interpreter
+Needs `transformers`, which the project venv does not carry - run it with an interpreter
 that has it. `facebook/sam3` is gated, so without a token that has access the processor's
 `chat_template.json` probe 401s; prefix `HF_HUB_OFFLINE=1` (or pass the cached snapshot
 directory as `--model`) to load a snapshot that is already on disk.

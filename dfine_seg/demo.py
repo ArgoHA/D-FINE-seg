@@ -1,7 +1,7 @@
 """
-D-FINE-seg Gradio Demo — detection, instance segmentation, semantic segmentation
+D-FINE-seg Gradio Demo - detection, instance segmentation, semantic segmentation
 
-Just run it — COCO detection weights download on first use:
+Just run it - COCO detection weights download on first use:
     dfine-seg demo          (or: python -m dfine_seg.demo)
 
 Everything is set from the UI; nothing here needs editing. The "Model" panel swaps in
@@ -9,190 +9,45 @@ your own checkpoint at runtime (size preset or a path/upload) and lets you name 
 classes, so a freshly trained model can be tried on your images and videos immediately.
 
 Backends selectable in the UI:
-  D-FINE-seg — size preset (n|s|m|l|x) or a local artifact, format picked by extension:
+  D-FINE-seg - size preset (n|s|m|l|x) or a local artifact, format picked by extension:
     .pt      -> PyTorch   (CUDA / MPS / CPU)
     .engine  -> TensorRT  (CUDA)
     .onnx    -> ONNXRuntime
     .xml     -> OpenVINO  (CPU / iGPU)
-  SAM3       — text-promptable instance segmentation (facebook/sam3, lazy-loaded)
+  SAM3       - text-promptable instance segmentation (facebook/sam3, lazy-loaded)
 
 Tabs:
   1. Images - upload or webcam snapshot -> annotated result
   2. Video  - upload a video file -> annotated output
 """
 
+import re
 import subprocess
 import tempfile
 import time
 import warnings
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import cv2
 import gradio as gr
 import numpy as np
-import torch
 
 from dfine_seg import load_model
 from dfine_seg.loader import SIZES
+from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
 
 # ─── Startup defaults (all overridable in the UI) ───────────────────────
 DEFAULT_MODEL = "s"  # size (n|s|m|l|x) -> COCO weights, or a path to .pt/.engine/.onnx/.xml
 DEFAULT_TASK = "auto"  # auto | detect | segment | sem_seg
-DEFAULT_INPUT_SIZE = 640  # .pt only; graph artifacts carry their own input size
+DEFAULT_INPUT_SIZE = ""  # blank: a .pt reads its own config, a graph reads the graph
 DEFAULT_CONF_THRESH = 0.5  # initial slider value
 # ─────────────────────────────────────────────────────────────────────────
 
 # The 10 released COCO checkpoints, label -> load_model(size, task). Labels mirror the
 # Python call, and anything not in here is treated as a path, so one field covers both.
 PRESETS = {f"{s} ({t})": (s, t) for t in ("detect", "segment") for s in SIZES}
-
-
-class Visualizer:
-    """Draws detection / segmentation results with consistent per-class colors."""
-
-    def __init__(self, n_classes: int, class_names: Optional[Dict[int, str]] = None):
-        self.class_names = class_names or {i: str(i) for i in range(n_classes)}
-        self.colors = self._generate_colors(n_classes)
-
-    @staticmethod
-    def _generate_colors(n: int) -> List[Tuple[int, int, int]]:
-        """Evenly spaced hues on the HSV wheel → BGR tuples."""
-        colors = []
-        n = max(n, 1)
-        for i in range(n):
-            hue = int(180 * i / n)
-            hsv = np.array([[[hue, 210, 210]]], dtype=np.uint8)
-            bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
-            colors.append(tuple(int(c) for c in bgr))
-        return colors
-
-    # ── public API ──────────────────────────────────────────────────────
-    def draw(
-        self, img: np.ndarray, results: Dict[str, torch.Tensor], minimize: bool = False
-    ) -> np.ndarray:
-        img = img.copy()
-        labels = results["labels"]
-        boxes = results["boxes"]
-        scores = results["scores"]
-        has_masks = "masks" in results and results["masks"] is not None
-
-        if len(labels) == 0:
-            return img
-
-        # Adaptive sizes based on image resolution
-        ref = max(img.shape[:2])
-        box_thick = max(1, int(ref / 400))
-        font_scale = max(0.35, ref / 1800)
-        font_thick = max(1, int(ref / 600))
-        edge_thick = max(1, int(ref / 350))
-
-        # Masks first (underneath boxes)
-        if has_masks:
-            masks = results["masks"]
-            if isinstance(masks, torch.Tensor):
-                masks = masks.cpu().numpy()
-            for i in range(len(labels)):
-                label_id = int(labels[i].item())
-                color = self.colors[label_id % len(self.colors)]
-                self._draw_mask(img, masks[i], color, edge_thickness=edge_thick)
-
-        # Boxes + labels
-        for i in range(len(labels)):
-            label_id = int(labels[i].item())
-            score = float(scores[i].item())
-            color = self.colors[label_id % len(self.colors)]
-            name = self.class_names.get(label_id, str(label_id))
-            x1, y1, x2, y2 = map(int, boxes[i].tolist())
-
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, box_thick)
-
-            if not minimize:
-                text = f"{name} {score:.2f}"
-                self._draw_label(img, text, x1, y1, color, font_scale, font_thick)
-
-        return img
-
-    # ── private helpers ─────────────────────────────────────────────────
-    @staticmethod
-    def _draw_label(
-        img: np.ndarray,
-        text: str,
-        x: int,
-        y: int,
-        bg_color: Tuple[int, int, int],
-        font_scale: float,
-        font_thick: int,
-    ):
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        (tw, th), _ = cv2.getTextSize(text, font, font_scale, font_thick)
-        pad = 4
-
-        # Try placing above the box; fall back to below
-        if y - th - 2 * pad >= 0:
-            bg_y1, bg_y2, text_y = y - th - 2 * pad, y, y - pad
-        else:
-            bg_y1, bg_y2, text_y = y, y + th + 2 * pad, y + th + pad
-
-        cv2.rectangle(img, (x, bg_y1), (x + tw + 2 * pad, bg_y2), bg_color, -1)
-
-        # White or black text depending on background brightness (perceived luminance)
-        lum = 0.299 * bg_color[2] + 0.587 * bg_color[1] + 0.114 * bg_color[0]
-        txt_col = (0, 0, 0) if lum > 140 else (255, 255, 255)
-        cv2.putText(img, text, (x + pad, text_y), font, font_scale, txt_col, font_thick)
-
-    @staticmethod
-    def _draw_mask(
-        img: np.ndarray,
-        mask: np.ndarray,
-        color: Tuple[int, int, int],
-        body_alpha: float = 0.25,
-        edge_alpha: float = 0.70,
-        edge_thickness: int = 2,
-    ):
-        if isinstance(mask, torch.Tensor):
-            mask = mask.cpu().numpy()
-        if mask.dtype != np.uint8:
-            mask = (mask > 0.5).astype(np.uint8)
-        if mask.ndim == 3:
-            mask = mask.squeeze(0)
-        if mask.max() == 0:
-            return
-
-        # Semi-transparent body fill
-        m = mask.astype(bool)
-        overlay = np.full_like(img, color, dtype=np.uint8)
-        img[m] = cv2.addWeighted(img[m], 1 - body_alpha, overlay[m], body_alpha, 0)
-
-        # More opaque edge
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            edge_mask = np.zeros_like(mask)
-            cv2.drawContours(edge_mask, contours, -1, 1, edge_thickness)
-            e = edge_mask.astype(bool)
-            edge_ov = np.full_like(img, color, dtype=np.uint8)
-            img[e] = cv2.addWeighted(img[e], 1 - edge_alpha, edge_ov[e], edge_alpha, 0)
-
-
-# ─── sem_seg rendering ───────────────────────────────────────────────────
-@lru_cache(maxsize=8)
-def _palette(n_classes: int) -> np.ndarray:
-    """[256, 3] BGR lookup table; ids past the class count (incl. ignore=255) stay black."""
-    lut = np.zeros((256, 3), dtype=np.uint8)
-    lut[:n_classes] = np.array(Visualizer._generate_colors(n_classes), dtype=np.uint8)
-    return lut
-
-
-def overlay_sem_seg(img: np.ndarray, label_map: np.ndarray, alpha: float = 0.5) -> np.ndarray:
-    """Blend a colorized dense label map over a BGR frame."""
-    n = max(int(label_map.max()) + 1, 1)
-    if label_map.shape != img.shape[:2]:
-        label_map = cv2.resize(
-            label_map, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST
-        )
-    return cv2.addWeighted(img, 1 - alpha, _palette(n)[label_map], alpha, 0)
 
 
 # ─── Model loading (driven by the UI) ────────────────────────────────────
@@ -203,13 +58,12 @@ class Loaded:
     model: object = None
     vis: Optional[Visualizer] = None
     names: Dict[int, str] = field(default_factory=dict)
+    # Fixed at load time, not per frame: deriving it from the labels present in one frame
+    # repaints every class as the scene changes.
+    palette: Optional[np.ndarray] = None
 
 
 CURRENT = Loaded()
-
-# Backends whose class count isn't recoverable from the artifact: the postprocessor is
-# fused, so nothing in the graph carries it (.pt reads the head, OpenVINO reads the graph).
-OPAQUE_CLASS_COUNT = (".onnx", ".engine", ".mlpackage", ".tflite")
 
 
 def parse_names(text: str) -> Optional[Dict[int, str]]:
@@ -226,7 +80,17 @@ def parse_names(text: str) -> Optional[Dict[int, str]]:
     return names or None
 
 
-def load_backend(spec: str, names_text: str, input_size: float, task: str = "auto") -> str:
+def parse_size(text: str) -> Tuple[int, int]:
+    """`640` -> (640, 640); `1024x2048` / `1024, 2048` -> (1024, 2048). Blank is handled above."""
+    parts = re.split(r"[x,\s]+", str(text).strip())  # unfiltered: `12x` must not read as 12
+    if len(parts) == 1:
+        parts *= 2
+    if len(parts) != 2 or not all(p.isdigit() and int(p) > 0 for p in parts):
+        raise ValueError(f"input size must be `640` or `1024x2048`, got {text!r}")
+    return int(parts[0]), int(parts[1])
+
+
+def load_backend(spec: str, names_text: str, input_size: str, task: str = "auto") -> str:
     """(Re)load the D-FINE backend from the UI controls; returns a status line."""
     src = (spec or "").strip() or DEFAULT_MODEL
     src, preset_task = PRESETS.get(src, (src, None))  # a preset carries its own task
@@ -235,15 +99,13 @@ def load_backend(spec: str, names_text: str, input_size: float, task: str = "aut
     given = parse_names(names_text)
 
     kwargs = {"conf_thresh": DEFAULT_CONF_THRESH}
-    if suffix == ".pt" and input_size:  # graph artifacts read it off the graph
-        kwargs["input_height"] = kwargs["input_width"] = int(input_size)
-    if suffix in OPAQUE_CLASS_COUNT:
-        # These wrappers require a class count they can't read off their graph, and use it
-        # only to size the per-class threshold list that labels index into. Never derive it
-        # from the names box: naming 3 classes of an 8-class model would index out of
-        # bounds mid-postprocess (a CUDA-side assert, i.e. a dead process). Overshooting is
-        # free, so bound it above any realistic label space instead.
-        kwargs["n_outputs"] = 4096
+    # Blank means "let the wrapper decide": a .pt reads train.img_size off the config frozen
+    # beside it, graph artifacts read the graph. Only override when asked.
+    if suffix in ("", ".pt") and str(input_size).strip():  # "" = a size preset
+        try:
+            kwargs["input_height"], kwargs["input_width"] = parse_size(input_size)
+        except ValueError as e:
+            return f"❌ {e}"
     # task selects the weights for a size preset and the architecture for a .pt; graph
     # artifacts have it baked in, and their wrappers take no task=.
     picked = None if task == "auto" or suffix not in ("", ".pt") else task
@@ -251,16 +113,18 @@ def load_backend(spec: str, names_text: str, input_size: float, task: str = "aut
     try:
         model = load_model(src, task=picked, names=given, **kwargs)
     except Exception as e:  # keep the working model rather than leaving the demo dead
-        kept = f" — keeping {Path(CURRENT.model.model_path).name}" if CURRENT.model else ""
+        kept = f" - keeping {Path(CURRENT.model.model_path).name}" if CURRENT.model else ""
         return f"❌ {type(e).__name__}: {e}{kept}"
 
     names = model.names or {}
-    # What we actually know: the wrapper's own count, except where we just made it up above.
-    known = 0 if suffix in OPAQUE_CLASS_COUNT else getattr(model, "n_outputs", 0) or 0
+    # Fused-postprocess graphs (.onnx/.engine/.mlpackage) carry no class count anywhere, so
+    # their wrappers have no n_outputs at all and the names box is all we have.
+    known = getattr(model, "n_outputs", 0) or 0
     known = max(known, max(names) + 1 if names else 0)
     CURRENT.model = model
     CURRENT.names = names
     CURRENT.vis = Visualizer(n_classes=known or 80, class_names=names or None)
+    CURRENT.palette = sem_seg_palette(known or 80)
 
     h, w = getattr(model, "input_size", (None, None))
     note = f" ({len(names)} named)" if 0 < len(names) < known else ("" if names else " (unnamed)")
@@ -268,7 +132,7 @@ def load_backend(spec: str, names_text: str, input_size: float, task: str = "aut
     return (
         f"✅ {type(model).__name__} | {Path(src).name} | "
         f"task: {getattr(model, 'task', 'from graph')} | "
-        f"classes: {known or '? — name them above'}{note if known else ''} | "
+        f"classes: {known or '? - name them above'}{note if known else ''} | "
         f"device: {getattr(model, 'device', '?')} | input: {h}x{w}"
     )
 
@@ -280,12 +144,12 @@ _sam_model = None
 
 
 def _get_sam_model():
-    """Lazy-load SAM3 on first use — seconds from the HF cache, a ~6.5 GB download without."""
+    """Lazy-load SAM3 on first use - seconds from the HF cache, a ~6.5 GB download without."""
     global _sam_model
     if _sam_model is None:
         from dfine_seg.infer.sam3_model import SAM3Model
 
-        gr.Info(f"Loading {SAM3_MODEL_ID} — downloads ~6.5 GB if it isn't cached yet")
+        gr.Info(f"Loading {SAM3_MODEL_ID} - downloads ~6.5 GB if it isn't cached yet")
         print(f"Loading {SAM3_MODEL_ID} …", flush=True)
         t0 = time.perf_counter()
         _sam_model = SAM3Model(model_path=SAM3_MODEL_ID, conf_thresh=DEFAULT_CONF_THRESH)
@@ -319,7 +183,7 @@ def _select_backend(backend: str, prompt: str, conf_thresh: float):
         sam_visualizer.class_names = {0: m.prompt}
         return m, sam_visualizer
     if CURRENT.model is None:
-        raise gr.Error("No model loaded — fix the model settings above and press Load.")
+        raise gr.Error("No model loaded - fix the model settings above and press Load.")
     _set_model_conf_threshold(CURRENT.model, conf_thresh)
     return CURRENT.model, CURRENT.vis
 
@@ -332,7 +196,7 @@ def _run_on_bgr(img_bgr, model_obj, vis_obj, minimize: bool = False) -> np.ndarr
 def _draw(img_bgr, results: dict, vis_obj, minimize: bool = False) -> np.ndarray:
     """Boxes/masks, or a palette overlay when the model is dense (sem_seg)."""
     if "sem_seg" in results:
-        return overlay_sem_seg(img_bgr, results["sem_seg"].cpu().numpy())
+        return overlay_sem_seg(img_bgr, results["sem_seg"].cpu().numpy(), CURRENT.palette)
     return vis_obj.draw(img_bgr, results, minimize=minimize)
 
 
@@ -407,7 +271,7 @@ def predict_video(
     cap.release()
     writer.release()
     elapsed = time.perf_counter() - t0
-    print(f"[video] done — {idx} frames in {elapsed:.1f}s ({idx / elapsed:.1f} fps)")
+    print(f"[video] done - {idx} frames in {elapsed:.1f}s ({idx / elapsed:.1f} fps)")
 
     # Re-encode to H.264 so browsers can play it
     h264_path = tempfile.mktemp(suffix=".mp4")
@@ -463,19 +327,20 @@ def build_ui(model: str = DEFAULT_MODEL, task: str = DEFAULT_TASK) -> gr.Blocks:
                     value=initial,
                     label="Model",
                     info="a released COCO checkpoint, or type/upload a path to your own "
-                    "(.pt / .engine / .onnx / .xml) — task is read from it",
+                    "(.pt / .engine / .onnx / .xml) - task is read from it",
                     allow_custom_value=True,
                     scale=3,
                 )
-                model_size = gr.Number(
+                model_size = gr.Textbox(
                     value=DEFAULT_INPUT_SIZE,
-                    precision=0,
                     label="Input size",
-                    info=".pt only — must match training",
+                    info="PyTorch only - blank reads it from the checkpoint's config; "
+                    "else `640` or `1024x2048`",
+                    placeholder="auto",
                     scale=1,
                 )
             with gr.Row():
-                # OpenVINO needs its .bin sibling, which an upload drops — use the path box.
+                # OpenVINO needs its .bin sibling, which an upload drops - use the path box.
                 model_file = gr.File(
                     label="…or upload weights (.pt / .onnx / .engine)",
                     file_types=[".pt", ".onnx", ".engine"],
@@ -492,7 +357,7 @@ def build_ui(model: str = DEFAULT_MODEL, task: str = DEFAULT_TASK) -> gr.Blocks:
             load_btn = gr.Button("Load model", variant="secondary")
 
         def load_and_collapse(*args):
-            """Collapse the panel once loaded — but stay open on ❌ so the cause is in view."""
+            """Collapse the panel once loaded - but stay open on ❌ so the cause is in view."""
             status = load_backend(*args)
             return status, gr.Accordion(open=status.startswith("❌"))
 
@@ -598,12 +463,19 @@ def build_ui(model: str = DEFAULT_MODEL, task: str = DEFAULT_TASK) -> gr.Blocks:
 def main(
     model: str = DEFAULT_MODEL,
     task: str = DEFAULT_TASK,
-    host: str = "0.0.0.0",  # reachable from another machine — the lab-box case
+    host: str = "127.0.0.1",  # loopback: the page loads arbitrary local paths as models
     port: int = 7860,
     share: bool = False,
 ) -> None:
     # gradio 6.16 trips this inside its own queue route, once per request
     warnings.filterwarnings("ignore", "'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated")
+    if host not in ("127.0.0.1", "localhost"):
+        # The Model panel loads any path the browser sends, so this hands local-file
+        # probing and untrusted-graph deserialization to everyone who can reach the port.
+        print(
+            f"WARNING: serving on {host} - anyone who can reach this port can load "
+            "any file on this machine as a model"
+        )
     build_ui(model, task).launch(server_name=host, server_port=port, share=share)
 
 

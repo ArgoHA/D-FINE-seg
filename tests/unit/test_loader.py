@@ -141,6 +141,62 @@ def test_task_forwarded_for_path_loads(tmp_path, monkeypatch):
     assert seen["task"] == "segment"
 
 
+@pytest.mark.parametrize("suffix", [".onnx", ".engine", ".xml", ".mlpackage", ".tflite"])
+def test_task_not_forwarded_to_graph_backends(tmp_path, monkeypatch, suffix):
+    """Only TorchModel takes task=; every graph wrapper would raise TypeError on it."""
+    seen = {}
+
+    class Fake:
+        def __init__(self, path, **kw):
+            seen.update(kw)
+
+    import dfine_seg.loader as loader
+
+    monkeypatch.setitem(loader._BACKENDS, suffix, ("dfine_seg.loader", "Fake"))
+    monkeypatch.setattr(loader, "Fake", Fake, raising=False)
+    artifact = tmp_path / f"model{suffix}"
+    artifact.touch()
+
+    load_model(artifact, task="segment")
+    assert "task" not in seen
+
+
+def _wrapper_for(suffix):
+    import inspect as _inspect
+    from importlib import import_module
+
+    from dfine_seg.loader import _BACKENDS
+
+    module_name, class_name = _BACKENDS[suffix]
+    try:
+        module = import_module(module_name)
+    except ImportError:
+        pytest.skip(f"{module_name} not installed")
+    return class_name, _inspect.signature(getattr(module, class_name)).parameters
+
+
+@pytest.mark.parametrize("suffix", [".onnx", ".engine", ".mlpackage", ".xml"])
+def test_fused_backends_have_no_class_count(suffix):
+    """The graph emits labels and a per-class list carries its own length: nothing to pass."""
+    class_name, params = _wrapper_for(suffix)
+    assert "n_outputs" not in params, f"{class_name} still takes n_outputs"
+
+
+def test_litert_keeps_an_optional_class_count():
+    """LiteRT decodes labels with it (`topk_idx % n_outputs`) — real, but read from the graph."""
+    class_name, params = _wrapper_for(".tflite")
+    assert params["n_outputs"].default is None, f"{class_name}.n_outputs is required"
+
+
+@pytest.mark.parametrize("suffix", [".onnx", ".engine", ".mlpackage", ".xml", ".tflite"])
+def test_second_positional_is_conf_thresh(suffix):
+    """Guards the removal: a stale `Model(path, 80)` must not silently become a threshold."""
+    _, params = _wrapper_for(suffix)
+    second = list(params)[1]  # signature() on a class drops self, so [0] is model_path
+    expected = "conf_thresh" if suffix != ".tflite" else "n_outputs"
+    assert second == expected
+
+
 # ---- names -------------------------------------------------------------------
 
 

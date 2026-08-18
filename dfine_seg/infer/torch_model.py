@@ -16,11 +16,11 @@ class TorchModel:
         self,
         model_path: str,
         n_outputs: int = None,  # None -> read from the checkpoint's class head
-        input_width: int = 640,
-        input_height: int = 640,
+        input_width: int = None,  # None -> sidecar config's train.img_size, else 640
+        input_height: int = None,
         conf_thresh: float = 0.5,
         rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
-        keep_ratio: bool = False,
+        keep_ratio: bool = None,  # None -> sidecar config's train.keep_ratio, else False
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
         labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
@@ -33,14 +33,16 @@ class TorchModel:
         model_name: str = None,  # n|s|m|l|x; None -> read from the checkpoint
     ):
         # A .pt is a bare state_dict, so architecture is recovered from its key structure
+        # Preprocessing isn't in the weights, resolve from configs
         self._state_dict, info = load_and_describe(model_path)
-        self.input_size = (input_height, input_width)
+        cfg_h, cfg_w = info["img_size"] or (None, None)
+        self.input_size = (input_height or cfg_h or 640, input_width or cfg_w or 640)
         self.n_outputs = n_outputs if n_outputs is not None else info["num_classes"]
         self.model_name = model_name or info["model_name"]
         self.names = info["names"]
         self.model_path = model_path
         self.rect = rect
-        self.keep_ratio = keep_ratio
+        self.keep_ratio = bool(info["keep_ratio"]) if keep_ratio is None else keep_ratio
         self.apply_nms = apply_nms
         self.nms_iou_thresh = nms_iou_thresh
         self.labels_to_use = labels_to_use or []
@@ -85,7 +87,11 @@ class TorchModel:
         self.model.eval()
         self.model.to(self.device)
 
-        logger.info(f"Torch model, Device: {self.device}")
+        h, w = self.input_size
+        logger.info(
+            f"Torch model, Device: {self.device}, input: {h}x{w}, "
+            f"keep_ratio: {self.keep_ratio}, task: {self.task}"
+        )
 
     def _test_pred(self) -> None:
         random_image = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
@@ -114,7 +120,7 @@ class TorchModel:
     def process_masks(
         pred_masks,  # Tensor [B, Q, Hm, Wm] or [Q, Hm, Wm]
         processed_size,  # (H, W) of network input (after your A.Compose)
-        orig_sizes,  # sequence of B (H, W) pairs — keep it on the host, it is only read there
+        orig_sizes,  # sequence of B (H, W) pairs - keep it on the host, it is only read there
         keep_ratio: bool,
     ) -> List[torch.Tensor]:
         """
@@ -151,7 +157,7 @@ class TorchModel:
 
             # Single resize directly to original size, in fp16 on GPU: this is the largest
             # tensor in postprocess ([Q, H0, W0]) and it is only compared against a
-            # threshold afterwards. No clamp — bilinear of values already in [0,1] is a
+            # threshold afterwards. No clamp - bilinear of values already in [0,1] is a
             # convex combination, so it cannot leave [0,1].
             if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
                 m = m.half()

@@ -9,7 +9,7 @@ M3FD ships as:
 
 We collapse the Ir channels (they are identical) to a single thermal plane and
 stack with the visible image to produce 4-channel uint8 arrays saved as ``.npy``.
-On-disk channel order is RGBT — ``np.load`` is byte-faithful, so the dataset
+On-disk channel order is RGBT - ``np.load`` is byte-faithful, so the dataset
 reader can consume the file directly with no swap. (TIFF was rejected because
 ``cv2.imread(IMREAD_UNCHANGED)`` mangles 4-channel TIFFs from non-cv2 producers:
 see ``scripts/test_tiff_channel_order.py``.)

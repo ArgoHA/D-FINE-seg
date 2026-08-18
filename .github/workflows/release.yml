@@ -1,6 +1,6 @@
 name: release
 
-# Two paths, both using PyPI Trusted Publishing (OIDC) — no API tokens stored anywhere.
+# Two paths, both using PyPI Trusted Publishing (OIDC) - no API tokens stored anywhere.
 #   * workflow_dispatch -> TestPyPI. Run this first; PyPI releases are immutable.
 #   * published release  -> PyPI.
 on:

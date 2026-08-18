@@ -13,7 +13,6 @@ class CoreMLModel:
     def __init__(
         self,
         model_path: str,
-        n_outputs: int,
         conf_thresh: float | List[float] = 0.5,
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
@@ -24,7 +23,6 @@ class CoreMLModel:
         labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
     ) -> None:
         self.model_path = model_path
-        self.n_outputs = n_outputs
         self.rect = rect
         self.keep_ratio = keep_ratio
         self.binarize_masks = binarize_masks
@@ -37,11 +35,18 @@ class CoreMLModel:
         self._load_model()
         self._read_model_metadata()
 
-        # Per-class confidence thresholds
-        if isinstance(conf_thresh, float):
-            self.conf_threshs = [conf_thresh] * self.n_outputs
-        elif isinstance(conf_thresh, list):
-            self.conf_threshs = conf_thresh
+        # No class count anywhere: the fused graph emits labels, and a per-class list carries
+        # its own length.
+        scalar = isinstance(conf_thresh, (int, float))
+        self.conf_thresh = float(conf_thresh) if scalar else None
+        self.conf_threshs = None if scalar else list(conf_thresh)
+        if scalar and not 0.0 <= self.conf_thresh <= 1.0:
+            # Catches the old `Model(path, n_outputs)` positional call, which would otherwise
+            # land the class count in conf_thresh and silently return nothing.
+            raise ValueError(
+                f"conf_thresh must be in [0, 1], got {conf_thresh!r}. The n_outputs argument "
+                "was removed - this wrapper reads everything it needs from the graph."
+            )
 
         self._test_pred()
 
@@ -93,7 +98,7 @@ class CoreMLModel:
     def process_masks(
         pred_masks,  # Tensor [B, Q, Hm, Wm] or [Q, Hm, Wm]
         processed_size,  # (H, W) of network input (after your A.Compose)
-        orig_sizes,  # sequence of B (H, W) pairs — keep it on the host, it is only read there
+        orig_sizes,  # sequence of B (H, W) pairs - keep it on the host, it is only read there
         keep_ratio: bool,
     ) -> List[torch.Tensor]:
         """
@@ -127,7 +132,7 @@ class CoreMLModel:
                 m = m[:, y1:y2, x1:x2]
 
             # fp16 on GPU: this is the largest tensor in postprocess and it is only compared
-            # against a threshold. No clamp — bilinear of [0,1] values cannot leave [0,1].
+            # against a threshold. No clamp - bilinear of [0,1] values cannot leave [0,1].
             if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
                 m = m.half()
             m = torch.nn.functional.interpolate(

@@ -2,7 +2,7 @@
 
 Checkpoints are bare `state_dict()`s (dl/train.py:643,657), so architecture is inferred
 from key structure. `(backbone key count, encoder hidden dim)` is unique per size and
-identical across tasks — verified on all 14 released checkpoints.
+identical across tasks - verified on all 14 released checkpoints.
 """
 
 from pathlib import Path
@@ -41,15 +41,6 @@ def _size_from(sd: Dict[str, torch.Tensor]) -> str:
     return _FINGERPRINT[fp]
 
 
-def _task_and_classes(sd: Dict[str, torch.Tensor]) -> Tuple[str, int]:
-    if _DET_HEAD in sd:
-        task = "segment" if any(k.startswith(_MASK_PREFIX) for k in sd) else "detect"
-        return task, sd[_DET_HEAD].shape[0]
-    if _SEM_HEAD in sd:
-        return "sem_seg", sd[_SEM_HEAD].shape[0]
-    raise ValueError("not a D-FINE-seg checkpoint: no detection or sem_seg head found")
-
-
 def sibling_config(ckpt: Path) -> Dict[str, Any]:
     """`config.yaml` that training freezes next to the checkpoint (dl/train.py)."""
     p = ckpt.parent / "config.yaml"
@@ -63,14 +54,28 @@ def sibling_config(ckpt: Path) -> Dict[str, Any]:
 
 
 def describe(sd: Dict[str, torch.Tensor]) -> Dict[str, Any]:
-    """-> {model_name, task, num_classes, names, in_channels} from an in-memory state_dict."""
-    task, num_classes = _task_and_classes(sd)
+    """-> architecture facts recoverable from an in-memory state_dict.
+
+    `names`, `img_size` and `keep_ratio` are preprocessing, not architecture: nothing in
+    the weights carries them, so they stay None here and `load_and_describe` fills them
+    from the sidecar config.
+    """
+    if _DET_HEAD in sd:  # a mask decoder over the detection head = instance segmentation
+        task = "segment" if any(k.startswith(_MASK_PREFIX) for k in sd) else "detect"
+        num_classes = sd[_DET_HEAD].shape[0]
+    elif _SEM_HEAD in sd:
+        task, num_classes = "sem_seg", sd[_SEM_HEAD].shape[0]
+    else:
+        raise ValueError("not a D-FINE-seg checkpoint: no detection or sem_seg head found")
+
     return {
         "model_name": _size_from(sd),
         "task": task,
         "num_classes": num_classes,
-        "names": None,  # not in the weights; load_and_describe reads the sidecar config
+        "names": None,
         "in_channels": _in_channels(sd),
+        "img_size": None,
+        "keep_ratio": None,
     }
 
 
@@ -79,12 +84,18 @@ def load_and_describe(path: str | Path) -> Tuple[Dict[str, torch.Tensor], Dict[s
     p = Path(path)
     sd = torch.load(p, map_location="cpu", weights_only=True)
     info = describe(sd)
-    info["names"] = _coerce_names(sibling_config(p).get("train", {}).get("label_to_name"))
+    cfg = sibling_config(p).get("train", {})
+    info["names"] = _coerce_names(cfg.get("label_to_name"))
+    # A model trained at 1024x2048 still runs at the 640x640 default, silently and worse --
+    # so preprocessing comes from the frozen config too, not just the class names.
+    size = cfg.get("img_size")
+    info["img_size"] = (int(size[0]), int(size[1])) if size else None
+    info["keep_ratio"] = cfg.get("keep_ratio")
     return sd, info
 
 
 def inspect(path: str | Path) -> Dict[str, Any]:
-    """-> {model_name, task, num_classes, names, in_channels}. Never raises on names."""
+    """-> {model_name, task, num_classes, names, in_channels, img_size, keep_ratio}."""
     return load_and_describe(path)[1]
 
 

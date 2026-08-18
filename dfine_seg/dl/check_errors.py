@@ -16,10 +16,9 @@ from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
     norm_xywh_to_abs_xyxy,
-    overlay_sem_seg,
-    sem_seg_palette,
     vis_one_box,
 )
+from dfine_seg.viz import overlay_sem_seg, sem_seg_palette
 from dfine_seg.infer.torch_model import TorchModel
 
 

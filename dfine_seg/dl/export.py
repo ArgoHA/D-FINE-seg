@@ -12,10 +12,16 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from torch import nn
 
+from dfine_seg._ckpt import describe
 from dfine_seg._config import CONFIG_NAME, config_dir
 from dfine_seg.model.configs import base_cfg
 from dfine_seg.model.dfine import build_model
-from dfine_seg.model.utils import ensure_pretrained, load_tuning_state
+from dfine_seg.model.utils import (
+    ensure_pretrained,
+    extract_pretrained_state_dict,
+    load_tuning_state,
+)
+
 from dfine_seg.dl.utils import get_latest_experiment_name
 
 
@@ -139,6 +145,26 @@ class SemSegExportWrapper(nn.Module):
         return self
 
 
+def _check_pretrained_classes(ckpt: str, n_config: int) -> None:
+    """Refuse to export pretrained weights whose head doesn't match `train.label_to_name`.
+
+    `load_tuning_state` loads non-strictly, so a mismatch drops every score head and leaves
+    it at random init - and parity then compares that corrupt model against graphs exported
+    from it, so the export "passes". Straight from `dfine-seg init` (2 template classes)
+    this produced a green check on a broken model.
+    """
+    state = torch.load(ckpt, map_location="cpu", weights_only=True)
+    n_ckpt = describe(extract_pretrained_state_dict(state))["num_classes"]
+    if n_ckpt != n_config:
+        raise ValueError(
+            f"{Path(ckpt).name} has {n_ckpt} classes but train.label_to_name has {n_config}. "
+            "export.from_pretrained cannot reconcile that: the mismatched heads would be "
+            "dropped and exported at random init. Either list the checkpoint's classes "
+            "(dfine_seg.data.coco_names.COCO_NAMES for the released COCO weights), or train "
+            "on your own classes first and export with export.from_pretrained=False."
+        )
+
+
 def prepare_model(cfg, device):
     model = build_model(
         cfg.model_name,
@@ -151,7 +177,9 @@ def prepare_model(cfg, device):
     )
     if cfg.export.from_pretrained:
         # Export the COCO/obj2coco pretrained weights directly (no trained model.pt).
-        load_tuning_state(model, ensure_pretrained(cfg.train.pretrained_model_path))
+        ckpt = ensure_pretrained(cfg.train.pretrained_model_path)
+        _check_pretrained_classes(ckpt, len(cfg.train.label_to_name))
+        load_tuning_state(model, ckpt)
     else:
         ckpt = Path(cfg.train.path_to_save) / "model.pt"
         if not ckpt.exists():
@@ -528,12 +556,14 @@ def _parity_input(cfg, raw_model, x_test) -> tuple:
 
 
 def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
+    """n_out is only for LiteRT: it exports the raw head, so it decodes labels with the
+    class count. Every other backend reads what it needs off its own graph."""
     conf, kr = cfg.train.conf_thresh, cfg.train.keep_ratio
     common = dict(model_path=str(path), conf_thresh=conf, keep_ratio=kr, apply_nms=False)
     if key == "onnx":
         from dfine_seg.infer.onnx_model import ONNXModel
 
-        return ONNXModel(n_outputs=n_out, rect=False, **common)
+        return ONNXModel(rect=False, **common)
     if key == "openvino":
         from dfine_seg.infer.ov_model import OVModel
 
@@ -550,10 +580,10 @@ def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
     if key == "coreml":
         from dfine_seg.infer.coreml_model import CoreMLModel
 
-        return CoreMLModel(n_outputs=n_out, rect=False, **common)
+        return CoreMLModel(rect=False, **common)
     from dfine_seg.infer.trt_model import TRTModel
 
-    return TRTModel(n_outputs=n_out, rect=False, **common)
+    return TRTModel(rect=False, **common)
 
 
 def _run_parity_backends(cfg, x1, x_np, want, models_path: Path, add, extract) -> None:
@@ -585,7 +615,7 @@ def _run_parity_backends(cfg, x1, x_np, want, models_path: Path, add, extract) -
             m = _build_parity_backend(key, models_path / fn, cfg, n_out)
             if key == "tensorrt":
                 # Mirror __call__: _predict enqueues on m._stream, but the metric's
-                # .cpu() read runs on the default stream — without this the async
+                # .cpu() read runs on the default stream - without this the async
                 # execute races the output read.
                 with torch.cuda.stream(m._stream):
                     x_trt = x1.to(device=m._input_tensor.device, dtype=m._input_tensor.dtype)
@@ -617,7 +647,7 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
     Scores (sorted top-K confidences) are the reorder-stable, end-to-end signal: they
     flow through the whole network, so any silent export drift moves them. Per-query
     boxes/logits/masks are dominated by background queries that never clear conf
-    filtering, so comparing them is just noise — bench covers surviving-box geometry.
+    filtering, so comparing them is just noise - bench covers surviving-box geometry.
     """
     x1, x_np = _parity_input(cfg, raw_model, x_test)
     with torch.no_grad():
@@ -678,8 +708,12 @@ def main(cfg: DictConfig):
         output_names.append("masks")
 
     device = cfg.train.device
-    cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
+    # from_pretrained needs no trained run - it writes into today's fresh output dir.
+    if not cfg.export.from_pretrained:
+        cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
 
+    # from_pretrained exports before any training run, so the output dir may not exist yet
+    Path(cfg.train.path_to_save).mkdir(parents=True, exist_ok=True)
     model_path = Path(cfg.train.path_to_save) / "model.pt"
 
     raw_model = prepare_model(cfg, device)

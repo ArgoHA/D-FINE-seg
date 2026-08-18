@@ -108,3 +108,22 @@ def test_fingerprints_match_released_checkpoints(size, task):
     assert info["task"] == task
     assert info["num_classes"] == 80
     assert info["in_channels"] == 3
+
+
+# ---- preprocessing recovered from the sidecar config -------------------------
+
+
+def test_img_size_and_keep_ratio_from_sibling_config(tmp_path):
+    """Not in the weights, and getting them wrong is silent — so the config is read."""
+    p = write(tmp_path, fake_sd(num_classes=19, task="sem_seg"))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"train": {"img_size": [1024, 2048], "keep_ratio": True}})
+    )
+    info = inspect(p)
+    assert info["img_size"] == (1024, 2048)
+    assert info["keep_ratio"] is True
+
+
+def test_preprocessing_is_none_without_a_config(tmp_path):
+    info = inspect(write(tmp_path, fake_sd()))
+    assert info["img_size"] is None and info["keep_ratio"] is None

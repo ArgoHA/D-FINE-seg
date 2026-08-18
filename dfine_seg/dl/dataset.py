@@ -24,20 +24,19 @@ from dfine_seg.dl.utils import (
     get_transform_matrix,
     norm_poly_to_abs,
     norm_xywh_to_abs_xyxy,
-    overlay_sem_seg,
     poly_abs_to_mask,
     random_affine,
     seed_worker,
-    sem_seg_palette,
     vis_one_box,
 )
+from dfine_seg.viz import overlay_sem_seg, sem_seg_palette
 
 
 def read_image_hwc(path) -> Optional[np.ndarray]:
     """Load an image as an HWC uint8 array.
 
     - ``.npy``: ``np.load`` (multi-channel data; project convention is RGB+extras).
-    - everything else: default ``cv2.imread`` (BGR uint8, 3 channels — grayscale
+    - everything else: default ``cv2.imread`` (BGR uint8, 3 channels - grayscale
       replicated, alpha dropped, uint16 quantized). Matches ``_read_image``'s
       3-channel branch so inference call sites and the training reader share
       the same source-of-truth.
@@ -146,7 +145,7 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
         img_to_anns[ann["image_id"]].append(ann)
 
     entries = []
-    escaped_box = []  # anns whose mask sticks out of ann['bbox'] — see warning below
+    escaped_box = []  # anns whose mask sticks out of ann['bbox'] - see warning below
     for img_info in coco.get("images", []):
         img_id = img_info["id"]
         file_name = img_info["file_name"]
@@ -208,7 +207,7 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
         logger.warning(
             f"{json_path.name}: {len(escaped_box)} ann(s) have mask area outside ann['bbox'] "
             f"(ids: {escaped_box[:5]}{', …' if len(escaped_box) > 5 else ''}). That area is "
-            "unreachable at inference — boxes should contain their segmentation."
+            "unreachable at inference - boxes should contain their segmentation."
         )
 
     return entries, cat_id_to_class_id
@@ -576,7 +575,7 @@ class CustomDataset(Dataset):
             valid_indices = []
             for i, parts in enumerate(mosaic_segments):
                 if not parts:
-                    # detection-only annotation (no polygon) — keep the box
+                    # detection-only annotation (no polygon) - keep the box
                     clipped_segments.append([])
                     valid_indices.append(i)
                     continue
@@ -591,7 +590,7 @@ class CustomDataset(Dataset):
                     # Update bbox from the union of the surviving parts
                     all_pts = np.concatenate(kept, axis=0)
                     mosaic_targets[i, 1:5] = [*all_pts.min(axis=0), *all_pts.max(axis=0)]
-                # else: every part clipped away — drop box and segment
+                # else: every part clipped away - drop box and segment
 
             # keep only rows whose polygon survived clipping (det-only rows always kept)
             mosaic_targets = mosaic_targets[valid_indices]
@@ -652,7 +651,7 @@ class CustomDataset(Dataset):
             image_path: Path
             orig_size: torch.tensor([H, W])
             polys_out: per row, list of (K,2) absolute polygon parts at ORIGINAL resolution,
-                aligned with labels/boxes — only for val/test segmentation eval, else None.
+                aligned with labels/boxes - only for val/test segmentation eval, else None.
         """
         image_path = Path(self.split.iloc[idx].values[0])
         # Original-resolution GT polygons, for val/test eval.
@@ -919,10 +918,10 @@ class SemSegDataset(Dataset):
 
     def _load_mosaic(self, idx: int):
         """4-image mosaic for dense masks: mirrors the box-path mosaic but tiles the label map
-        alongside the image (NEAREST, ignore_index fill) — no polygons needed since the mask is
+        alongside the image (NEAREST, ignore_index fill) - no polygons needed since the mask is
         just a second image plane. Tiles into a 2H x 2W canvas at a jittered junction, then affine-
         warps a target-size window out of it (scale/translate/shear from mosaic_augs; image
-        LINEAR/114, mask NEAREST/ignore_index) — the scale jitter + crop the box path gets."""
+        LINEAR/114, mask NEAREST/ignore_index) - the scale jitter + crop the box path gets."""
         H, W = self.target_h, self.target_w
         yc = int(random.uniform(H * 0.6, H * 1.4))
         xc = int(random.uniform(W * 0.6, W * 1.4))

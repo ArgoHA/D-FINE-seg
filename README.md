@@ -81,7 +81,7 @@ from dfine_seg import load_model, read_image
 
 model = load_model("s")                              # COCO detection, weights auto-downloaded
 model = load_model("s", task="segment")              # COCO instance segmentation
-model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes auto-detected
+model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes/input size auto-detected
 model = load_model("output/models/exp/model.engine") # any exported artifact, picked by extension
 
 out = model(read_image("path/to/image.jpg"))[0]
@@ -108,7 +108,7 @@ uv sync
 
 This creates a `.venv/` with the package installed editable and every extra present, pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
 
-Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) into `pretrained/` on first use, so no manual setup is needed. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
+Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use, so no manual setup is needed - into `pretrained/` for the config-driven commands, and into the shared Hugging Face cache for `load_model("s")` when there is no `pretrained/` copy to reuse. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
 
 ### Prepare Your Data
 
@@ -308,7 +308,9 @@ A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.068
 make demo          # == dfine-seg demo   (pip: pip install 'dfine-seg[demo]')
 ```
 
-A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` — no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation.
+A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation.
+
+It serves on `127.0.0.1:7860`. Because that Model panel loads any path the browser sends, reaching it from another machine is opt-in: `dfine-seg demo --host 0.0.0.0`.
 
 ## Benchmarks
 

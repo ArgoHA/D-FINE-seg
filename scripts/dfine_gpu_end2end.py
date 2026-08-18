@@ -9,7 +9,7 @@ Concurrency: MAX_CONCURRENT_CLIPS worker threads, one CUDA stream each, decode /
 resize / paint / encode one clip apiece and submit frames to a single shared queue.
 N_ENGINE_INSTANCES engine instances drain that queue, each with its own execution
 context and stream, so any instance can serve any worker's frame and inferences
-overlap. Inference runs at batch 1 on purpose — see MAX_TRT_BATCH.
+overlap. Inference runs at batch 1 on purpose - see MAX_TRT_BATCH.
 
 Tested on RTX 5070ti on cityscapes and default values:
 
@@ -49,7 +49,7 @@ MAX_TRT_BATCH = 1  # engine's optimization-profile max batch (independent of poo
 # Concurrent engine instances. Each owns an engine + execution context + stream, so
 # inferences overlap instead of serializing on one stream. Tune on the pipeline, NOT on the
 # engine alone: isolated, 4 instances is the peak (1.8x detect / 1.56x segment), but in the
-# full pipeline 8 clips measured 490 fps at 1, 591 at 2, 481 at 4 — past 2 the extra server
+# full pipeline 8 clips measured 490 fps at 1, 591 at 2, 481 at 4 - past 2 the extra server
 # threads starve the GPU (util drops to ~77%) instead of feeding it. Instances are
 # independent: 4 running the same input are bit-identical, unlike batch slots.
 N_ENGINE_INSTANCES = 2
@@ -79,7 +79,6 @@ def autobackend(
         logger.info("TensorRT backend")
         return TRTModel(
             model_path=model_path,
-            n_outputs=n_outputs,
             conf_thresh=conf_thresh,
             labels_to_use=labels_to_use,
         )
@@ -145,7 +144,7 @@ def probe_video(video):
 # Colorspace: RGB -> NV12 (BT.709, limited/"video" range) on the GPU.
 # NVENC's universal input format is NV12 (Y plane HxW, then interleaved UV at
 # half resolution). @torch.compile fuses the elementwise math so R/G/B/Y/U/V
-# never materialize as full-res FP32 buffers — ~5x less DRAM traffic than the
+# never materialize as full-res FP32 buffers - ~5x less DRAM traffic than the
 # eager version. dynamic=True compiles once across varying H, W.
 @torch.compile(dynamic=True)
 def rgb_to_nv12(rgb: torch.Tensor) -> torch.Tensor:
@@ -157,7 +156,7 @@ def rgb_to_nv12(rgb: torch.Tensor) -> torch.Tensor:
     u = -0.1006 * r - 0.3386 * g + 0.4392 * b + 128.0
     v = 0.4392 * r - 0.3989 * g - 0.0403 * b + 128.0
     # 2x2-average chroma to half res in one kernel each, then stack+reshape to
-    # interleave U,V across each row (U V U V ...) — the NV12 chroma layout.
+    # interleave U,V across each row (U V U V ...) - the NV12 chroma layout.
     u2 = F.avg_pool2d(u[None, None], 2)[0, 0].clamp(0, 255).to(torch.uint8)
     v2 = F.avg_pool2d(v[None, None], 2)[0, 0].clamp(0, 255).to(torch.uint8)
     uv = torch.stack([u2, v2], dim=-1).reshape(u2.shape[0], -1)
@@ -203,7 +202,7 @@ class Annotator:
     """Draws detections onto device frames, mirroring dfine_seg/dl/utils.py Visualizer:
     mask overlay (body + contour) under boxes under "<class> <score>" tags.
 
-    Tags are rasterised once at startup into GPU alpha masks — cv2 cannot draw
+    Tags are rasterised once at startup into GPU alpha masks - cv2 cannot draw
     into device tensors, and compositing glyphs per frame costs more than the
     detector. Lookup is (class, score rounded to 1%).
     """
@@ -239,7 +238,7 @@ class Annotator:
                 for c in range(n_classes)
             ]
             # White or black text depending on background brightness, as Visualizer
-            # does. Uploaded once — building this per label costs an H2D per box.
+            # does. Uploaded once - building this per label costs an H2D per box.
             self._txt = torch.tensor(
                 [
                     (0, 0, 0) if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else (255, 255, 255)
@@ -261,7 +260,7 @@ class Annotator:
         """Annotate [3, H, W] uint8 RGB CUDA `frame` in place.
 
         `src_size` is the (H, W) boxes/masks are expressed in when it differs from
-        the frame — mask engines run at MASK_SCALE (see process_clip).
+        the frame - mask engines run at MASK_SCALE (see process_clip).
         """
         h, w = frame.shape[1], frame.shape[2]
         sem = result.get("sem_seg")
@@ -291,7 +290,7 @@ class Annotator:
         self._draw_boxes(frame, xyxy, ids, sc, h, w)
 
     def _draw_sem_seg(self, frame, label_map, h, w) -> None:
-        """Blend a dense label map over the frame — mirrors utils.overlay_sem_seg.
+        """Blend a dense label map over the frame - mirrors utils.overlay_sem_seg.
 
         Void pixels keep the original image, so unlabelled regions stay readable.
         """
@@ -315,7 +314,7 @@ class Annotator:
         m = masks.bool()
         cols = self._palette[labels.clamp(max=self._palette.shape[0] - 1)]
         cov = m.any(dim=0)
-        # First covering instance owns the pixel — argmax over the stack in one
+        # First covering instance owns the pixel - argmax over the stack in one
         # pass, on uint8 rather than float (a quarter of the memory traffic).
         owner = m.to(torch.uint8).argmax(dim=0)
         # Contours come from an instance-id map, not per-instance erosion: a pixel
@@ -417,11 +416,11 @@ class BatchInferenceServer:
         input_ready: torch.cuda.Event,
     ) -> tuple[dict, torch.cuda.Event]:
         """Blocking submit. `frame` is the output-resolution uint8 RGB CHW tensor
-        the worker just resized — gpu_run owns the engine-input resize / cast /
+        the worker just resized - gpu_run owns the engine-input resize / cast /
         /255 internally. `input_ready` is recorded on the caller's stream after
         `frame` was written; the engine stream waits on it before reading.
         `original_size` is (H, W) for postprocess (boxes rescaled + masks resized
-        into it) — pass (mask_h, mask_w) to get coarse masks cheaply.
+        into it) - pass (mask_h, mask_w) to get coarse masks cheaply.
 
         Returns (result_dict, masks_ready). `masks_ready` is recorded on the
         engine stream after postprocess; callers `wait_event` it on their own
@@ -481,7 +480,7 @@ class BatchInferenceServer:
 
 
 # --------------------------------------------------------------------------- #
-# NVDEC / NVENC adapters — VERIFY against your installed PyNvVideoCodec version.
+# NVDEC / NVENC adapters - VERIFY against your installed PyNvVideoCodec version.
 # --------------------------------------------------------------------------- #
 class GpuDecoder:
     """NVDEC -> RGB uint8 [H, W, 3] CUDA tensors."""
@@ -661,7 +660,7 @@ def process_clip(
     out_path = out_path_for(video_path, data_path)
     decoder = GpuDecoder(video_path)
     encoder = GpuEncoder(out_path, out_w, out_h, fps)
-    # Mask engines: ask for masks at coarse res — cuts per-instance upsample cost;
+    # Mask engines: ask for masks at coarse res - cuts per-instance upsample cost;
     # the annotator scales boxes back up. Detection-only engines: full frame space.
     if server.has_masks:
         infer_h = max(1, round(out_h * MASK_SCALE))
@@ -707,7 +706,7 @@ def worker(clip_q: queue.Queue, server, data_path, max_dim, totals: list, annota
     Each worker owns one CUDA stream reused across clips so paint / NV12 / encode
     prep don't serialize on the default stream against the other 7 workers.
     `list.append` is atomic under the GIL, so collecting per-worker totals needs
-    no lock — main sums them after every thread joins.
+    no lock - main sums them after every thread joins.
     """
     worker_stream = torch.cuda.Stream(device=GPU_ID)
     local = 0
@@ -761,7 +760,7 @@ def main():
 
     # N engine instances behind one queue, so inference overlaps instead of funnelling
     # through a single stream. Each instance still coalesces up to MAX_TRT_BATCH frames
-    # per call — capped by the engine, not by pool width.
+    # per call - capped by the engine, not by pool width.
     n_instances = min(N_ENGINE_INSTANCES, width)
     logger.info(f"{n_instances} engine instances")
     models = [autobackend(model_path, **model_args) for _ in range(n_instances)]

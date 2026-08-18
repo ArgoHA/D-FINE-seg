@@ -30,7 +30,7 @@ train:
   ### Configs ###
   use_wandb: False # set True to log to Weights & Biases (requires `wandb login`)
   device: cuda # cuda | cpu | mps
-  label_to_name: # dataset's classes — EDIT ME (0-indexed and contiguous)
+  label_to_name: # dataset's classes - EDIT ME (0-indexed and contiguous)
     0: class_a
     1: class_b
 
@@ -53,7 +53,7 @@ train:
   - iou
 
   img_size: [640, 640] # (h, w)
-  in_channels: 3 # 3 = RGB (default). >3 expects .npy stacks (RGB+extras) — see README
+  in_channels: 3 # 3 = RGB (default). >3 expects .npy stacks (RGB+extras) - see README
   keep_ratio: False # image aspect ratio, if True - image will be padded
   to_visualize_eval: True # save images with gt and preds
   debug_img_processing: True # save images after preprocessing

@@ -89,7 +89,7 @@ all = [
     "dfine-seg[demo]",
     "dfine-seg[extra]",
 ]
-# NOTE: litert-torch is paused — it caps torch<2.13.0. Re-add a `litert` extra when a
+# NOTE: litert-torch is paused - it caps torch<2.13.0. Re-add a `litert` extra when a
 # release supports torch>=2.13.
 
 [project.scripts]
@@ -109,7 +109,9 @@ build-backend = "hatchling.build"
 packages = ["dfine_seg"]
 
 [tool.hatch.build.targets.sdist]
-include = ["dfine_seg", "tests", "config.yaml", "README.md", "LICENSE", "CHANGELOG.md"]
+# No root config.yaml: it is the dev machine's live config (absolute paths, private class
+# map). The sanitized twin ships inside the package as dfine_seg/config/default.yaml.
+include = ["dfine_seg", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [dependency-groups]
 dev = [

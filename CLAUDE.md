@@ -22,6 +22,7 @@ dfine_seg/                   # import root (installable package)
   model/                     # model architecture (backbone, encoder, decoder, matcher, losses)
   infer/                     # multi-backend inference wrappers (torch, onnx, ov, trt, coreml, litert)
   cli.py                     # `dfine-seg` console script
+  viz.py                     # Visualizer + sem_seg palette — shared by dl/, cli, demo
   data/coco_names.py         # bundled COCO class map
   config/default.yaml        # packaged config emitted by `dfine-seg init`
 ```
@@ -241,7 +242,7 @@ dense label map at original resolution.
 
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [dfine_seg/infer/torch_model.py](dfine_seg/infer/torch_model.py).
 
-For interactive threshold tweaking, the Gradio UI ([dfine_seg/demo.py](dfine_seg/demo.py), `dfine-seg demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable.
+For interactive threshold tweaking, the Gradio UI ([dfine_seg/demo.py](dfine_seg/demo.py), `dfine-seg demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable. It binds **127.0.0.1** by default — the Model panel loads any path the browser sends, so exposing it needs an explicit `--host 0.0.0.0` (which prints a warning).
 
 Important to note: inference wrappers under /infer are standalone scripts that are usually taken with the model file and used in users' applications, outside of this repo.
 
@@ -389,8 +390,21 @@ to the caller. Image loading is a separate helper (`read_image`) so the wrappers
 HWC uint8 arrays. **Do not reintroduce a class that wraps the wrappers.**
 
 Consequence to know: kwargs are not normalized, so a caller must match the target backend's
-signature. `OVModel` takes no `n_outputs` (it reads the graph) while onnx/trt/coreml/litert do —
-a pre-existing inconsistency between the wrappers that `load_model` deliberately does not paper over.
+signature. `task=` is therefore forwarded only for `.pt` — graph artifacts carry the task in the
+graph and their wrappers take no `task=` at all.
+
+**`n_outputs` is gone from onnx/trt/coreml.** They fuse the postprocessor, so the graph emits
+labels, and a per-class `conf_thresh` list carries its own length — the class count was used for
+nothing. `model_path` is now followed by `conf_thresh`, so a stale `ONNXModel(path, 80)` would
+land 80 in the threshold; each of the three rejects a scalar outside [0, 1] with a message naming
+the removal, rather than silently returning no detections. `OVModel` keeps reading its count off
+the graph. LiteRT keeps an optional `n_outputs` because there the count is load-bearing
+(`topk_idx % n_outputs` decodes the label); it reads `[B, Q, C]` off the logits output, and a
+made-up value silently mislabels every detection — which is what the demo used to pass.
+
+Weight resolution: `load_model("s")` with no `weights_dir` reuses a clone's `pretrained/` when the
+file is already there, and otherwise the shared HF cache. `hf_hub_download(local_dir=…)` bypasses
+that cache, so defaulting to `pretrained/` re-downloaded once per working directory.
 
 **Checkpoint auto-detect** — [dfine_seg/_ckpt.py](dfine_seg/_ckpt.py). A `.pt` is a bare
 `state_dict()`, so `TorchModel` recovers its architecture the way the other backends read theirs
@@ -402,6 +416,14 @@ from a graph: `num_classes` from `decoder.enc_score_head.weight.shape[0]` (or
 why `TorchModel(path)` now needs nothing but a path, matching its 5 siblings; `model_name`,
 `n_outputs`, `task` and `channels` remain as optional overrides. `load_and_describe` reads the
 file once and hands the state_dict on, so the checkpoint is not parsed twice.
+
+**Preprocessing is not in the weights.** `input_width`/`input_height`/`keep_ratio` resolve
+explicit arg → the frozen sidecar `config.yaml`'s `train.img_size` / `train.keep_ratio` → 640 /
+False, and `TorchModel` logs what it resolved. Without this a checkpoint trained at 1024x2048 ran
+at 640x640 and simply scored worse, with nothing in the output saying so. Only `.pt` needs it —
+every graph artifact carries its input size in the graph. The Hydra commands
+(`infer`/`bench`/`export`/`check-errors`/`test-batching`) still pass `cfg.train.img_size`
+explicitly, so the live config keeps winning over the frozen one there.
 
 Class names, which weights cannot carry, resolve: explicit `names=` → the frozen `config.yaml`
 training saves beside the checkpoint → bundled [COCO map](dfine_seg/data/coco_names.py) when the

@@ -77,7 +77,7 @@ def split_coco(
     seed: int,
     shuffle: bool,
 ) -> None:
-    """Split one COCO json into train/val(/test).json — image-level, same ratios as the YOLO path.
+    """Split one COCO json into train/val(/test).json - image-level, same ratios as the YOLO path.
 
     Each output keeps the source's non-image keys (categories, info, licenses) and only the
     annotations whose image_id survived, so every file is a standalone COCO dataset.

@@ -14,7 +14,6 @@ class TRTModel:
     def __init__(
         self,
         model_path: str,
-        n_outputs: int,
         conf_thresh: float | List[float] = 0.5,
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
@@ -27,7 +26,6 @@ class TRTModel:
         use_cuda_graph: bool = True,
     ) -> None:
         self.model_path = model_path
-        self.n_outputs = n_outputs
         self.rect = rect
         self.keep_ratio = keep_ratio
         self.binarize_masks = binarize_masks
@@ -50,13 +48,14 @@ class TRTModel:
         self._stream = torch.cuda.Stream(device=self.device) if self.device == "cuda" else None
         self._setup_io_buffers()
 
-        # Per-class confidence thresholds
-        if isinstance(conf_thresh, float):
-            self.conf_threshs = [conf_thresh] * self.n_outputs
-        elif isinstance(conf_thresh, list):
-            self.conf_threshs = conf_thresh
-        self._conf_threshs_t = torch.tensor(
-            self.conf_threshs, device=self.device, dtype=torch.float32
+        # single threshold or per class thresholds
+        scalar = isinstance(conf_thresh, (int, float))
+        self.conf_thresh = float(conf_thresh) if scalar else None
+        conf_threshs = None if scalar else list(conf_thresh)
+        self._conf_threshs_t = (
+            torch.tensor(conf_threshs, device=self.device, dtype=torch.float32)
+            if conf_threshs is not None
+            else None
         )
 
         self._graphs: Dict[int, "torch.cuda.CUDAGraph"] = {}
@@ -78,14 +77,14 @@ class TRTModel:
         self.channels = int(inp_shape[1])
         self.input_size = (inp_shape[2], inp_shape[3])  # (H, W)
 
-        n_outputs = 0
+        n_bindings = 0  # engine output tensors, not classes
         for i in range(self.engine.num_io_tensors):
             name = self.engine.get_tensor_name(i)
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
-                n_outputs += 1
+                n_bindings += 1
         # single output = sem_seg fused-argmax graph; detection engines have >= 3
-        self.sem_seg = n_outputs == 1
-        self.has_masks = n_outputs > 3
+        self.sem_seg = n_bindings == 1
+        self.has_masks = n_bindings > 3
 
     @staticmethod
     def _torch_dtype_from_trt(trt_dtype):
@@ -142,7 +141,7 @@ class TRTModel:
             self._input_dtype = dtype
 
         # Pass 2: outputs. With the input shape set, the context resolves each
-        # output's concrete (max) shape — use it directly instead of the
+        # output's concrete (max) shape - use it directly instead of the
         # engine's possibly-symbolic shape.
         for i in range(self.engine.num_io_tensors):
             name = self.engine.get_tensor_name(i)
@@ -168,7 +167,7 @@ class TRTModel:
         """Capture one CUDA graph per batch size, 1..max_batch, up front.
 
         A graph bakes in the shapes set at capture, so it may only be replayed at
-        that batch — a dynamic engine needs one per batch rather than none at all.
+        that batch - a dynamic engine needs one per batch rather than none at all.
         Capture must happen here, at construction: torch captures with
         cudaStreamCaptureModeGlobal, so capturing lazily on first use aborts
         (cudaErrorStreamCaptureInvalidated) as soon as any other thread touches
@@ -214,7 +213,7 @@ class TRTModel:
     def process_masks(
         pred_masks,  # Tensor [B, Q, Hm, Wm] or [Q, Hm, Wm]
         processed_size,  # (H, W) of network input (after your A.Compose)
-        orig_sizes,  # sequence of B (H, W) pairs — keep it on the host, it is only read there
+        orig_sizes,  # sequence of B (H, W) pairs - keep it on the host, it is only read there
         keep_ratio: bool,
     ) -> List[torch.Tensor]:
         """
@@ -251,7 +250,7 @@ class TRTModel:
 
             # Single resize directly to original size, in fp16 on GPU: this is the largest
             # tensor in postprocess ([Q, H0, W0]) and it is only compared against a
-            # threshold afterwards. No clamp — bilinear of values already in [0,1] is a
+            # threshold afterwards. No clamp - bilinear of values already in [0,1] is a
             # convex combination, so it cannot leave [0,1].
             if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
                 m = m.half()
@@ -386,7 +385,7 @@ class TRTModel:
         else:
             if self._is_dynamic:
                 # Buffer matches img shape, but the context may still hold a
-                # smaller batch from a prior call — re-assert it.
+                # smaller batch from a prior call - re-assert it.
                 self.context.set_input_shape(self._input_name, tuple(img.shape))
             self._input_tensor.copy_(img, non_blocking=True)
             input_buf = self._input_tensor
@@ -452,9 +451,11 @@ class TRTModel:
         results = []
         for b in range(B):
             sb, lb, bb = scores[b], labels[b], boxes[b]
-            # Apply per-class confidence thresholds (cached tensor avoids per-call alloc)
-            conf_t = self._conf_threshs_t.to(sb.device, non_blocking=True)
-            conf_keep = sb >= conf_t[lb]
+            # Per-class thresholds use a cached tensor (avoids per-call alloc)
+            if self._conf_threshs_t is not None:
+                conf_keep = sb >= self._conf_threshs_t.to(sb.device, non_blocking=True)[lb]
+            else:
+                conf_keep = sb >= self.conf_thresh
             if self.labels_to_use:  # restrict to requested class ids
                 lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
                 conf_keep &= torch.isin(lb, lbl_set)
@@ -470,7 +471,7 @@ class TRTModel:
             out = {"labels": lb, "boxes": bb, "scores": sb}
 
             if pred_masks is not None and lb.numel() > 0:
-                mb = pred_masks[b][keep_indices]  # [K, Hm, Wm] — already gathered for top-K
+                mb = pred_masks[b][keep_indices]  # [K, Hm, Wm] - already gathered for top-K
                 # resize to original size (list of length 1)
                 masks_list = self.process_masks(
                     mb.unsqueeze(0),
@@ -534,10 +535,10 @@ class TRTModel:
         async exec otherwise) and ``_postprocess`` runs on the same stream.
 
         Args:
-            rgb_chw: one of —
+            rgb_chw: one of -
                 - ``[3, H, W]`` uint8 RGB CUDA tensor (single image)
                 - ``[B, 3, H, W]`` uint8 RGB CUDA tensor (equal-size batch)
-                - list of ``[3, H_i, W_i]`` tensors (heterogeneous batch — each
+                - list of ``[3, H_i, W_i]`` tensors (heterogeneous batch - each
                   image is resized independently before being stacked)
             original_sizes: per-element ``(H, W)`` used for postprocess (boxes
                 rescaled into this space, masks resized to it). Defaults to
@@ -550,7 +551,7 @@ class TRTModel:
         Returns:
             ``(results, done_event)``. ``results`` is the usual list of B
             ``{labels, boxes, scores, optional masks}`` dicts. ``done_event``
-            is recorded on ``self._stream`` after postprocess — wait on it
+            is recorded on ``self._stream`` after postprocess - wait on it
             from your own stream (``my_stream.wait_event(done_event)``)
             before reading the result tensors. No CPU sync inside.
 
@@ -586,7 +587,7 @@ class TRTModel:
                 self._stream.wait_event(input_ready)
             # Per-input resize on the model stream (F.interpolate needs float).
             # Heterogeneous sizes => one interpolate call each; if all inputs
-            # already match (Hin, Win) we still pay the cast — fine in practice
+            # already match (Hin, Win) we still pay the cast - fine in practice
             # since the input cast happens regardless.
             resized = [
                 F.interpolate(

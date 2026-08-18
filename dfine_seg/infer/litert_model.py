@@ -12,7 +12,7 @@ class LiteRTModel:
     def __init__(
         self,
         model_path: str,
-        n_outputs: int,
+        n_outputs: int = None,  # None -> read the class count off the raw-head logits output
         conf_thresh: float | List[float] = 0.5,
         binarize_masks: bool = True,
         mask_threshold: float = 0.5,
@@ -64,6 +64,15 @@ class LiteRTModel:
         # single output = sem_seg fused-argmax graph; detection graphs have >= 2
         self.sem_seg = len(self.output_details) == 1
         self.has_masks = (not self.sem_seg) and len(self.output_details) > 2
+        if self.n_outputs is None:
+            # LiteRT exports the raw head, so the class count is real: logits are [B, Q, C],
+            # the 3-D output whose last dim isn't 4 (that one is boxes). Guessing it instead
+            # would corrupt every label -- _postprocess decodes with `topk_idx % n_outputs`.
+            shapes = [d["shape"] for d in self.output_details]
+            logits = next((s for s in shapes if len(s) == 3 and int(s[2]) != 4), None)
+            if not self.sem_seg and logits is None:
+                raise ValueError(f"no [B, Q, C] logits output in {self.model_path}: {shapes}")
+            self.n_outputs = 1 if self.sem_seg else int(logits[2])
 
     def _test_pred(self):
         random_image = np.random.randint(0, 255, size=(1000, 1110, self.channels), dtype=np.uint8)
@@ -118,7 +127,7 @@ class LiteRTModel:
                 m = m[:, y1:y2, x1:x2]
 
             # fp16 on GPU: this is the largest tensor in postprocess and it is only compared
-            # against a threshold. No clamp — bilinear of [0,1] values cannot leave [0,1].
+            # against a threshold. No clamp - bilinear of [0,1] values cannot leave [0,1].
             if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
                 m = m.half()
             m = torch.nn.functional.interpolate(

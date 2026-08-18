@@ -1,6 +1,6 @@
 """`dfine-seg` console script.
 
-Thin dispatcher over the existing Hydra entrypoints, plus `init` — which materializes a
+Thin dispatcher over the existing Hydra entrypoints, plus `init` - which materializes a
 `config.yaml` into the cwd so pip users get the same config-driven workflow as a clone.
 Hydra overrides pass straight through: `dfine-seg train model_name=m train.epochs=100`.
 """
@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 
@@ -76,6 +76,7 @@ def _predict(argv: List[str]) -> int:
     import numpy as np
 
     from dfine_seg import load_model, read_image
+    from dfine_seg.viz import Visualizer
 
     kwargs = {"conf_thresh": args.conf}
     if args.device:
@@ -83,14 +84,11 @@ def _predict(argv: List[str]) -> int:
     model = load_model(args.model, task=args.task, **kwargs)
     names = model.names or {}
 
-    visualizer = None
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
-        if model.task != "sem_seg":
-            from dfine_seg.dl.utils import Visualizer
-
-            n_classes = max(names) + 1 if names else 80
-            visualizer = Visualizer(n_classes=n_classes, class_names=names or None)
+    # Built on the first boxed output rather than up front: `task` is a TorchModel attribute,
+    # and the output itself is what actually says whether this model draws boxes or a map.
+    visualizer = None
 
     for path in images:
         img = read_image(path)
@@ -102,7 +100,7 @@ def _predict(argv: List[str]) -> int:
             share = ", ".join(
                 f"{names.get(int(i), i)} {c / label_map.size:.0%}" for i, c in zip(ids, counts)
             )
-            print(f"{path.name}: {len(ids)} classes — {share}")
+            print(f"{path.name}: {len(ids)} classes - {share}")
             if args.out:  # grayscale label map, same format as `dfine-seg infer`
                 cv2.imwrite(str(args.out / f"{path.stem}.png"), label_map)
             continue
@@ -112,8 +110,11 @@ def _predict(argv: List[str]) -> int:
             f"{names.get(int(lbl), int(lbl))} {float(s):.2f}"
             for lbl, s in zip(out["labels"].cpu(), scores.cpu())
         )
-        print(f"{path.name}: {len(scores)} objects{' — ' + found if len(scores) else ''}")
-        if visualizer is not None:
+        print(f"{path.name}: {len(scores)} objects{' - ' + found if len(scores) else ''}")
+        if args.out:
+            if visualizer is None:
+                n_classes = max(names) + 1 if names else 80
+                visualizer = Visualizer(n_classes=n_classes, class_names=names or None)
             drawn = visualizer.draw(img, {k: v.cpu() for k, v in out.items()})
             cv2.imwrite(str(args.out / f"{path.stem}.jpg"), drawn)
 
@@ -127,7 +128,7 @@ def _demo(argv: List[str]) -> int:
     ap = argparse.ArgumentParser(prog="dfine-seg demo")
     ap.add_argument("model", nargs="?", default="s", help="model to open with (size or path)")
     ap.add_argument("--task", choices=("detect", "segment", "sem_seg"), default="auto")
-    ap.add_argument("--host", default="0.0.0.0", help="bind address (default: all interfaces)")
+    ap.add_argument("--host", default="127.0.0.1", help="bind address; 0.0.0.0 for the LAN")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--share", action="store_true", help="public gradio.live tunnel")
     args = ap.parse_args(argv)
@@ -139,6 +140,26 @@ def _demo(argv: List[str]) -> int:
         return 1
     demo_main(args.model, args.task, args.host, args.port, args.share)
     return 0
+
+
+def _set_key(text: str, key: str, value: str) -> str:
+    """Rewrite the one `key: …` line in the template, keeping its inline comment.
+
+    A line rewrite rather than a substring replace: an exact-match replace turns into a
+    silent no-op the day someone edits the template's spacing.
+    """
+    out, hit = [], False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if not hit and stripped.startswith(f"{key}:"):
+            indent = line[: len(line) - len(stripped)]
+            comment = stripped.partition(" #")[2]
+            line = f"{indent}{key}: {value}" + (f" #{comment}" if comment else "\n")
+            hit = True
+        out.append(line)
+    if not hit:
+        raise KeyError(f"`{key}:` not found in the packaged template")
+    return "".join(out)
 
 
 def _init(argv: List[str]) -> int:
@@ -160,10 +181,19 @@ def _init(argv: List[str]) -> int:
         return 1
 
     text = DEFAULT_CONFIG.read_text()
-    if args.task:
-        text = text.replace("\ntask: detect ", f"\ntask: {args.task} ", 1)
-    if args.model:
-        text = text.replace("\nmodel_name: s ", f"\nmodel_name: {args.model} ", 1)
+    try:
+        if args.task:
+            text = _set_key(text, "task", args.task)
+            if args.task in ("segment", "sem_seg"):
+                # Both train a MaskDecoder; the detection default leaves it at random init.
+                text = _set_key(
+                    text, "pretrained_model_path", "pretrained/dfine_seg_${model_name}_coco.pt"
+                )
+        if args.model:
+            text = _set_key(text, "model_name", args.model)
+    except KeyError as e:
+        print(f"packaged template is malformed: {e}", file=sys.stderr)
+        return 1
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text)
 
@@ -174,18 +204,37 @@ def _init(argv: List[str]) -> int:
     return 0
 
 
-def _ddp_launch(overrides: List[str]) -> int:
-    """Mirror the Makefile: torchrun when train.ddp.enabled is set."""
+def _ddp_launch(overrides: List[str]) -> Optional[int]:
+    """Mirror the Makefile: torchrun when train.ddp.enabled is set. None = not handled.
+
+    None rather than a negative sentinel: `subprocess.call` returns -signum for a
+    signal-killed child, so -1 is a real exit code here (SIGHUP).
+    """
     cfg_path = find_config()
     if cfg_path is None:
-        return -1
+        return None
     try:
-        ddp = (yaml.safe_load(cfg_path.read_text()) or {}).get("train", {}).get("ddp", {})
+        ddp = (yaml.safe_load(cfg_path.read_text()) or {}).get("train", {}).get("ddp", {}) or {}
     except Exception:
-        return -1
-    if not ddp.get("enabled"):
-        return -1
-    n = int(ddp.get("n_gpus", 2))
+        return None
+    # These same overrides go on to Hydra, so a CLI value has to win here too. Plain
+    # `key=value` only - Hydra's +/~ and config groups are not reimplemented.
+    enabled, n = ddp.get("enabled"), ddp.get("n_gpus", 2)
+    for override in overrides:
+        key, sep, val = override.partition("=")
+        if not sep:
+            continue
+        if key == "train.ddp.enabled":
+            enabled = val.strip().lower() in ("true", "1", "yes")
+        elif key == "train.ddp.n_gpus":
+            n = val
+    if not enabled:
+        return None
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        print(f"train.ddp.n_gpus must be an integer, got {n!r}", file=sys.stderr)
+        return 1
     if shutil.which("torchrun") is None:
         print("train.ddp.enabled is set but torchrun is not on PATH", file=sys.stderr)
         return 1
@@ -196,7 +245,12 @@ def _ddp_launch(overrides: List[str]) -> int:
 
 
 def _run(command: str, overrides: List[str]) -> int:
-    if find_config() is None:
+    try:
+        found = find_config()
+    except FileNotFoundError as e:  # $DFINE_SEG_CONFIG_DIR set but empty
+        print(e, file=sys.stderr)
+        return 1
+    if found is None:
         print(
             f"no {CONFIG_NAME}.yaml found in {Path.cwd()}.\n"
             f"Run `dfine-seg init` to create one, or set {ENV_VAR} to a directory holding it.",
@@ -206,7 +260,7 @@ def _run(command: str, overrides: List[str]) -> int:
 
     if command == "train":
         rc = _ddp_launch(overrides)
-        if rc >= 0:
+        if rc is not None:
             return rc
 
     from importlib import import_module

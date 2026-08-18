@@ -117,7 +117,7 @@ class OVModel:
     def process_masks(
         pred_masks,  # Tensor [B, Q, Hm, Wm] or [Q, Hm, Wm]
         processed_size,  # (H, W) of network input (after your A.Compose)
-        orig_sizes,  # sequence of B (H, W) pairs — keep it on the host, it is only read there
+        orig_sizes,  # sequence of B (H, W) pairs - keep it on the host, it is only read there
         keep_ratio: bool,
     ) -> List[torch.Tensor]:
         """
@@ -154,7 +154,7 @@ class OVModel:
 
             # Single resize directly to original size, in fp16 on GPU: this is the largest
             # tensor in postprocess ([Q, H0, W0]) and it is only compared against a
-            # threshold afterwards. No clamp — bilinear of values already in [0,1] is a
+            # threshold afterwards. No clamp - bilinear of values already in [0,1] is a
             # convex combination, so it cannot leave [0,1].
             if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
                 m = m.half()

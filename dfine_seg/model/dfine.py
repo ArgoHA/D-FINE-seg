@@ -128,7 +128,7 @@ def build_loss(
     class_weights=None,
 ):
     # deepcopy so appending "masks" mutates a private copy, not the shared
-    # global `models` config — build_loss may be called more than once per run.
+    # global `models` config - build_loss may be called more than once per run.
     model_cfg = deepcopy(models[model_name])
     if task == "sem_seg":
         return SemSegCriterion(
@@ -150,7 +150,7 @@ def build_loss(
     return loss_fn
 
 
-# Encoder/decoder transformer attention/MLP weight matrices — Muon's target when
+# Encoder/decoder transformer attention/MLP weight matrices - Muon's target when
 # train.use_muon is on. Allowlist (not denylist) so det/mask heads, embeddings, LQE
 # and norms/biases can never leak in: those names lack these tokens.
 MUON_TOKENS = ("self_attn", "cross_attn", "linear1", "linear2", "gateway.gate")
@@ -166,14 +166,14 @@ def _is_muon_param(name, param):
 
 
 # The only randomly-initialized modules when a detection checkpoint is loaded for
-# task=segment — everything else comes pretrained (see train.freeze_except_mask).
+# task=segment - everything else comes pretrained (see train.freeze_except_mask).
 MASK_PREFIXES = ("decoder.mask_decoder", "decoder.mask_head")
 
 
 def freeze_except_mask(model):
     """Freeze every parameter outside the mask head. Returns the fully-frozen submodules.
 
-    Call before any DDP wrap — named_parameters() gains a "module." prefix after it.
+    Call before any DDP wrap - named_parameters() gains a "module." prefix after it.
     requires_grad=False does not stop BatchNorm from updating its running stats, so the
     caller must re-apply .eval() to the returned modules after every model.train() or
     the "frozen" features still drift epoch to epoch.

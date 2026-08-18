@@ -254,7 +254,7 @@ class Trainer:
 
         use_muon = cfg.train.get("use_muon", False)
         aux_optimizer = cfg.train.get("aux_optimizer", "adamw")
-        # l/x: keep the backbone on its own low LR — the Muon path otherwise homogenizes it
+        # l/x: keep the backbone on its own low LR - the Muon path otherwise homogenizes it
         # to a base_lr-derived peak (~100-500x too high). n/s/m unchanged.
         respect_backbone_lr = cfg.model_name in ("l", "x")
         muon_lr = cfg.train.base_lr * 10  # Muon peak (pre-*2); enc/dec matrices tolerate higher LR
@@ -874,7 +874,7 @@ def main(cfg: DictConfig) -> None:
             logger.warning("Interrupted by user")
     except Exception as e:
         # A mid-train CUDA OOM must fail loudly, not silently export a half-trained
-        # model as a "result" — that would corrupt the research ledger.
+        # model as a "result" - that would corrupt the research ledger.
         if isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower():
             oom_error = e
         if is_main_process():

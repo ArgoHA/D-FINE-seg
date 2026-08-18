@@ -110,4 +110,48 @@ jobs:
           /tmp/core/bin/python -c "
           import yaml; c = yaml.safe_load(open('config.yaml'))
           assert c['task'] == 'segment' and c['model_name'] == 'm', c
+          # a mask task must not be initialized from the detection checkpoint
+          assert c['train']['pretrained_model_path'].startswith('pretrained/dfine_seg_'), c
           print('init config OK')"
+
+      # The end of the pip user's first five minutes: weights download, model runs,
+      # annotated output is written. Imports alone would not have caught the class-count
+      # and task-forwarding bugs that made every non-.pt backend raise TypeError.
+      - name: Predict end-to-end from the core install
+        run: |
+          cd /tmp/userdir
+          /tmp/core/bin/dfine-seg predict n "$GITHUB_WORKSPACE/tests/assets/park_gen.jpg" -o out/
+          test -f out/park_gen.jpg
+
+  sdist-install:
+    name: sdist install (py3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Build sdist
+        run: uv build --sdist
+
+      # The sdist must not carry the dev machine's config.yaml - absolute paths and a
+      # private class map. `dfine-seg init` emits the sanitized packaged template instead.
+      - name: sdist carries no root config.yaml
+        run: |
+          tar -tzf dist/*.tar.gz | tee /tmp/files.txt
+          if grep -qE "^dfine_seg-[^/]+/config\.yaml$" /tmp/files.txt; then
+            echo "sdist ships the dev config.yaml"; exit 1
+          fi
+          grep -q "dfine_seg/config/default.yaml" /tmp/files.txt
+
+      - name: Install from the sdist and predict
+        run: |
+          uv venv --python 3.11 /tmp/sd
+          uv pip install --python /tmp/sd/bin/python --torch-backend=cpu dist/*.tar.gz
+          mkdir -p /tmp/sddir && cd /tmp/sddir
+          /tmp/sd/bin/dfine-seg predict n "$GITHUB_WORKSPACE/tests/assets/park_gen.jpg"

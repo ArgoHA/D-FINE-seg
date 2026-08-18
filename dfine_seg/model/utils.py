@@ -253,20 +253,28 @@ def ensure_pretrained(path: str | Path) -> str:
     if not _FILENAME_RE.match(p.name):
         return str(p)
 
+    p.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Pretrained weights not found at {p}; downloading from {HF_REPO_ID}")
+    return _hf_download(p.name, local_dir=str(p.parent), hint=str(p))
+
+
+def pretrained_from_hub(filename: str) -> str:
+    """Path to a released checkpoint in the shared HF cache, downloading it on first use.
+
+    `ensure_pretrained` puts weights in a project directory; this is for the Python API,
+    which has no project directory - and a `local_dir` download bypasses the shared cache,
+    so that path re-downloads once per working directory.
+    """
+    return _hf_download(filename, local_dir=None, hint=filename)
+
+
+def _hf_download(filename: str, local_dir: str | None, hint: str) -> str:
     try:
         from huggingface_hub import hf_hub_download
     except ImportError as e:
         raise ImportError(
             "huggingface_hub is required to auto-download pretrained weights. "
-            "Install with `pip install huggingface_hub` or place the file at "
-            f"{p} manually."
+            f"Install with `pip install huggingface_hub` or place the file at {hint} manually."
         ) from e
-
-    p.parent.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Pretrained weights not found at {p}; downloading from {HF_REPO_ID}")
-    downloaded = hf_hub_download(
-        repo_id=HF_REPO_ID,
-        filename=p.name,
-        local_dir=str(p.parent),
-    )
-    return downloaded
+    kwargs = {"local_dir": local_dir} if local_dir else {}
+    return hf_hub_download(repo_id=HF_REPO_ID, filename=filename, **kwargs)

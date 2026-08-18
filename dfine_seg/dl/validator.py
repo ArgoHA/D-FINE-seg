@@ -667,7 +667,7 @@ class Validator:
 
 class SemSegValidator:
     """Streaming validator for task=sem_seg: a [C, C] pixel confusion matrix
-    (rows = GT, cols = pred) accumulated at ORIGINAL image resolution — nothing
+    (rows = GT, cols = pred) accumulated at ORIGINAL image resolution - nothing
     dense is stored. GT pixels equal to ignore_index never enter the matrix.
     """
 

@@ -1,4 +1,4 @@
-"""`load_model()` — resolve weights and hand back the matching inference wrapper.
+"""`load_model()` - resolve weights and hand back the matching inference wrapper.
 
 Deliberately not a wrapper around the wrappers: `load_model` returns the very same
 `TorchModel` / `TRTModel` / … object you would construct yourself, so its call
@@ -13,7 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dfine_seg.data.coco_names import COCO_NAMES
-from dfine_seg.model.utils import _FILENAME_RE, ensure_pretrained
+from dfine_seg.model.utils import _FILENAME_RE, ensure_pretrained, pretrained_from_hub
 
 SIZES = ("n", "s", "m", "l", "x")
 TASKS = ("detect", "segment", "sem_seg")
@@ -35,14 +35,19 @@ def pretrained_path(
     size: str,
     task: str = "detect",
     dataset: str = "coco",
-    weights_dir: Union[str, Path] = "pretrained",
+    weights_dir: Union[str, Path, None] = None,
 ) -> str:
-    """Path to a released checkpoint, downloading it from Hugging Face on first use."""
+    """Path to a released checkpoint, downloading it from Hugging Face on first use.
+
+    `weights_dir=None` (the default) reuses a clone's `pretrained/` when it already holds
+    the file, and otherwise the shared HF cache - so the API doesn't leave a `pretrained/`
+    copy in every directory it is called from. Pass a directory to force one.
+    """
     if size not in SIZES:
         raise ValueError(f"size must be one of {SIZES}, got {size!r}")
     if task == "sem_seg":
         raise ValueError(
-            "no pretrained sem_seg weights exist — train one, then load its path: "
+            "no pretrained sem_seg weights exist - train one, then load its path: "
             'load_model("output/models/<exp>/model.pt")'
         )
     if task not in TASKS:
@@ -53,7 +58,10 @@ def pretrained_path(
         filename = f"dfine_{size}_{dataset}.pt"
     else:
         raise ValueError(f"dataset must be coco|obj2coco, got {dataset!r}")
-    return ensure_pretrained(Path(weights_dir) / filename)
+    if weights_dir is not None:
+        return ensure_pretrained(Path(weights_dir) / filename)
+    local = Path("pretrained") / filename
+    return str(local) if local.is_file() else pretrained_from_hub(filename)
 
 
 def load_model(
@@ -61,7 +69,7 @@ def load_model(
     task: Optional[str] = None,
     *,
     dataset: str = "coco",
-    weights_dir: Union[str, Path] = "pretrained",
+    weights_dir: Union[str, Path, None] = None,
     names: Optional[Dict[int, str]] = None,
     **kwargs: Any,
 ):
@@ -89,10 +97,12 @@ def load_model(
                 f"{path} not found. Pass a model path, or one of {SIZES} for pretrained "
                 "COCO weights."
             )
-        # A released checkpoint loaded by path is still a COCO model — don't make
+        # A released checkpoint loaded by path is still a COCO model - don't make
         # load_model("pretrained/dfine_n_coco.pt") behave differently from load_model("n").
         default_names = dict(COCO_NAMES) if _FILENAME_RE.match(path.name) else None
-        if task is not None:
+        # Only .pt builds its architecture from `task`; graph artifacts have it baked in
+        # and their wrappers take no task= at all.
+        if task is not None and path.suffix.lower() == ".pt":
             kwargs.setdefault("task", task)
 
     suffix = path.suffix.lower()

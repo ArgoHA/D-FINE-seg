@@ -70,6 +70,32 @@ def test_init_task_flag(tmp_path, monkeypatch, task):
     assert yaml.safe_load((tmp_path / "config.yaml").read_text())["task"] == task
 
 
+@pytest.mark.parametrize("task", ["segment", "sem_seg"])
+def test_init_mask_tasks_point_at_the_seg_checkpoint(tmp_path, monkeypatch, task):
+    """Both train a MaskDecoder; the detection default leaves it at random init."""
+    monkeypatch.chdir(tmp_path)
+    assert run(monkeypatch, "init", "--task", task) == 0
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert cfg["train"]["pretrained_model_path"] == "pretrained/dfine_seg_${model_name}_coco.pt"
+
+
+def test_init_detect_keeps_the_detection_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert run(monkeypatch, "init", "--task", "detect") == 0
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert "dfine_seg_" not in cfg["train"]["pretrained_model_path"]
+
+
+def test_set_key_keeps_the_inline_comment(tmp_path):
+    assert cli._set_key("task: detect # a | b\n", "task", "sem_seg") == "task: sem_seg # a | b\n"
+
+
+def test_set_key_raises_when_the_template_moves(tmp_path):
+    """A substring replace would silently no-op instead; this must be loud."""
+    with pytest.raises(KeyError):
+        cli._set_key("other: 1\n", "task", "segment")
+
+
 def test_init_model_flag(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert run(monkeypatch, "init", "--model", "x") == 0
@@ -107,7 +133,47 @@ def test_ddp_launch_skipped_when_disabled(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(yaml.safe_dump({"train": {"ddp": {"enabled": False}}}))
     monkeypatch.setattr(cli, "find_config", lambda: cfg)
-    assert cli._ddp_launch([]) == -1  # -1 = "not handled, fall through to in-process"
+    assert cli._ddp_launch([]) is None  # None = "not handled, fall through to in-process"
+
+
+def test_ddp_launch_returns_the_childs_exit_code(tmp_path, monkeypatch):
+    """A signal-killed child returns -signum; that must not read as "not handled"."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"train": {"ddp": {"enabled": True, "n_gpus": 2}}}))
+    monkeypatch.setattr(cli, "find_config", lambda: cfg)
+    monkeypatch.setattr(cli.shutil, "which", lambda _: "/usr/bin/torchrun")
+    monkeypatch.setattr(cli.subprocess, "call", lambda cmd: -1)  # SIGHUP
+    assert cli._ddp_launch([]) == -1
+
+
+@pytest.mark.parametrize(
+    "yaml_enabled, override, expect_torchrun",
+    [
+        (False, "train.ddp.enabled=True", True),
+        (True, "train.ddp.enabled=False", False),
+    ],
+)
+def test_ddp_launch_honours_cli_overrides(
+    tmp_path, monkeypatch, yaml_enabled, override, expect_torchrun
+):
+    """The same overrides go on to Hydra, so they have to win over the yaml here too."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"train": {"ddp": {"enabled": yaml_enabled, "n_gpus": 2}}}))
+    monkeypatch.setattr(cli, "find_config", lambda: cfg)
+    monkeypatch.setattr(cli.shutil, "which", lambda _: "/usr/bin/torchrun")
+    monkeypatch.setattr(cli.subprocess, "call", lambda cmd: 0)
+    assert (cli._ddp_launch([override]) == 0) is expect_torchrun
+
+
+def test_ddp_launch_n_gpus_override(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"train": {"ddp": {"enabled": True, "n_gpus": 2}}}))
+    monkeypatch.setattr(cli, "find_config", lambda: cfg)
+    monkeypatch.setattr(cli.shutil, "which", lambda _: "/usr/bin/torchrun")
+    seen = {}
+    monkeypatch.setattr(cli.subprocess, "call", lambda cmd: seen.setdefault("cmd", cmd) and 0)
+    cli._ddp_launch(["train.ddp.n_gpus=8"])
+    assert seen["cmd"][1] == "--nproc_per_node=8"
 
 
 def test_ddp_launch_uses_torchrun_with_n_gpus(tmp_path, monkeypatch):
@@ -227,6 +293,22 @@ def test_predict_writes_annotated_output(monkeypatch, tmp_path):
     assert (dest / "a.jpg").is_file()
 
 
+def test_predict_writes_output_for_a_backend_without_task(monkeypatch, tmp_path):
+    """`task` is a TorchModel attribute; graph wrappers don't have one."""
+
+    class GraphModel:
+        names = {0: "cat"}
+
+        __call__ = _FakeModel.__call__
+
+    assert not hasattr(GraphModel, "task")
+    _fake_load(monkeypatch, GraphModel())
+    img = _an_image(tmp_path)
+    dest = tmp_path / "out"
+    assert run(monkeypatch, "predict", "model.onnx", str(img), "-o", str(dest)) == 0
+    assert (dest / "a.jpg").is_file()
+
+
 # ---- demo -------------------------------------------------------------------
 
 
@@ -245,7 +327,8 @@ def _fake_demo(monkeypatch):
 def test_demo_defaults(monkeypatch):
     seen = _fake_demo(monkeypatch)
     assert run(monkeypatch, "demo") == 0
-    assert seen["args"] == ("s", "auto", "0.0.0.0", 7860, False)
+    # loopback, not 0.0.0.0: the page loads arbitrary local paths as models
+    assert seen["args"] == ("s", "auto", "127.0.0.1", 7860, False)
 
 
 def test_demo_forwards_model_and_server_flags(monkeypatch):
