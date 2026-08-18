@@ -53,7 +53,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# `make export` / `dfine-seg export` backends. Large, so opt-in. nncf and openvino are
+# `make export` / `dfine export` backends. Large, so opt-in. nncf and openvino are
 # capped at the tested major: a silent API change there yields a bad artifact, not an error.
 export = [
     "coremltools>=9.0",
@@ -93,7 +93,7 @@ all = [
 # release supports torch>=2.13.
 
 [project.scripts]
-dfine-seg = "dfine_seg.cli:main"
+dfine = "dfine_seg.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ArgoHA/D-FINE-seg"

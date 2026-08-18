@@ -12,7 +12,7 @@ Main supported model sizes: `n`, `s`, `m`, `l`, `x`. Pretrained weights live in 
 
 ```
 config.yaml                  # main Hydra config (edit this for most tasks)
-Makefile                     # thin wrappers around dfine-seg <command>
+Makefile                     # thin wrappers around dfine <command>
 pretrained/                  # dfine_{n,s,m,l,x}_{coco,obj2coco}.pt — must exist before training
 dfine_seg/                   # import root (installable package)
   __init__.py                # public API: load_model(), read_image()
@@ -21,10 +21,10 @@ dfine_seg/                   # import root (installable package)
   dl/                        # train.py, export.py, bench.py, infer.py, validator.py, ov_int8.py, …
   model/                     # model architecture (backbone, encoder, decoder, matcher, losses)
   infer/                     # multi-backend inference wrappers (torch, onnx, ov, trt, coreml, litert)
-  cli.py                     # `dfine-seg` console script
+  cli.py                     # `dfine` console script
   viz.py                     # Visualizer + sem_seg palette — shared by dl/, cli, demo
   data/coco_names.py         # bundled COCO class map
-  config/default.yaml        # packaged config emitted by `dfine-seg init`
+  config/default.yaml        # packaged config emitted by `dfine init`
 ```
 
 ## 3. Environment
@@ -42,7 +42,7 @@ dfine_seg/                   # import root (installable package)
 All CLI commands use Hydra, so any config key is overridable on the command line with dotted paths:
 
 ```bash
-dfine-seg train exp_name=my_exp model_name=s train.batch_size=12 train.epochs=50
+dfine train exp_name=my_exp model_name=s train.batch_size=12 train.epochs=50
 ```
 
 Key top-level fields in [config.yaml](config.yaml):
@@ -69,13 +69,13 @@ LRs are indexed by model size under `train.lrs.<size>.{backbone_lr, base_lr}`.
 **Where `config.yaml` comes from.** [dfine_seg/_config.py](dfine_seg/_config.py) resolves the Hydra
 config dir at import time — `$DFINE_SEG_CONFIG_DIR`, then cwd, then the repo root (editable
 installs only). All nine `@hydra.main` entrypoints use `config_path=config_dir()`, so the clone
-workflow is unchanged (cwd == repo root) and pip users run `dfine-seg init` to write a
+workflow is unchanged (cwd == repo root) and pip users run `dfine init` to write a
 `config.yaml` into cwd. There is deliberately **no fallback to the packaged template** — training
 against someone else's defaults is worse than Hydra's own "cannot find config" error.
 
 Two configs, kept in lockstep: root `config.yaml` is the live dev config (real paths + classes);
 [dfine_seg/config/default.yaml](dfine_seg/config/default.yaml) is its sanitized twin, what
-`dfine-seg init` emits. `tests/unit/test_config_template.py` fails if their key structures or
+`dfine init` emits. `tests/unit/test_config_template.py` fails if their key structures or
 shared default values drift apart (`ALLOWED_VALUE_DIFFS` lists the keys allowed to differ).
 
 Local preset dataset configs may exist in `configs/`, but that directory is **gitignored** — it is
@@ -100,7 +100,7 @@ Supported input types: 3-channel `.jpg`/`.png` (BGR, `cv2.imread`), 3-channel `.
 Generate splits:
 
 ```bash
-make split        # == dfine-seg split
+make split        # == dfine split
 ```
 
 Produces `train.csv`, `val.csv` (and `test.csv` if `split.val_split < 1 - split.train_split`) inside `train.data_path`. Ratios live under the top-level `split:` section in `config.yaml`.
@@ -165,9 +165,9 @@ Needs `transformers` (the `[label]` extra; `uv sync` installs it). `facebook/sam
 ```bash
 make train
 # or explicit:
-dfine-seg train
+dfine train
 # with overrides:
-dfine-seg train exp_name=fine_s model_name=s task=detect train.batch_size=12 train.epochs=30
+dfine train exp_name=fine_s model_name=s task=detect train.batch_size=12 train.epochs=30
 ```
 
 ### 6.2 Multi-GPU (DDP)
@@ -204,7 +204,7 @@ Under `${train.path_to_save}` (= `${train.root}/output/models/<exp>`):
 There is **no built-in resume flag**. To continue training from a checkpoint:
 
 ```bash
-dfine-seg train \
+dfine train \
   exp_name=continue_run \
   train.pretrained_model_path=/abs/path/to/previous/model.pt
 ```
@@ -220,9 +220,9 @@ One entrypoint handles both images and videos based on file extension in `train.
 ```bash
 make infer
 # or:
-dfine-seg infer
+dfine infer
 # with overrides:
-dfine-seg infer train.path_to_test_data=/abs/path/to/folder infer.to_crop=False
+dfine infer train.path_to_test_data=/abs/path/to/folder infer.to_crop=False
 ```
 
 Supported inputs: `.jpg`, `.png`, `.jpeg`, `.mp4`, `.avi`, `.mov`, `.mkv`.
@@ -242,26 +242,26 @@ dense label map at original resolution.
 
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [dfine_seg/infer/torch_model.py](dfine_seg/infer/torch_model.py).
 
-For interactive threshold tweaking, the Gradio UI ([dfine_seg/demo.py](dfine_seg/demo.py), `dfine-seg demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable. It binds **127.0.0.1** by default — the Model panel loads any path the browser sends, so exposing it needs an explicit `--host 0.0.0.0` (which prints a warning).
+For interactive threshold tweaking, the Gradio UI ([dfine_seg/demo.py](dfine_seg/demo.py), `dfine demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable. It binds **127.0.0.1** by default — the Model panel loads any path the browser sends, so exposing it needs an explicit `--host 0.0.0.0` (which prints a warning).
 
 Important to note: inference wrappers under /infer are standalone scripts that are usually taken with the model file and used in users' applications, outside of this repo.
 
 ## 9. Benchmarking
 
 ```bash
-make bench        # == dfine-seg bench
+make bench        # == dfine bench
 ```
 
 Runs the val/test set through each backend listed in `formats_to_bench` inside [dfine_seg/dl/bench.py](dfine_seg/dl/bench.py) and reports per-backend latency (ms/image, CUDA-synced, warmup skipped) and F1 / mAP vs GT — for `task: sem_seg`, mIoU + pixel_acc instead (original-resolution protocol, same as training eval). Bench runs at `train.conf_thresh` (the prod operating point). Edit `formats_to_bench` to include/exclude `"torch"`, `"onnx"`, `"openvino"`, `"tensorrt"`, `"coreml"`, `"litert"`. The exported artifact for each backend must already exist (run `make export` first).
 
 Related:
-- `dfine-seg test-batching` — sweeps batch sizes, writes `batched_infer.csv`
-- `dfine-seg check-errors` — dumps FP/FN mismatches against GT
+- `dfine test-batching` — sweeps batch sizes, writes `batched_infer.csv`
+- `dfine check-errors` — dumps FP/FN mismatches against GT
 
 ## 10. Export / conversion
 
 ```bash
-make export       # == dfine-seg export
+make export       # == dfine export
 ```
 
 Produces, under `${train.path_to_save}`:
@@ -433,11 +433,12 @@ the `.pt`: nothing writes that format, and four other places load checkpoints di
 here alone would give a false impression of readiness. If that format is ever introduced, unwrap
 it in one shared helper all five call.
 
-**CLI** — [dfine_seg/cli.py](dfine_seg/cli.py), console script `dfine-seg`. `init` writes a
+**CLI** — [dfine_seg/cli.py](dfine_seg/cli.py), console script `dfine` (short on purpose; the
+distribution stays `dfine-seg`, since the bare name belongs to upstream D-FINE). `init` writes a
 `config.yaml`; every other subcommand imports the matching module and calls its `@hydra.main`
 `main()` with `sys.argv` rewritten, so Hydra overrides pass through untouched. `train` reads
 `train.ddp.enabled` and re-launches under `torchrun` — the Makefile no longer duplicates that
-shell logic, it just calls `uv run dfine-seg <command>`.
+shell logic, it just calls `uv run dfine <command>`.
 
 **Import discipline:** `import dfine_seg` must stay torch-only. Not just export backends —
 hydra, wandb, albumentations, matplotlib, pandas, sklearn and torchmetrics are core deps but
@@ -450,19 +451,19 @@ CI job re-checks it against a real core-only wheel install.
 | Task | Command |
 |---|---|
 | Predict from Python | `load_model("s")(read_image("img.jpg"))` |
-| Create a config (pip installs) | `dfine-seg init` |
+| Create a config (pip installs) | `dfine init` |
 | Build sdist + wheel | `make build` |
 | Prepare splits (YOLO CSVs, or `coco.json` → train/val/test.json) | `make split` |
-| Train (single GPU) | `dfine-seg train exp_name=<name> model_name=<size>` |
+| Train (single GPU) | `dfine train exp_name=<name> model_name=<size>` |
 | Train (multi-GPU) | set `train.ddp.enabled=True`, `train.ddp.n_gpus=N`, then `make train` |
-| Fine-tune from checkpoint | `dfine-seg train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
-| Infer on folder (images or video) | `dfine-seg infer train.path_to_test_data=/abs/path` |
-| Try a model in a browser UI | `dfine-seg demo` |
+| Fine-tune from checkpoint | `dfine train train.pretrained_model_path=/abs/path/model.pt exp_name=<new>` |
+| Infer on folder (images or video) | `dfine infer train.path_to_test_data=/abs/path` |
+| Try a model in a browser UI | `dfine demo` |
 | Export all formats | `make export` |
 | Benchmark exports | `make bench` |
 | Full pipeline | `make` (train → export → bench) |
-| Find best batch size | `dfine-seg test-batching` |
-| Inspect FP/FN | `dfine-seg check-errors` |
+| Find best batch size | `dfine test-batching` |
+| Inspect FP/FN | `dfine check-errors` |
 | OpenVINO INT8 | `make ov_int8` |
 | TensorRT INT8 | `make trt_int8` |
 | Run unit + smoke tests | `make test-fast` |

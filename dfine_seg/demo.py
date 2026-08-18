@@ -2,7 +2,7 @@
 D-FINE-seg Gradio Demo - detection, instance segmentation, semantic segmentation
 
 Just run it - COCO detection weights download on first use:
-    dfine-seg demo          (or: python -m dfine_seg.demo)
+    dfine demo          (or: python -m dfine_seg.demo)
 
 Everything is set from the UI; nothing here needs editing. The "Model" panel swaps in
 your own checkpoint at runtime (size preset or a path/upload) and lets you name its

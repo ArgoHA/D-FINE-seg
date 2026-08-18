@@ -230,7 +230,7 @@ def process_video(
                     if s >= args.box_thresh
                 ]
                 tracked = tracker.update(dets, frame_shape=(h, w))
-                items = [(cls, box) for _, cls, box, _ in tracked]
+                items = [(cls, box) for _, cls, box, _, _ in tracked]
             else:
                 items = [
                     (int(c), b.tolist())

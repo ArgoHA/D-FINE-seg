@@ -1,8 +1,8 @@
-"""`dfine-seg` console script.
+"""`dfine` console script.
 
 Thin dispatcher over the existing Hydra entrypoints, plus `init` - which materializes a
 `config.yaml` into the cwd so pip users get the same config-driven workflow as a clone.
-Hydra overrides pass straight through: `dfine-seg train model_name=m train.epochs=100`.
+Hydra overrides pass straight through: `dfine train model_name=m train.epochs=100`.
 """
 
 import argparse
@@ -31,7 +31,7 @@ COMMANDS = {
 
 _ROWS = "\n".join(f"  {c:<15} {h}" for c, (_, h) in COMMANDS.items())
 
-USAGE = f"""dfine-seg <command> [hydra overrides]
+USAGE = f"""dfine <command> [hydra overrides]
 
   init            write a config.yaml into the current directory
   predict         run a model on an image or folder, no config needed
@@ -40,11 +40,11 @@ USAGE = f"""dfine-seg <command> [hydra overrides]
   version         print the installed version
 
 Examples:
-  dfine-seg init --task segment
-  dfine-seg predict s photo.jpg -o out/
-  dfine-seg demo --port 8080
-  dfine-seg train model_name=m train.epochs=100
-  dfine-seg export export.formats=[onnx]
+  dfine init --task segment
+  dfine predict s photo.jpg -o out/
+  dfine demo --port 8080
+  dfine train model_name=m train.epochs=100
+  dfine export export.formats=[onnx]
 """
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".npy"}
@@ -52,7 +52,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".npy"}
 
 def _predict(argv: List[str]) -> int:
     """Config-free inference, so a pip user can try a model straight after installing."""
-    ap = argparse.ArgumentParser(prog="dfine-seg predict")
+    ap = argparse.ArgumentParser(prog="dfine predict")
     ap.add_argument("model", help="size (n|s|m|l|x) or path to a .pt/.engine/.onnx/.xml/…")
     ap.add_argument("source", type=Path, help="image file or a directory of images")
     ap.add_argument("--task", choices=("detect", "segment", "sem_seg"))
@@ -101,7 +101,7 @@ def _predict(argv: List[str]) -> int:
                 f"{names.get(int(i), i)} {c / label_map.size:.0%}" for i, c in zip(ids, counts)
             )
             print(f"{path.name}: {len(ids)} classes - {share}")
-            if args.out:  # grayscale label map, same format as `dfine-seg infer`
+            if args.out:  # grayscale label map, same format as `dfine infer`
                 cv2.imwrite(str(args.out / f"{path.stem}.png"), label_map)
             continue
 
@@ -125,7 +125,7 @@ def _predict(argv: List[str]) -> int:
 
 def _demo(argv: List[str]) -> int:
     """Launch the Gradio UI. Every model setting is changeable from the page itself."""
-    ap = argparse.ArgumentParser(prog="dfine-seg demo")
+    ap = argparse.ArgumentParser(prog="dfine demo")
     ap.add_argument("model", nargs="?", default="s", help="model to open with (size or path)")
     ap.add_argument("--task", choices=("detect", "segment", "sem_seg"), default="auto")
     ap.add_argument("--host", default="127.0.0.1", help="bind address; 0.0.0.0 for the LAN")
@@ -163,7 +163,7 @@ def _set_key(text: str, key: str, value: str) -> str:
 
 
 def _init(argv: List[str]) -> int:
-    ap = argparse.ArgumentParser(prog="dfine-seg init")
+    ap = argparse.ArgumentParser(prog="dfine init")
     # A directory, not a filename: the file must be called config.yaml or nothing can
     # discover it (see _config.find_config).
     ap.add_argument("-d", "--dir", type=Path, default=Path("."), help="where to write it")
@@ -200,7 +200,7 @@ def _init(argv: List[str]) -> int:
     print(f"wrote {out}")
     if args.dir.resolve() != Path.cwd():
         print(f"Run commands from {args.dir}, or set {ENV_VAR}={args.dir.resolve()}")
-    print("Next: edit train.root, train.label_to_name, then `dfine-seg split && dfine-seg train`")
+    print("Next: edit train.root, train.label_to_name, then `dfine split && dfine train`")
     return 0
 
 
@@ -253,7 +253,7 @@ def _run(command: str, overrides: List[str]) -> int:
     if found is None:
         print(
             f"no {CONFIG_NAME}.yaml found in {Path.cwd()}.\n"
-            f"Run `dfine-seg init` to create one, or set {ENV_VAR} to a directory holding it.",
+            f"Run `dfine init` to create one, or set {ENV_VAR} to a directory holding it.",
             file=sys.stderr,
         )
         return 1
@@ -266,7 +266,7 @@ def _run(command: str, overrides: List[str]) -> int:
     from importlib import import_module
 
     module = import_module(COMMANDS[command][0])
-    sys.argv = [f"dfine-seg {command}", *overrides]
+    sys.argv = [f"dfine {command}", *overrides]
     module.main()  # @hydra.main parses sys.argv[1:]
     return 0
 

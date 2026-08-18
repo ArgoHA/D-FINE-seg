@@ -85,8 +85,8 @@ jobs:
           print("ok", dfine_seg.__version__)
           PY
           mkdir -p /tmp/userdir && cd /tmp/userdir
-          /tmp/rel/bin/dfine-seg version
-          /tmp/rel/bin/dfine-seg init --task segment
+          /tmp/rel/bin/dfine version
+          /tmp/rel/bin/dfine init --task segment
 
   publish:
     name: publish to ${{ github.event.inputs.target || 'pypi' }}

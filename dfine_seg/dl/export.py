@@ -150,7 +150,7 @@ def _check_pretrained_classes(ckpt: str, n_config: int) -> None:
 
     `load_tuning_state` loads non-strictly, so a mismatch drops every score head and leaves
     it at random init - and parity then compares that corrupt model against graphs exported
-    from it, so the export "passes". Straight from `dfine-seg init` (2 template classes)
+    from it, so the export "passes". Straight from `dfine init` (2 template classes)
     this produced a green check on a broken model.
     """
     state = torch.load(ckpt, map_location="cpu", weights_only=True)

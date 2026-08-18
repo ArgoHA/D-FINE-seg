@@ -1,4 +1,4 @@
-"""`dfine-seg` CLI: init writes a usable config, and commands refuse to run without one."""
+"""`dfine` CLI: init writes a usable config, and commands refuse to run without one."""
 
 import sys
 
@@ -9,7 +9,7 @@ from dfine_seg import cli
 
 
 def run(monkeypatch, *argv) -> int:
-    monkeypatch.setattr(sys, "argv", ["dfine-seg", *argv])
+    monkeypatch.setattr(sys, "argv", ["dfine", *argv])
     return cli.main()
 
 
@@ -126,7 +126,7 @@ def test_commands_refuse_to_run_without_config(clean_cwd, monkeypatch, capsys):
     for command in cli.COMMANDS:
         assert run(monkeypatch, command) == 1, command
         err = capsys.readouterr().err
-        assert "dfine-seg init" in err and cli.ENV_VAR in err
+        assert "dfine init" in err and cli.ENV_VAR in err
 
 
 def test_ddp_launch_skipped_when_disabled(tmp_path, monkeypatch):

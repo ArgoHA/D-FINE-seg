@@ -68,7 +68,7 @@ That covers **inference and training**. Export backends are opt-in, because they
 | Install | Adds | For |
 |:--|:--|:--|
 | `pip install dfine-seg` | torch, torchvision, opencv, hydra, wandb, albumentations, … | inference + training |
-| `pip install 'dfine-seg[export]'` | onnx, onnxruntime, openvino, nncf, coremltools | `dfine-seg export` |
+| `pip install 'dfine-seg[export]'` | onnx, onnxruntime, openvino, nncf, coremltools | `dfine export` |
 | `pip install 'dfine-seg[trt]'` | tensorrt *(Linux)* | TensorRT engines - build on the target GPU |
 | `pip install 'dfine-seg[label]'` | transformers | SAM3 auto-labeling |
 | `pip install 'dfine-seg[demo]'` | gradio | the Gradio UI |
@@ -93,9 +93,9 @@ print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
 To train from a pip install, materialize a config and go:
 
 ```bash
-dfine-seg init          # writes ./config.yaml - edit train.root and train.label_to_name
-dfine-seg split
-dfine-seg train         # Hydra overrides work: dfine-seg train model_name=m train.epochs=100
+dfine init          # writes ./config.yaml - edit train.root and train.label_to_name
+dfine split
+dfine train         # Hydra overrides work: dfine train model_name=m train.epochs=100
 ```
 
 #### From source (contributors)
@@ -231,10 +231,10 @@ Or run in sequence:
 make                 # train -> export -> bench (does not run split)
 ```
 
-Every `make` target maps to a `dfine-seg` subcommand (`make train` == `dfine-seg train`), and any config key can be overridden inline:
+Every `make` target maps to a `dfine` subcommand (`make train` == `dfine train`), and any config key can be overridden inline:
 
 ```bash
-dfine-seg train exp_name=my_exp model_name=m train.epochs=100
+dfine train exp_name=my_exp model_name=m train.epochs=100
 ```
 
 Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` - it auto-launches with `torchrun`.
@@ -305,12 +305,12 @@ A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.068
 ### Gradio Demo
 
 ```bash
-make demo          # == dfine-seg demo   (pip: pip install 'dfine-seg[demo]')
+make demo          # == dfine demo   (pip: pip install 'dfine-seg[demo]')
 ```
 
 A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation.
 
-It serves on `127.0.0.1:7860`. Because that Model panel loads any path the browser sends, reaching it from another machine is opt-in: `dfine-seg demo --host 0.0.0.0`.
+It serves on `127.0.0.1:7860`. Because that Model panel loads any path the browser sends, reaching it from another machine is opt-in: `dfine demo --host 0.0.0.0`.
 
 ## Benchmarks
 

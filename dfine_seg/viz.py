@@ -1,6 +1,6 @@
 """Rendering shared by the training pipeline, the CLI and the demo.
 
-Lives outside `dl/` so `dfine-seg predict` and the Gradio demo can draw without importing
+Lives outside `dl/` so `dfine predict` and the Gradio demo can draw without importing
 the training stack (wandb, pandas, albumentations). Single source of the class colors:
 a second copy of this in demo.py had already drifted to a different hue formula.
 """

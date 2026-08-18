@@ -16,7 +16,7 @@ def ckpt(tmp_path):
 
 
 def test_class_count_mismatch_is_refused(ckpt):
-    """`dfine-seg init` ships 2 template classes: 80 -> 2 drops every score head."""
+    """`dfine init` ships 2 template classes: 80 -> 2 drops every score head."""
     from dfine_seg.dl.export import _check_pretrained_classes
 
     with pytest.raises(ValueError, match="80 classes but train.label_to_name has 2"):

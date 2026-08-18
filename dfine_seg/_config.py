@@ -1,7 +1,7 @@
 """Locate the Hydra config dir for both the clone workflow and pip installs.
 
 Clone: cwd is the repo root, so `./config.yaml` wins and behavior is unchanged.
-Pip: `dfine-seg init` writes `./config.yaml` from the packaged template below.
+Pip: `dfine init` writes `./config.yaml` from the packaged template below.
 """
 
 import os
@@ -11,7 +11,7 @@ ENV_VAR = "DFINE_SEG_CONFIG_DIR"
 CONFIG_NAME = "config"
 
 _PKG_ROOT = Path(__file__).resolve().parent
-DEFAULT_CONFIG = _PKG_ROOT / "config" / "default.yaml"  # `dfine-seg init` template
+DEFAULT_CONFIG = _PKG_ROOT / "config" / "default.yaml"  # `dfine init` template
 _REPO_ROOT = _PKG_ROOT.parent  # repo root for a clone / editable install
 
 

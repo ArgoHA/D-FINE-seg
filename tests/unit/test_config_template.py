@@ -1,4 +1,4 @@
-"""The packaged `dfine-seg init` template must not drift from the working config.
+"""The packaged `dfine init` template must not drift from the working config.
 
 Root `config.yaml` is the live dev config (machine paths, real classes); the packaged
 `dfine_seg/config/default.yaml` is its sanitized twin. They must stay structurally
