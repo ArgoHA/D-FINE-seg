@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 from torchvision.ops import box_iou
 from tqdm import tqdm
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader, parse_yolo_label_file, read_image_hwc
 from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,

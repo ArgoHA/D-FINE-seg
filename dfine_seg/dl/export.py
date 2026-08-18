@@ -13,7 +13,7 @@ from tabulate import tabulate
 from torch import nn
 
 from dfine_seg._ckpt import describe
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.model.configs import base_cfg
 from dfine_seg.model.dfine import build_model
 from dfine_seg.model.utils import (

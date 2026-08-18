@@ -8,7 +8,7 @@ from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
 from tqdm import tqdm
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 
 
 def convert_image_to_jpg(filepath: Path) -> None:

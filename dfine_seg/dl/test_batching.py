@@ -9,7 +9,7 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from tqdm import tqdm
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.dl.utils import get_latest_experiment_name
 from dfine_seg.infer.torch_model import TorchModel
 

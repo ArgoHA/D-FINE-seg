@@ -3,7 +3,7 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 
 
 @hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)

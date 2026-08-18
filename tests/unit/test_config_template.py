@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dfine_seg._config import DEFAULT_CONFIG
+from dfine_seg.config.resolve import DEFAULT_CONFIG
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROOT_CONFIG = REPO_ROOT / "config.yaml"

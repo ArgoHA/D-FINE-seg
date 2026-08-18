@@ -23,7 +23,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.model.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
 from dfine_seg.model.dist_utils import (
     broadcast_scalar,

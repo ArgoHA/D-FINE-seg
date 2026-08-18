@@ -16,7 +16,7 @@ from tabulate import tabulate
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader, read_image_hwc
 from dfine_seg.dl.utils import (
     encode_sample_masks_to_rle,

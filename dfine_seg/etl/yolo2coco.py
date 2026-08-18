@@ -5,7 +5,7 @@ from pathlib import Path
 import hydra
 from PIL import Image
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 
 
 def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=None):

@@ -5,7 +5,7 @@ import difPy
 import hydra
 from tqdm import tqdm
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 
 
 def run(dir_path: str, remove_dups: bool):

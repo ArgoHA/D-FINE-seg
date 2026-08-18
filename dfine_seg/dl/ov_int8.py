@@ -9,7 +9,7 @@ import torch
 from loguru import logger
 from omegaconf import DictConfig
 
-from dfine_seg._config import CONFIG_NAME, config_dir
+from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader
 from dfine_seg.dl.train import Trainer
 from dfine_seg.dl.utils import get_latest_experiment_name

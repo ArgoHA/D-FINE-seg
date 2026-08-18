@@ -2,8 +2,8 @@
 
 import pytest
 
-from dfine_seg import _config
-from dfine_seg._config import ENV_VAR, find_config
+from dfine_seg.config import resolve
+from dfine_seg.config.resolve import ENV_VAR, find_config
 
 
 @pytest.fixture
@@ -11,7 +11,7 @@ def isolated(tmp_path, monkeypatch):
     """cwd with no config, and no repo root reachable behind it."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv(ENV_VAR, raising=False)
-    monkeypatch.setattr(_config, "_REPO_ROOT", tmp_path / "nowhere")
+    monkeypatch.setattr(resolve, "_REPO_ROOT", tmp_path / "nowhere")
     return tmp_path
 
 

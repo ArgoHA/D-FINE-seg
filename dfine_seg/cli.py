@@ -14,7 +14,7 @@ from typing import List, Optional
 
 import yaml
 
-from dfine_seg._config import CONFIG_NAME, DEFAULT_CONFIG, ENV_VAR, find_config
+from dfine_seg.config.resolve import CONFIG_NAME, DEFAULT_CONFIG, ENV_VAR, find_config
 
 # subcommand -> (module providing a Hydra-decorated main(), help line)
 COMMANDS = {
@@ -165,7 +165,7 @@ def _set_key(text: str, key: str, value: str) -> str:
 def _init(argv: List[str]) -> int:
     ap = argparse.ArgumentParser(prog="dfine init")
     # A directory, not a filename: the file must be called config.yaml or nothing can
-    # discover it (see _config.find_config).
+    # discover it (see config.resolve.find_config).
     ap.add_argument("-d", "--dir", type=Path, default=Path("."), help="where to write it")
     ap.add_argument("--task", choices=("detect", "segment", "sem_seg"))
     ap.add_argument("--model", choices=("n", "s", "m", "l", "x"))

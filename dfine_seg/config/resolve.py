@@ -10,9 +10,9 @@ from pathlib import Path
 ENV_VAR = "DFINE_SEG_CONFIG_DIR"
 CONFIG_NAME = "config"
 
-_PKG_ROOT = Path(__file__).resolve().parent
-DEFAULT_CONFIG = _PKG_ROOT / "config" / "default.yaml"  # `dfine init` template
-_REPO_ROOT = _PKG_ROOT.parent  # repo root for a clone / editable install
+_HERE = Path(__file__).resolve().parent
+DEFAULT_CONFIG = _HERE / "default.yaml"  # `dfine init` template, this file's neighbour
+_REPO_ROOT = _HERE.parents[1]  # repo root for a clone / editable install
 
 
 def find_config() -> Path | None:

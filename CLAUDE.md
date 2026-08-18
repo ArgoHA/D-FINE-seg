@@ -25,6 +25,7 @@ dfine_seg/                   # import root (installable package)
   viz.py                     # Visualizer + sem_seg palette — shared by dl/, cli, demo
   data/coco_names.py         # bundled COCO class map
   config/default.yaml        # packaged config emitted by `dfine init`
+  config/resolve.py          # finds the live config.yaml (env var -> cwd -> repo root)
 ```
 
 ## 3. Environment
@@ -66,7 +67,7 @@ Key top-level fields in [config.yaml](config.yaml):
 
 LRs are indexed by model size under `train.lrs.<size>.{backbone_lr, base_lr}`.
 
-**Where `config.yaml` comes from.** [dfine_seg/_config.py](dfine_seg/_config.py) resolves the Hydra
+**Where `config.yaml` comes from.** [dfine_seg/config/resolve.py](dfine_seg/config/resolve.py) resolves the Hydra
 config dir at import time — `$DFINE_SEG_CONFIG_DIR`, then cwd, then the repo root (editable
 installs only). All nine `@hydra.main` entrypoints use `config_path=config_dir()`, so the clone
 workflow is unchanged (cwd == repo root) and pip users run `dfine init` to write a
