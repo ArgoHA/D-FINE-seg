@@ -310,6 +310,7 @@ def _run_video_tracked(torch_model, tracker, visualizer, video_path, output_path
         boxes = res["boxes"].cpu().numpy()
         labels = res["labels"].cpu().numpy()
         scores = res["scores"].cpu().numpy()
+        masks = res["masks"].cpu().numpy() if "masks" in res else None
 
         detections = [
             Detection(bbox=tuple(b.tolist()), score=float(s), cls_id=int(c))
@@ -324,6 +325,9 @@ def _run_video_tracked(torch_model, tracker, visualizer, video_path, output_path
                 "boxes": np.array([t[2] for t in tracked], dtype=np.float64),
                 "scores": np.array([t[3] for t in tracked], dtype=np.float64),
             }
+            if masks is not None:
+                # tracker emits the source detection index, so masks follow the boxes
+                tracked_results["masks"] = masks[[t[4] for t in tracked]]
         else:
             tracked_results = {
                 "track_ids": np.zeros(0, dtype=int),

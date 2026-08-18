@@ -87,9 +87,10 @@ class _Track:
         "age",
         "hits",
         "time_since_update",
+        "det_idx",
     )
 
-    def __init__(self, track_id: int, bbox, score: float, cls_id: int):
+    def __init__(self, track_id: int, bbox, score: float, cls_id: int, det_idx: int = -1):
         self.track_id = track_id
         self.cls_id = int(cls_id)
         self.score = float(score)
@@ -100,6 +101,7 @@ class _Track:
         self.age = 1
         self.hits = 1
         self.time_since_update = 0
+        self.det_idx = det_idx  # index into this frame's detections; lets a caller gather masks
 
     def predicted_mean(self, drag: float) -> np.ndarray:
         """Linear extrapolation from last observation, damped while lost."""
@@ -121,7 +123,7 @@ class _Track:
         self.age += 1
         self.time_since_update += 1
 
-    def update(self, bbox, score: float, velocity_alpha: float):
+    def update(self, bbox, score: float, velocity_alpha: float, det_idx: int = -1):
         new_mean = _xyxy_to_cxywh(bbox)
         gap = max(self.time_since_update, 1)
         observed_v = (new_mean - self.mean) / gap
@@ -138,6 +140,7 @@ class _Track:
         self.hits += 1
         self.time_since_update = 0
         self.state = TrackState.TRACKED
+        self.det_idx = det_idx
 
     def mark_lost(self):
         if self.state == TrackState.TRACKED:
@@ -206,7 +209,7 @@ class ByteTrack:
         self,
         detections: List[Detection],
         frame_shape: Tuple[int, int],
-    ) -> List[Tuple[int, int, Tuple[float, float, float, float], float]]:
+    ) -> List[Tuple[int, int, Tuple[float, float, float, float], float, int]]:
         """Run one frame of tracking.
 
         Args:
@@ -214,17 +217,20 @@ class ByteTrack:
             frame_shape: (height, width), used to normalize the centroid cost.
 
         Returns:
-            list of (track_id, cls_id, (x1, y1, x2, y2), score) for tracks
-            matched this frame with hits >= min_hits.
+            list of (track_id, cls_id, (x1, y1, x2, y2), score, det_idx) for tracks
+            matched this frame with hits >= min_hits. ``det_idx`` indexes ``detections``,
+            so per-detection extras (masks, keypoints) can be gathered for a track.
         """
         self.frame_idx += 1
         H, W = frame_shape
         diag = float(np.hypot(H, W))
 
         # ---- 0. Pre-filter detections and split into high/low pools ----
-        dets = [d for d in detections if d.score >= self.detrack_thresh]
-        high = [d for d in dets if d.score >= self.track_thresh]
-        low = [d for d in dets if d.score < self.track_thresh]
+        kept = [i for i, d in enumerate(detections) if d.score >= self.detrack_thresh]
+        high_i = [i for i in kept if detections[i].score >= self.track_thresh]
+        low_i = [i for i in kept if detections[i].score < self.track_thresh]
+        high = [detections[i] for i in high_i]
+        low = [detections[i] for i in low_i]
 
         # ---- 1. Predict every non-removed track forward ----
         for t in self.tracks:
@@ -237,7 +243,7 @@ class ByteTrack:
             pool, high, diag, gate=self.tracking_thresh
         )
         for t_i, d_i in matches_hi:
-            pool[t_i].update(high[d_i].bbox, high[d_i].score, self.velocity_alpha)
+            pool[t_i].update(high[d_i].bbox, high[d_i].score, self.velocity_alpha, high_i[d_i])
 
         # ---- 3. Second association: still-TRACKED unmatched tracks vs low pool ----
         # Lost tracks intentionally skipped here - the paper shows that pairing
@@ -249,7 +255,7 @@ class ByteTrack:
         matched_in_second = set()
         for local_i, d_i in matches_lo:
             global_i = second_pool_local[local_i]
-            pool[global_i].update(low[d_i].bbox, low[d_i].score, self.velocity_alpha)
+            pool[global_i].update(low[d_i].bbox, low[d_i].score, self.velocity_alpha, low_i[d_i])
             matched_in_second.add(global_i)
 
         # ---- 4. Mark unmatched tracks as LOST ----
@@ -262,7 +268,9 @@ class ByteTrack:
         for d_i in unmatched_high:
             det = high[d_i]
             if det.score >= self.unmatched_thresh:
-                self.tracks.append(_Track(self._next_id, det.bbox, det.score, det.cls_id))
+                self.tracks.append(
+                    _Track(self._next_id, det.bbox, det.score, det.cls_id, high_i[d_i])
+                )
                 self._next_id += 1
 
         # ---- 6. Drop stale tracks ----
@@ -289,7 +297,7 @@ class ByteTrack:
             y1 = float(np.clip(y1, 0, H - 1))
             x2 = float(np.clip(x2, 0, W - 1))
             y2 = float(np.clip(y2, 0, H - 1))
-            output.append((t.track_id, t.cls_id, (x1, y1, x2, y2), float(t.score)))
+            output.append((t.track_id, t.cls_id, (x1, y1, x2, y2), float(t.score), t.det_idx))
         return output
 
     def lost_boxes(
