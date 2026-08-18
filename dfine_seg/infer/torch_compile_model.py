@@ -46,6 +46,7 @@ from numpy.typing import NDArray
 from torchvision.ops import nms
 
 from dfine_seg.model.dfine import build_model
+from dfine_seg.model.utils import unwrap_checkpoint
 
 _AMP_DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16}
 
@@ -143,10 +144,8 @@ class TorchCompileModel:
             in_channels=self.channels,
             task=self.task,
         )
-        self.model.load_state_dict(
-            torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu")),
-            strict=False,
-        )
+        state = torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))
+        self.model.load_state_dict(unwrap_checkpoint(state)[0], strict=False)
         self.model.eval()
         self.model.to(self.device)
 

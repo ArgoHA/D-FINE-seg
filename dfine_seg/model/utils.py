@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Tuple
 
 import torch
 from loguru import logger
@@ -158,13 +158,28 @@ def matched_state(state: Dict[str, torch.Tensor], params: Dict[str, torch.Tensor
     return matched_state, {"missed": missed_list, "unmatched": unmatched_list}
 
 
-def extract_pretrained_state_dict(state: Dict[str, torch.Tensor]):
-    """Extract the raw model state dict from legacy or current checkpoint formats."""
+def unwrap_checkpoint(state: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+    """Split any checkpoint format into (state_dict, meta).
+
+    `save_checkpoint` writes {"model": sd, "meta": {...}}; every released checkpoint is a
+    bare state_dict and "ema" is the legacy upstream format - both yield an empty meta.
+    """
     if "ema" in state:
-        return state["ema"]["module"]
+        return state["ema"]["module"], {}
     if "model" in state:
-        return state["model"]
-    return state
+        return state["model"], state.get("meta") or {}
+    return state, {}
+
+
+def save_checkpoint(
+    path: str | Path, state_dict: Dict[str, torch.Tensor], meta: Dict[str, Any]
+) -> None:
+    """Write the envelope `unwrap_checkpoint` reads.
+
+    `meta` must be plain python - every loader here passes `weights_only=True`, which
+    accepts dict/list/str/int/bool but rejects an OmegaConf node.
+    """
+    torch.save({"model": state_dict, "meta": meta}, path)
 
 
 STEM_CONV_KEY = "backbone.stem.stem1.conv.weight"
@@ -221,7 +236,7 @@ def load_tuning_state(model, path: str):
     else:
         state = torch.load(path, map_location="cpu", weights_only=True)
 
-    pretrain_state_dict = extract_pretrained_state_dict(state)
+    pretrain_state_dict = unwrap_checkpoint(state)[0]
     maybe_inflate_stem(model.state_dict(), pretrain_state_dict)
 
     # Adjust head parameters between datasets

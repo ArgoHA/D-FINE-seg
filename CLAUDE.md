@@ -190,8 +190,11 @@ make train
 ### 6.4 Outputs
 
 Under `${train.path_to_save}` (= `${train.root}/output/models/<exp>`):
-- `model.pt` — **best** checkpoint by `train.decision_metrics` (use this for inference/export)
-- `last.pt` — last-epoch checkpoint (nothing reads it automatically; `model.pt` is the one to use)
+- `model.pt` — **best** checkpoint by `train.decision_metrics` (use this for inference/export).
+  `{"model": state_dict, "meta": {…}}`; the meta carries class names + `img_size`/`keep_ratio` so
+  the file still describes itself once moved away from this directory (§12.1)
+- `last.pt` — last-epoch checkpoint, same format (nothing reads it automatically; `model.pt` is
+  the one to use). It is not a resume point — no optimizer or EMA state is saved
 - `config.yaml` — frozen snapshot of the run's config
 - `train_log.txt` — loguru log
 - Confusion matrices, per-class metric CSVs, F1-vs-threshold plots, and eval visualizations
@@ -412,32 +415,57 @@ Weight resolution: `load_model("s")` with no `weights_dir` reuses a clone's `pre
 file is already there, and otherwise the shared HF cache. `hf_hub_download(local_dir=…)` bypasses
 that cache, so defaulting to `pretrained/` re-downloaded once per working directory.
 
-**Checkpoint auto-detect** — [dfine_seg/api/ckpt.py](dfine_seg/api/ckpt.py). A `.pt` is a bare
-`state_dict()`, so `TorchModel` recovers its architecture the way the other backends read theirs
-from a graph: `num_classes` from `decoder.enc_score_head.weight.shape[0]` (or
-`decoder.classifier.weight` for sem_seg); `task` from mask-decoder / sem-seg head key presence;
+**Checkpoint auto-detect** — [dfine_seg/api/ckpt.py](dfine_seg/api/ckpt.py). Architecture always
+comes from the weights, never from the `meta` block below: `meta` is a separate claim that can
+drift, key structure cannot disagree with the tensors being loaded. So `TorchModel` recovers it the
+way the other backends read theirs from a graph: `num_classes` from
+`decoder.enc_score_head.weight.shape[0]` (or `decoder.classifier.weight` for sem_seg); `task`
+from mask-decoder / sem-seg head key presence;
 `in_channels` from the stem conv; `model_name` from a 5-row fingerprint table keyed on
 `(backbone key count, encoder hidden dim)` — `(312,128)=n (312,256)=s (442,256)=m (400,256)=l
 (650,384)=x`, task-invariant, pinned by a slow test against all 10 released checkpoints. This is
-why `TorchModel(path)` now needs nothing but a path, matching its 5 siblings; `model_name`,
+why `TorchModel(path)` needs nothing but a path, matching its 5 siblings; `model_name`,
 `n_outputs`, `task` and `channels` remain as optional overrides. `load_and_describe` reads the
-file once and hands the state_dict on, so the checkpoint is not parsed twice.
+file once and hands the state_dict on, so the checkpoint is not parsed twice. `meta` is consulted
+for `model_name` only when the fingerprint table doesn't recognize the architecture — a future
+size stays loadable instead of raising.
 
 **Preprocessing is not in the weights.** `input_width`/`input_height`/`keep_ratio` resolve
-explicit arg → the frozen sidecar `config.yaml`'s `train.img_size` / `train.keep_ratio` → 640 /
-False, and `TorchModel` logs what it resolved. Without this a checkpoint trained at 1024x2048 ran
-at 640x640 and simply scored worse, with nothing in the output saying so. Only `.pt` needs it —
+explicit arg → the checkpoint's own `meta` → the frozen sidecar `config.yaml`'s `train.img_size` /
+`train.keep_ratio` → 640 / False, and `TorchModel` logs what it resolved. Without this a
+checkpoint trained at 1024x2048 ran at 640x640 and simply scored worse, with nothing in the output
+saying so. Only `.pt` needs it —
 every graph artifact carries its input size in the graph. The Hydra commands
 (`infer`/`bench`/`export`/`check-errors`/`test-batching`) still pass `cfg.train.img_size`
 explicitly, so the live config keeps winning over the frozen one there.
 
-Class names, which weights cannot carry, resolve: explicit `names=` → the frozen `config.yaml`
-training saves beside the checkpoint → bundled [COCO map](dfine_seg/api/coco_names.py) when the
-filename is a released one → `None`. There is deliberately **no** reader for metadata embedded in
-the `.pt`: nothing writes that format, and four other places load checkpoints directly
-(`dl/export.py`, `dl/train.py`, `model/utils.py`, `infer/torch_compile_model.py`), so a reader
-here alone would give a false impression of readiness. If that format is ever introduced, unwrap
-it in one shared helper all five call.
+Class names, which weights cannot carry, resolve: explicit `names=` → the checkpoint's `meta` →
+the frozen `config.yaml` training saves beside the checkpoint → bundled
+[COCO map](dfine_seg/api/coco_names.py) when the filename is a released one → `None`.
+
+**Checkpoint meta.** Training writes `{"model": state_dict, "meta": {…}}` via
+`save_checkpoint` ([dfine_seg/model/utils.py](dfine_seg/model/utils.py)) for both `model.pt` and
+`last.pt`; `ckpt_meta(cfg)` in [dfine_seg/dl/train.py](dfine_seg/dl/train.py) builds it. Contents:
+`dfine_seg_version`, `model_name`, `task`, `num_classes`, `in_channels`, `label_to_name`,
+`img_size`, `keep_ratio` — i.e. the architecture plus the two things a `.pt` otherwise loses the
+moment it leaves its run directory, which is exactly what deploying one is. Before this, a moved
+checkpoint ran at 640x640 / `keep_ratio: False` with unnamed classes and said nothing about it.
+
+Rules for touching it:
+- **Plain python only.** Every loader passes `weights_only=True`, which takes dict/list/str/int/
+  bool but raises `UnpicklingError` on an OmegaConf `DictConfig`.
+- **Read it through `unwrap_checkpoint`, nowhere else.** It returns `(state_dict, meta)` and
+  absorbs all three formats — the envelope, a bare `state_dict` (every released checkpoint, and
+  anything trained before this), and the legacy upstream `{"ema": {"module": …}}`. All five load
+  sites go through it: `api/ckpt.py`, `dl/export.py` (×2), `dl/train.py`, `model/utils.py`,
+  `infer/torch_compile_model.py`. A site that skips it fails loudly on a new checkpoint
+  (`load_state_dict` on a 2-key dict), not silently — but fix the site, don't add a second reader.
+- **No training state in here.** No optimizer moments, no EMA-vs-student split: `model.pt` is a
+  deploy artifact and AdamW state alone would roughly triple it (~1 GB for X). Resume was
+  considered and deliberately left out; it also needs the *student* weights, which `save_model`
+  does not keep when EMA is on.
+- Export writes no metadata into the graph artifacts, so `.onnx`/`.engine`/… still carry no class
+  names.
 
 **CLI** — [dfine_seg/app/cli.py](dfine_seg/app/cli.py), console script `dfine` (short on purpose; the
 distribution stays `dfine-seg`, since the bare name belongs to upstream D-FINE). `init` writes a

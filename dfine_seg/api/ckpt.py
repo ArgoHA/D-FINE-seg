@@ -1,8 +1,10 @@
 """Recover `model_name`, `task`, `num_classes` and class names from a checkpoint.
 
-Checkpoints are bare `state_dict()`s (dl/train.py:643,657), so architecture is inferred
-from key structure. `(backbone key count, encoder hidden dim)` is unique per size and
-identical across tasks - verified on all 14 released checkpoints.
+Training writes a `meta` block (`model/utils.save_checkpoint`), but the released
+checkpoints and anything trained before it are bare `state_dict()`s, so architecture is
+always inferred from key structure: `(backbone key count, encoder hidden dim)` is unique
+per size and identical across tasks - verified on all 14 released checkpoints. `meta`
+carries what weights cannot: class names and the preprocessing the model was trained with.
 """
 
 from pathlib import Path
@@ -11,6 +13,8 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 import yaml
 from loguru import logger
+
+from dfine_seg.model.utils import unwrap_checkpoint
 
 # (n backbone keys, encoder hidden dim) -> model size
 _FINGERPRINT: Dict[Tuple[int, int], str] = {
@@ -27,18 +31,20 @@ _SEM_HEAD = "decoder.classifier.weight"
 _MASK_PREFIX = "decoder.mask_decoder."
 
 
-def _size_from(sd: Dict[str, torch.Tensor]) -> str:
+def _size_from(sd: Dict[str, torch.Tensor], meta: Dict[str, Any]) -> str:
     n_bb = sum(1 for k in sd if k.startswith("backbone."))
     proj = next((k for k in sd if k.startswith(_ENC_PROJ)), None)
     if proj is None:
         raise ValueError(f"not a D-FINE-seg checkpoint: no '{_ENC_PROJ}*' key")
     fp = (n_bb, sd[proj].shape[0])
-    if fp not in _FINGERPRINT:
-        raise ValueError(
-            f"unrecognized architecture {fp}; pass model_name= explicitly "
-            f"(known: {sorted(_FINGERPRINT.values())})"
-        )
-    return _FINGERPRINT[fp]
+    if fp in _FINGERPRINT:  # derived from the weights themselves, so it cannot disagree
+        return _FINGERPRINT[fp]
+    if meta.get("model_name"):  # architecture newer than the table - trust the writer
+        return str(meta["model_name"])
+    raise ValueError(
+        f"unrecognized architecture {fp}; pass model_name= explicitly "
+        f"(known: {sorted(_FINGERPRINT.values())})"
+    )
 
 
 def sibling_config(ckpt: Path) -> Dict[str, Any]:
@@ -53,13 +59,15 @@ def sibling_config(ckpt: Path) -> Dict[str, Any]:
         return {}
 
 
-def describe(sd: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+def describe(sd: Dict[str, torch.Tensor], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """-> architecture facts recoverable from an in-memory state_dict.
 
-    `names`, `img_size` and `keep_ratio` are preprocessing, not architecture: nothing in
-    the weights carries them, so they stay None here and `load_and_describe` fills them
-    from the sidecar config.
+    `meta` is consulted only for `model_name`, and only when the fingerprint table doesn't
+    know the architecture. `names`, `img_size` and `keep_ratio` are preprocessing, not
+    architecture: nothing in the weights carries them, so they stay None here and
+    `load_and_describe` fills them from the checkpoint's meta or the sidecar config.
     """
+    meta = meta or {}
     if _DET_HEAD in sd:  # a mask decoder over the detection head = instance segmentation
         task = "segment" if any(k.startswith(_MASK_PREFIX) for k in sd) else "detect"
         num_classes = sd[_DET_HEAD].shape[0]
@@ -69,7 +77,7 @@ def describe(sd: Dict[str, torch.Tensor]) -> Dict[str, Any]:
         raise ValueError("not a D-FINE-seg checkpoint: no detection or sem_seg head found")
 
     return {
-        "model_name": _size_from(sd),
+        "model_name": _size_from(sd, meta),
         "task": task,
         "num_classes": num_classes,
         "names": None,
@@ -82,15 +90,16 @@ def describe(sd: Dict[str, torch.Tensor]) -> Dict[str, Any]:
 def load_and_describe(path: str | Path) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
     """-> (state_dict, info). Reads the file once; callers reuse the state_dict."""
     p = Path(path)
-    sd = torch.load(p, map_location="cpu", weights_only=True)
-    info = describe(sd)
-    cfg = sibling_config(p).get("train", {})
-    info["names"] = _coerce_names(cfg.get("label_to_name"))
+    sd, meta = unwrap_checkpoint(torch.load(p, map_location="cpu", weights_only=True))
+    info = describe(sd, meta)
     # A model trained at 1024x2048 still runs at the 640x640 default, silently and worse --
-    # so preprocessing comes from the frozen config too, not just the class names.
-    size = cfg.get("img_size")
+    # so preprocessing is recovered too, not just the class names. The checkpoint's own meta
+    # travels with the file; the frozen config is the fallback for one left in its run dir.
+    cfg = sibling_config(p).get("train", {})
+    info["names"] = _coerce_names(meta.get("label_to_name") or cfg.get("label_to_name"))
+    size = meta.get("img_size") or cfg.get("img_size")
     info["img_size"] = (int(size[0]), int(size[1])) if size else None
-    info["keep_ratio"] = cfg.get("keep_ratio")
+    info["keep_ratio"] = meta.get("keep_ratio", cfg.get("keep_ratio"))
     return sd, info
 
 

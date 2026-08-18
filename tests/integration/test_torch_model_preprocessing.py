@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import torch
 import yaml
 
 from dfine_seg.infer.torch_model import TorchModel
@@ -55,3 +56,33 @@ def test_falls_back_to_640_without_a_sidecar(tmp_path):
     m = TorchModel(str(tmp_path / "model.pt"), device="cpu")
     assert m.input_size == (640, 640)
     assert m.keep_ratio is False
+
+
+def test_meta_in_the_checkpoint_beats_the_sidecar(tmp_path):
+    """A deployed checkpoint has no run directory around it; its own meta must carry."""
+    if not CKPT.is_file():
+        pytest.skip(f"{CKPT.name} not downloaded")
+    from dfine_seg.model.utils import save_checkpoint, unwrap_checkpoint
+
+    sd = unwrap_checkpoint(torch.load(CKPT, map_location="cpu", weights_only=True))[0]
+    save_checkpoint(
+        tmp_path / "model.pt",
+        sd,
+        {
+            "dfine_seg_version": "test",
+            "model_name": "n",
+            "task": "detect",
+            "num_classes": 80,
+            "in_channels": 3,
+            "label_to_name": {i: f"m{i}" for i in range(80)},
+            "img_size": [704, 1280],
+            "keep_ratio": True,
+        },
+    )
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"train": {"img_size": [320, 320], "keep_ratio": False}})
+    )
+    m = TorchModel(str(tmp_path / "model.pt"), device="cpu")
+    assert m.input_size == (704, 1280)
+    assert m.keep_ratio is True
+    assert m.names[0] == "m0"

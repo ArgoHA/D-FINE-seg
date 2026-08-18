@@ -18,7 +18,7 @@ from dfine_seg.model.configs import base_cfg
 from dfine_seg.model.dfine import build_model
 from dfine_seg.model.utils import (
     ensure_pretrained,
-    extract_pretrained_state_dict,
+    unwrap_checkpoint,
     load_tuning_state,
 )
 
@@ -154,7 +154,7 @@ def _check_pretrained_classes(ckpt: str, n_config: int) -> None:
     this produced a green check on a broken model.
     """
     state = torch.load(ckpt, map_location="cpu", weights_only=True)
-    n_ckpt = describe(extract_pretrained_state_dict(state))["num_classes"]
+    n_ckpt = describe(*unwrap_checkpoint(state))["num_classes"]
     if n_ckpt != n_config:
         raise ValueError(
             f"{Path(ckpt).name} has {n_ckpt} classes but train.label_to_name has {n_config}. "
@@ -187,7 +187,7 @@ def prepare_model(cfg, device):
                 f"{ckpt} not found. Train first, or set export.from_pretrained=True "
                 "to export pretrained weights directly."
             )
-        state = torch.load(ckpt, weights_only=True)
+        state = unwrap_checkpoint(torch.load(ckpt, weights_only=True))[0]
         # decoder regenerates these from img_size; drop so re-export at another resolution works
         for k in ("decoder.anchors", "decoder.valid_mask"):
             state.pop(k, None)

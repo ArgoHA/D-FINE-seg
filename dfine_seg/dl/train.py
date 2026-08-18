@@ -23,6 +23,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from dfine_seg import __version__
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.model.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
 from dfine_seg.model.dist_utils import (
@@ -37,6 +38,7 @@ from dfine_seg.model.dist_utils import (
     is_main_process,
     synchronize,
 )
+from dfine_seg.model.utils import save_checkpoint, unwrap_checkpoint
 from dfine_seg.dl.dataset import Loader
 from dfine_seg.dl.utils import (
     auto_batch_size,
@@ -56,6 +58,23 @@ from dfine_seg.dl.utils import (
     wandb_logger,
 )
 from dfine_seg.dl.validator import SemSegValidator, Validator
+
+
+def ckpt_meta(cfg: DictConfig) -> Dict:
+    """What a checkpoint cannot otherwise carry once it leaves its run directory: class
+    names and the preprocessing it was trained with (the sidecar config stays behind).
+    Plain python only - the loaders pass `weights_only=True`, which rejects OmegaConf.
+    """
+    return {
+        "dfine_seg_version": __version__,
+        "model_name": cfg.model_name,
+        "task": cfg.task,
+        "num_classes": len(cfg.train.label_to_name),
+        "in_channels": int(cfg.train.in_channels),
+        "label_to_name": {int(k): str(v) for k, v in cfg.train.label_to_name.items()},
+        "img_size": [int(v) for v in cfg.train.img_size],
+        "keep_ratio": bool(cfg.train.keep_ratio),
+    }
 
 
 class ModelEMA:
@@ -640,7 +659,8 @@ class Trainer:
             model_to_save = model_to_save.module
 
         self.path_to_save.mkdir(parents=True, exist_ok=True)
-        torch.save(model_to_save.state_dict(), self.path_to_save / "last.pt")
+        meta = ckpt_meta(self.cfg)
+        save_checkpoint(self.path_to_save / "last.pt", model_to_save.state_dict(), meta)
 
         # mean from chosen metrics
         decision_metric = np.mean(
@@ -654,7 +674,7 @@ class Trainer:
         if decision_metric > best_metric:
             best_metric = decision_metric
             logger.info("Saving new best model🔥")
-            torch.save(model_to_save.state_dict(), self.path_to_save / "model.pt")
+            save_checkpoint(self.path_to_save / "model.pt", model_to_save.state_dict(), meta)
             self.early_stopping_steps = 0
         else:
             self.early_stopping_steps += 1
@@ -893,9 +913,8 @@ def main(cfg: DictConfig) -> None:
                 in_channels=cfg.train.in_channels,
                 task=cfg.task,
             )
-            model.load_state_dict(
-                torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True)
-            )
+            state = torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True)
+            model.load_state_dict(unwrap_checkpoint(state)[0])
             if trainer.ema_model:
                 trainer.ema_model.model = model
             else:

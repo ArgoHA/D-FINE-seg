@@ -127,3 +127,110 @@ def test_img_size_and_keep_ratio_from_sibling_config(tmp_path):
 def test_preprocessing_is_none_without_a_config(tmp_path):
     info = inspect(write(tmp_path, fake_sd()))
     assert info["img_size"] is None and info["keep_ratio"] is None
+
+
+# ---- the meta envelope training writes ---------------------------------------
+
+
+def meta(**over):
+    m = {
+        "dfine_seg_version": "0.3.0",
+        "model_name": "s",
+        "task": "detect",
+        "num_classes": 2,
+        "in_channels": 3,
+        "label_to_name": {0: "cat", 1: "dog"},
+        "img_size": [1024, 2048],
+        "keep_ratio": True,
+    }
+    m.update(over)
+    return m
+
+
+def write_enveloped(tmp_path, sd, m, name="model.pt"):
+    p = tmp_path / name
+    torch.save({"model": sd, "meta": m}, p)
+    return p
+
+
+def test_meta_carries_names_and_preprocessing(tmp_path):
+    """The whole point: a checkpoint moved away from its run dir stays self-describing."""
+    info = inspect(write_enveloped(tmp_path, fake_sd(num_classes=2), meta()))
+    assert info["names"] == {0: "cat", 1: "dog"}
+    assert info["img_size"] == (1024, 2048)
+    assert info["keep_ratio"] is True
+
+
+def test_architecture_still_comes_from_the_weights(tmp_path):
+    """meta is a claim; the weights are the thing being loaded, so they win."""
+    sd = fake_sd(size="m", task="segment", num_classes=7, in_channels=4)
+    info = inspect(write_enveloped(tmp_path, sd, meta(model_name="x", task="detect")))
+    assert (info["model_name"], info["task"]) == ("m", "segment")
+    assert (info["num_classes"], info["in_channels"]) == (7, 4)
+
+
+def test_meta_model_name_rescues_an_unknown_fingerprint(tmp_path):
+    sd = fake_sd()
+    sd["encoder.input_proj.0.conv.weight"] = torch.zeros(999, 8, 1, 1)
+    assert inspect(write_enveloped(tmp_path, sd, meta(model_name="xl")))["model_name"] == "xl"
+
+
+def test_meta_wins_over_the_sidecar_config(tmp_path):
+    p = write_enveloped(tmp_path, fake_sd(num_classes=2), meta())
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {"train": {"label_to_name": {0: "stale"}, "img_size": [640, 640], "keep_ratio": False}}
+        )
+    )
+    info = inspect(p)
+    assert info["names"] == {0: "cat", 1: "dog"}
+    assert info["img_size"] == (1024, 2048)
+    assert info["keep_ratio"] is True
+
+
+def test_sidecar_still_fills_in_when_meta_is_absent(tmp_path):
+    """Every released checkpoint is a bare state_dict; nothing about them changes."""
+    p = tmp_path / "model.pt"
+    torch.save({"model": fake_sd(num_classes=2)}, p)  # envelope without a meta block
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"train": {"label_to_name": {0: "cat", 1: "dog"}, "keep_ratio": True}})
+    )
+    info = inspect(p)
+    assert info["names"] == {0: "cat", 1: "dog"} and info["keep_ratio"] is True
+
+
+def test_meta_survives_weights_only_load(tmp_path):
+    """Plain python only - an OmegaConf node here would raise on every load."""
+    p = write_enveloped(tmp_path, fake_sd(num_classes=2), meta())
+    assert torch.load(p, weights_only=True)["meta"]["label_to_name"] == {0: "cat", 1: "dog"}
+
+
+def test_writer_and_reader_agree(tmp_path):
+    """The format has two ends in two modules; pin them to each other."""
+    from omegaconf import OmegaConf
+
+    from dfine_seg.dl.train import ckpt_meta
+    from dfine_seg.model.utils import save_checkpoint
+
+    cfg = OmegaConf.create(
+        {
+            "model_name": "m",
+            "task": "sem_seg",
+            "train": {
+                "label_to_name": {0: "road", 1: "car"},
+                "in_channels": 4,
+                "img_size": [1024, 2048],
+                "keep_ratio": True,
+            },
+        }
+    )
+    p = tmp_path / "model.pt"
+    save_checkpoint(
+        p, fake_sd(size="m", task="sem_seg", num_classes=2, in_channels=4), ckpt_meta(cfg)
+    )
+
+    info = inspect(p)
+    assert info["model_name"] == "m" and info["task"] == "sem_seg"
+    assert info["num_classes"] == 2 and info["in_channels"] == 4
+    assert info["names"] == {0: "road", 1: "car"}
+    assert info["img_size"] == (1024, 2048) and info["keep_ratio"] is True
