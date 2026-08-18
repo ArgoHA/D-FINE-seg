@@ -12,7 +12,7 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from torch import nn
 
-from dfine_seg._ckpt import describe
+from dfine_seg.api.ckpt import describe
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.model.configs import base_cfg
 from dfine_seg.model.dfine import build_model
@@ -160,7 +160,7 @@ def _check_pretrained_classes(ckpt: str, n_config: int) -> None:
             f"{Path(ckpt).name} has {n_ckpt} classes but train.label_to_name has {n_config}. "
             "export.from_pretrained cannot reconcile that: the mismatched heads would be "
             "dropped and exported at random init. Either list the checkpoint's classes "
-            "(dfine_seg.data.coco_names.COCO_NAMES for the released COCO weights), or train "
+            "(dfine_seg.api.coco_names.COCO_NAMES for the released COCO weights), or train "
             "on your own classes first and export with export.from_pretrained=False."
         )
 

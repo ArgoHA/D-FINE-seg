@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("gradio")  # the [demo] extra
 
-from dfine_seg.demo import parse_names, parse_size  # noqa: E402
+from dfine_seg.app.demo import parse_names, parse_size  # noqa: E402
 
 
 @pytest.mark.parametrize(

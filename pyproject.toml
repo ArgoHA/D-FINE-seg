@@ -71,7 +71,7 @@ export = [
 trt = ["tensorrt==10.13.3.9; sys_platform == 'linux'"]
 # SAM3 pre-annotation (dfine_seg/etl/sam_labels.py).
 label = ["transformers>=5.15.0"]
-# Gradio UI (dfine_seg/demo.py). Capped: the UI is written against gradio 6 components.
+# Gradio UI (dfine_seg/app/demo.py). Capped: the UI is written against gradio 6 components.
 demo = [
     "gradio>=6.16.0,<7",
     "python-multipart>=0.0.31",
@@ -93,7 +93,7 @@ all = [
 # release supports torch>=2.13.
 
 [project.scripts]
-dfine = "dfine_seg.cli:main"
+dfine = "dfine_seg.app.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ArgoHA/D-FINE-seg"

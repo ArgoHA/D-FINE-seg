@@ -44,7 +44,7 @@ def test_env_var_pointing_nowhere_raises(isolated, tmp_path_factory, monkeypatch
 def test_cli_reports_a_bad_env_var_instead_of_crashing(
     isolated, tmp_path_factory, monkeypatch, capsys
 ):
-    from dfine_seg import cli
+    from dfine_seg.app import cli
 
     empty = tmp_path_factory.mktemp("empty2")
     monkeypatch.setenv(ENV_VAR, str(empty))

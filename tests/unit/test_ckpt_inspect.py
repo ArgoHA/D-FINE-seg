@@ -11,7 +11,7 @@ import pytest
 import torch
 import yaml
 
-from dfine_seg._ckpt import _FINGERPRINT, inspect, sibling_config
+from dfine_seg.api.ckpt import _FINGERPRINT, inspect, sibling_config
 
 HIDDEN = {"n": 128, "s": 256, "m": 256, "l": 256, "x": 384}
 N_BACKBONE = {"n": 312, "s": 312, "m": 442, "l": 400, "x": 650}

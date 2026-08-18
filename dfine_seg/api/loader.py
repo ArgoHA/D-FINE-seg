@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Union
 import numpy as np
 from numpy.typing import NDArray
 
-from dfine_seg.data.coco_names import COCO_NAMES
+from dfine_seg.api.coco_names import COCO_NAMES
 from dfine_seg.model.utils import _FILENAME_RE, ensure_pretrained, pretrained_from_hub
 
 SIZES = ("n", "s", "m", "l", "x")

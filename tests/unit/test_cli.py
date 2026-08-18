@@ -5,7 +5,7 @@ import sys
 import pytest
 import yaml
 
-from dfine_seg import cli
+from dfine_seg.app import cli
 
 
 def run(monkeypatch, *argv) -> int:
@@ -313,14 +313,14 @@ def test_predict_writes_output_for_a_backend_without_task(monkeypatch, tmp_path)
 
 
 def _fake_demo(monkeypatch):
-    """Stand in for dfine_seg.demo so no UI is built and gradio isn't needed."""
+    """Stand in for dfine_seg.app.demo so no UI is built and gradio isn't needed."""
     import sys as _sys
     import types
 
     seen = {}
-    mod = types.ModuleType("dfine_seg.demo")
+    mod = types.ModuleType("dfine_seg.app.demo")
     mod.main = lambda *a: seen.setdefault("args", a)
-    monkeypatch.setitem(_sys.modules, "dfine_seg.demo", mod)
+    monkeypatch.setitem(_sys.modules, "dfine_seg.app.demo", mod)
     return seen
 
 
@@ -341,7 +341,7 @@ def test_demo_forwards_model_and_server_flags(monkeypatch):
 def test_demo_without_gradio_points_at_the_extra(monkeypatch, capsys):
     import sys as _sys
 
-    monkeypatch.setitem(_sys.modules, "dfine_seg.demo", None)  # makes the import raise
+    monkeypatch.setitem(_sys.modules, "dfine_seg.app.demo", None)  # makes the import raise
     assert cli._demo([]) == 1
     assert "dfine-seg[demo]" in capsys.readouterr().err
 

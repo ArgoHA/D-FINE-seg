@@ -134,7 +134,7 @@ def _demo(argv: List[str]) -> int:
     args = ap.parse_args(argv)
 
     try:
-        from dfine_seg.demo import main as demo_main
+        from dfine_seg.app.demo import main as demo_main
     except ImportError as e:
         print(f"{e}. Install it with `pip install 'dfine-seg[demo]'`", file=sys.stderr)
         return 1

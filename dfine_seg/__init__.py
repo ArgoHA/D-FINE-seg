@@ -12,7 +12,7 @@ print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
 (`TorchModel`, `TRTModel`, …), so its output contract is the wrapper's own.
 """
 
-from dfine_seg.loader import SIZES, TASKS, load_model, pretrained_path, read_image
+from dfine_seg.api.loader import SIZES, TASKS, load_model, pretrained_path, read_image
 
 __all__ = ["load_model", "read_image", "pretrained_path", "SIZES", "TASKS", "__version__"]
 

@@ -15,17 +15,22 @@ config.yaml                  # main Hydra config (edit this for most tasks)
 Makefile                     # thin wrappers around dfine <command>
 pretrained/                  # dfine_{n,s,m,l,x}_{coco,obj2coco}.pt — must exist before training
 dfine_seg/                   # import root (installable package)
-  __init__.py                # public API: load_model(), read_image()
-  loader.py                  # weight resolution + backend dispatch (returns infer/ wrappers)
+  __init__.py                # public surface: re-exports load_model(), read_image()
+  viz.py                     # Visualizer + sem_seg palette — shared by dl/ and app/
+  api/                       # load a model and know what it is; torch-only, no training stack
+    loader.py                #   weight resolution + backend dispatch (returns infer/ wrappers)
+    ckpt.py                  #   model_name / task / classes / img_size from a .pt
+    coco_names.py            #   bundled COCO class map
+  app/                       # the two things a person launches
+    cli.py                   #   `dfine` console script
+    demo.py                  #   Gradio UI ([demo] extra)
+  config/                    # packaged config
+    default.yaml             #   emitted by `dfine init`
+    resolve.py               #   finds the live config.yaml (env var -> cwd -> repo root)
   etl/                       # dataset prep: split, yolo2coco, coco2yolo, polys2bbox, …
   dl/                        # train.py, export.py, bench.py, infer.py, validator.py, ov_int8.py, …
   model/                     # model architecture (backbone, encoder, decoder, matcher, losses)
   infer/                     # multi-backend inference wrappers (torch, onnx, ov, trt, coreml, litert)
-  cli.py                     # `dfine` console script
-  viz.py                     # Visualizer + sem_seg palette — shared by dl/, cli, demo
-  data/coco_names.py         # bundled COCO class map
-  config/default.yaml        # packaged config emitted by `dfine init`
-  config/resolve.py          # finds the live config.yaml (env var -> cwd -> repo root)
 ```
 
 ## 3. Environment
@@ -243,7 +248,7 @@ dense label map at original resolution.
 
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [dfine_seg/infer/torch_model.py](dfine_seg/infer/torch_model.py).
 
-For interactive threshold tweaking, the Gradio UI ([dfine_seg/demo.py](dfine_seg/demo.py), `dfine demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable. It binds **127.0.0.1** by default — the Model panel loads any path the browser sends, so exposing it needs an explicit `--host 0.0.0.0` (which prints a warning).
+For interactive threshold tweaking, the Gradio UI ([dfine_seg/app/demo.py](dfine_seg/app/demo.py), `dfine demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable. It binds **127.0.0.1** by default — the Model panel loads any path the browser sends, so exposing it needs an explicit `--host 0.0.0.0` (which prints a warning).
 
 Important to note: inference wrappers under /infer are standalone scripts that are usually taken with the model file and used in users' applications, outside of this repo.
 
@@ -371,7 +376,7 @@ uv run python -m tests.generate_fixtures
 
 Two entry surfaces on top of the pipeline, both thin:
 
-**Python** — [dfine_seg/loader.py](dfine_seg/loader.py), re-exported from `dfine_seg/__init__.py`:
+**Python** — [dfine_seg/api/loader.py](dfine_seg/api/loader.py), re-exported from `dfine_seg/__init__.py`:
 
 ```python
 from dfine_seg import load_model, read_image
@@ -407,7 +412,7 @@ Weight resolution: `load_model("s")` with no `weights_dir` reuses a clone's `pre
 file is already there, and otherwise the shared HF cache. `hf_hub_download(local_dir=…)` bypasses
 that cache, so defaulting to `pretrained/` re-downloaded once per working directory.
 
-**Checkpoint auto-detect** — [dfine_seg/_ckpt.py](dfine_seg/_ckpt.py). A `.pt` is a bare
+**Checkpoint auto-detect** — [dfine_seg/api/ckpt.py](dfine_seg/api/ckpt.py). A `.pt` is a bare
 `state_dict()`, so `TorchModel` recovers its architecture the way the other backends read theirs
 from a graph: `num_classes` from `decoder.enc_score_head.weight.shape[0]` (or
 `decoder.classifier.weight` for sem_seg); `task` from mask-decoder / sem-seg head key presence;
@@ -427,14 +432,14 @@ every graph artifact carries its input size in the graph. The Hydra commands
 explicitly, so the live config keeps winning over the frozen one there.
 
 Class names, which weights cannot carry, resolve: explicit `names=` → the frozen `config.yaml`
-training saves beside the checkpoint → bundled [COCO map](dfine_seg/data/coco_names.py) when the
+training saves beside the checkpoint → bundled [COCO map](dfine_seg/api/coco_names.py) when the
 filename is a released one → `None`. There is deliberately **no** reader for metadata embedded in
 the `.pt`: nothing writes that format, and four other places load checkpoints directly
 (`dl/export.py`, `dl/train.py`, `model/utils.py`, `infer/torch_compile_model.py`), so a reader
 here alone would give a false impression of readiness. If that format is ever introduced, unwrap
 it in one shared helper all five call.
 
-**CLI** — [dfine_seg/cli.py](dfine_seg/cli.py), console script `dfine` (short on purpose; the
+**CLI** — [dfine_seg/app/cli.py](dfine_seg/app/cli.py), console script `dfine` (short on purpose; the
 distribution stays `dfine-seg`, since the bare name belongs to upstream D-FINE). `init` writes a
 `config.yaml`; every other subcommand imports the matching module and calls its `@hydra.main`
 `main()` with `sys.argv` rewritten, so Hydra overrides pass through untouched. `train` reads

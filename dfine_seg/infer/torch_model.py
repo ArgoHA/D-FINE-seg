@@ -7,7 +7,7 @@ from loguru import logger
 from numpy.typing import NDArray
 from torchvision.ops import nms
 
-from dfine_seg._ckpt import load_and_describe
+from dfine_seg.api.ckpt import load_and_describe
 from dfine_seg.model.dfine import build_model
 
 

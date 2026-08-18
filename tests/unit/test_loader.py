@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 
 from dfine_seg import SIZES, TASKS, load_model, pretrained_path, read_image
-from dfine_seg.data.coco_names import COCO_NAMES
-from dfine_seg.loader import _BACKENDS
+from dfine_seg.api.coco_names import COCO_NAMES
+from dfine_seg.api.loader import _BACKENDS
 
 
 @pytest.fixture
@@ -111,9 +111,9 @@ def test_dispatch_passes_kwargs_and_path(tmp_path, monkeypatch):
         def __init__(self, path, **kw):
             seen["path"], seen["kw"] = path, kw
 
-    import dfine_seg.loader as loader
+    import dfine_seg.api.loader as loader
 
-    monkeypatch.setitem(loader._BACKENDS, ".pt", ("dfine_seg.loader", "Fake"))
+    monkeypatch.setitem(loader._BACKENDS, ".pt", ("dfine_seg.api.loader", "Fake"))
     monkeypatch.setattr(loader, "Fake", Fake, raising=False)
     ckpt = tmp_path / "model.pt"
     ckpt.touch()
@@ -130,9 +130,9 @@ def test_task_forwarded_for_path_loads(tmp_path, monkeypatch):
         def __init__(self, path, **kw):
             seen.update(kw)
 
-    import dfine_seg.loader as loader
+    import dfine_seg.api.loader as loader
 
-    monkeypatch.setitem(loader._BACKENDS, ".pt", ("dfine_seg.loader", "Fake"))
+    monkeypatch.setitem(loader._BACKENDS, ".pt", ("dfine_seg.api.loader", "Fake"))
     monkeypatch.setattr(loader, "Fake", Fake, raising=False)
     ckpt = tmp_path / "model.pt"
     ckpt.touch()
@@ -150,9 +150,9 @@ def test_task_not_forwarded_to_graph_backends(tmp_path, monkeypatch, suffix):
         def __init__(self, path, **kw):
             seen.update(kw)
 
-    import dfine_seg.loader as loader
+    import dfine_seg.api.loader as loader
 
-    monkeypatch.setitem(loader._BACKENDS, suffix, ("dfine_seg.loader", "Fake"))
+    monkeypatch.setitem(loader._BACKENDS, suffix, ("dfine_seg.api.loader", "Fake"))
     monkeypatch.setattr(loader, "Fake", Fake, raising=False)
     artifact = tmp_path / f"model{suffix}"
     artifact.touch()
@@ -165,7 +165,7 @@ def _wrapper_for(suffix):
     import inspect as _inspect
     from importlib import import_module
 
-    from dfine_seg.loader import _BACKENDS
+    from dfine_seg.api.loader import _BACKENDS
 
     module_name, class_name = _BACKENDS[suffix]
     try:
@@ -206,9 +206,9 @@ def _fake_backend(monkeypatch, wrapper_names=None):
             if wrapper_names is not None:
                 self.names = wrapper_names
 
-    import dfine_seg.loader as loader
+    import dfine_seg.api.loader as loader
 
-    monkeypatch.setitem(loader._BACKENDS, ".pt", ("dfine_seg.loader", "Fake"))
+    monkeypatch.setitem(loader._BACKENDS, ".pt", ("dfine_seg.api.loader", "Fake"))
     monkeypatch.setattr(loader, "Fake", Fake, raising=False)
 
 
