@@ -3,7 +3,7 @@
 All three prediction panels use S models trained on Cityscapes (paths under ROOT below).
 Renders one mosaic per --image. The committed assets/mosaic.jpg was made with:
 
-    uv run python scripts/make_mosaic.py --images munster_000165_000019 --out-dir assets
+    uv run python paper_assets/make_mosaic.py --images munster_000165_000019 --out-dir assets
 """
 
 import argparse
@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from dfine_seg.dl.utils import Visualizer, overlay_sem_seg, sem_seg_palette
 from dfine_seg.infer.torch_model import TorchModel
+from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
 
 ROOT = Path("/home/argo/Desktop/Projects/cityscapes")
 IMG_DIR = ROOT / "data/dataset/images"

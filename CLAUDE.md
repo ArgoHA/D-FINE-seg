@@ -251,7 +251,7 @@ dense label map at original resolution.
 
 Checkpoint used: `${train.path_to_save}/model.pt`. Threshold knobs: `train.conf_thresh`, `train.iou_thresh`. NMS IoU is set inside [dfine_seg/infer/torch_model.py](dfine_seg/infer/torch_model.py).
 
-For interactive threshold tweaking, the Gradio UI ([dfine_seg/app/demo.py](dfine_seg/app/demo.py), `dfine demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable. It binds **127.0.0.1** by default — the Model panel loads any path the browser sends, so exposing it needs an explicit `--host 0.0.0.0` (which prints a warning).
+For interactive threshold tweaking, the Gradio UI ([dfine_seg/app/demo.py](dfine_seg/app/demo.py), `dfine demo`) exposes a threshold slider. It opens on COCO detection `s` and swaps models from the page, so it needs no config and no edits; it lives inside the package because the `[demo]` extra has to ship something runnable. It binds **0.0.0.0** by default (LAN-reachable) and prints a warning on every launch: the Model panel loads any path the browser sends, so anyone who can reach the port can load files off this machine. `dfine demo --host 127.0.0.1` restores local-only.
 
 Important to note: inference wrappers under /infer are standalone scripts that are usually taken with the model file and used in users' applications, outside of this repo.
 

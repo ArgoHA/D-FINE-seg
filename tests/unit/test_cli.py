@@ -327,8 +327,8 @@ def _fake_demo(monkeypatch):
 def test_demo_defaults(monkeypatch):
     seen = _fake_demo(monkeypatch)
     assert run(monkeypatch, "demo") == 0
-    # loopback, not 0.0.0.0: the page loads arbitrary local paths as models
-    assert seen["args"] == ("s", "auto", "127.0.0.1", 7860, False)
+    # LAN-reachable by default (the page loads arbitrary local paths as models)
+    assert seen["args"] == ("s", "auto", "0.0.0.0", 7860, False)
 
 
 def test_demo_forwards_model_and_server_flags(monkeypatch):

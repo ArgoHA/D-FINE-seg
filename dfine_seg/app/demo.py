@@ -463,7 +463,7 @@ def build_ui(model: str = DEFAULT_MODEL, task: str = DEFAULT_TASK) -> gr.Blocks:
 def main(
     model: str = DEFAULT_MODEL,
     task: str = DEFAULT_TASK,
-    host: str = "127.0.0.1",  # loopback: the page loads arbitrary local paths as models
+    host: str = "0.0.0.0",  # LAN-reachable: the page loads arbitrary local paths as models
     port: int = 7860,
     share: bool = False,
 ) -> None:

@@ -14,8 +14,9 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from tqdm import tqdm
 
-from dfine_seg.dl.utils import Visualizer, get_latest_experiment_name
+from dfine_seg.dl.utils import get_latest_experiment_name
 from dfine_seg.infer.trt_model import TRTModel
+from dfine_seg.viz import Visualizer
 
 
 def open_capture(source) -> cv2.VideoCapture:

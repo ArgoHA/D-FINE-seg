@@ -310,7 +310,7 @@ make demo          # == dfine demo   (pip: pip install 'dfine-seg[demo]')
 
 A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation.
 
-It serves on `127.0.0.1:7860`. Because that Model panel loads any path the browser sends, reaching it from another machine is opt-in: `dfine demo --host 0.0.0.0`.
+It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the Model panel loads any path the browser sends, so anyone who can reach the port can load files off this machine. `dfine demo --host 127.0.0.1` restores local-only.
 
 ## Benchmarks
 

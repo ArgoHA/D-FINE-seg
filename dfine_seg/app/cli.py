@@ -128,7 +128,7 @@ def _demo(argv: List[str]) -> int:
     ap = argparse.ArgumentParser(prog="dfine demo")
     ap.add_argument("model", nargs="?", default="s", help="model to open with (size or path)")
     ap.add_argument("--task", choices=("detect", "segment", "sem_seg"), default="auto")
-    ap.add_argument("--host", default="127.0.0.1", help="bind address; 0.0.0.0 for the LAN")
+    ap.add_argument("--host", default="0.0.0.0", help="bind address; 127.0.0.1 for local-only")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--share", action="store_true", help="public gradio.live tunnel")
     args = ap.parse_args(argv)
