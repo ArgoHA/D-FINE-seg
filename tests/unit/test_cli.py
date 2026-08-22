@@ -321,7 +321,11 @@ def test_main_runs_train_export_bench_in_order(monkeypatch):
 
     monkeypatch.setattr(cli, "_run", fake_run)
     assert cli._main_pipeline(["model_name=m"]) == 0
-    assert seen == [("train", ["model_name=m"]), ("export", ["model_name=m"]), ("bench", ["model_name=m"])]
+    assert seen == [
+        ("train", ["model_name=m"]),
+        ("export", ["model_name=m"]),
+        ("bench", ["model_name=m"]),
+    ]
 
 
 def test_main_stops_at_the_first_failure(monkeypatch):
