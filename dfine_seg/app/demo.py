@@ -476,6 +476,9 @@ def main(
             f"WARNING: serving on {host} - anyone who can reach this port can load "
             "any file on this machine as a model"
         )
+    # 0.0.0.0 is a bind address, not a thing a browser can open.
+    click = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    print(f"Open http://{click}:{port} in your browser")
     build_ui(model, task).launch(server_name=host, server_port=port, share=share)
 
 
