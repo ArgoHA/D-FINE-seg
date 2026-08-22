@@ -14,8 +14,9 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from tqdm import tqdm
 
-from src.dl.utils import Visualizer, get_latest_experiment_name
-from src.infer.trt_model import TRT_model
+from dfine_seg.dl.utils import get_latest_experiment_name
+from dfine_seg.infer.trt_model import TRTModel
+from dfine_seg.viz import Visualizer
 
 
 def open_capture(source) -> cv2.VideoCapture:
@@ -408,7 +409,7 @@ def main(cfg: DictConfig):
     source = Path(cfg.train.path_to_test_data) / "test.mp4"
     max_frames = cfg.train.get("max_frames", None)
 
-    model = TRT_model(
+    model = TRTModel(
         model_path=Path(cfg.train.path_to_save) / "model.engine",
         n_outputs=len(cfg.train.label_to_name),
         conf_thresh=0.5,

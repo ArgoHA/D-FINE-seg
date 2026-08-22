@@ -1,51 +1,123 @@
 [project]
-name = "d-fine-seg"
-version = "0.2.0"
+name = "dfine-seg"
+version = "0.3.0"
 description = "D-FINE-seg: detection + instance + semantic segmentation framework"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
-dependencies = [
-    "albumentations==2.0.8",
-    "coremltools==9.0",
-    "difPy==4.2.1",
-    "faster-coco-eval==1.6.5",
-    "gradio==6.16.0",
-    "huggingface-hub==1.13.0",
-    "hydra-core==1.3.2",
-    # "litert-torch==0.9.1",  # PAUSED: caps torch<2.13.0; re-add when a release supports torch>=2.13
-    "loguru==0.7.2",
-    "matplotlib==3.10.3",
-    "nncf==2.18.0",
-    "numpy==2.1.1",
-    "omegaconf==2.3.0",
-    "onnx==1.22.0",
-    "onnxconverter-common==1.16.0",
-    "onnxruntime==1.21.1",
-    "onnxscript==0.7.1",
-    "onnxsim==0.4.36; sys_platform == 'linux'",
-    "opencv-python-headless==4.10.0.84",
-    "openvino==2025.2.0",
-    "pandas==2.2.3",
-    "pillow==12.3.0",
-    "pillow-heif==1.4.0",
-    "protobuf==6.33.5",
-    "pycocotools==2.0.8",
-    "pyyaml==6.0.2",
-    "scikit-learn==1.7.0",
-    "scipy==1.15.1",
-    "tabulate==0.9.0",
-    "tensorrt==10.13.3.9; sys_platform == 'linux'",
-    "torch==2.13.0",
-    "torchmetrics==1.9.0",
-    "torchvision==0.28.0",
-    "tqdm==4.66.5",
-    "wandb==0.26.1",
-    "python-multipart==0.0.31",
-    "starlette>=1.3.1"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Argo Saakyan", email = "argo.cve@gmail.com" }]
+keywords = [
+    "object-detection",
+    "instance-segmentation",
+    "semantic-segmentation",
+    "d-fine",
+    "detr",
+    "pytorch",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+# Core = torch inference + training. Export backends are opt-in (see optional-dependencies).
+# Floors, not pins: exact pins would force a downgrade on anyone who already has a newer
+# numpy/torch. uv.lock is what keeps dev and CI on exact versions.
+dependencies = [
+    "albumentations>=2.0.8",
+    "faster-coco-eval>=1.6.5",
+    "huggingface-hub>=1.13.0",
+    "hydra-core>=1.3.4",
+    "loguru>=0.7.2",
+    "matplotlib>=3.10.3",
+    "numpy>=2.1.1",
+    "omegaconf>=2.3.0",
+    "opencv-python-headless>=4.10.0.84",
+    "pandas>=2.2.3",
+    "pillow>=12.3.0",
+    "pyyaml>=6.0.2",
+    "scikit-learn>=1.7.0",
+    "scipy>=1.15.1",
+    "tabulate>=0.9.0",
+    "torch>=2.13.0",
+    "torchmetrics>=1.9.0",
+    "torchvision>=0.28.0",
+    "tqdm>=4.66.5",
+    "wandb>=0.26.1",
+]
+
+[project.optional-dependencies]
+# `make export` / `dfine export` backends. Large, so opt-in. nncf and openvino are
+# capped at the tested major: a silent API change there yields a bad artifact, not an error.
+export = [
+    "coremltools>=9.0",
+    "nncf>=2.18.0,<3",
+    "onnx>=1.22.0",
+    "onnxconverter-common>=1.16.0",
+    "onnxruntime>=1.21.1",
+    "onnxscript>=0.7.1",
+    "onnxsim>=0.4.36; sys_platform == 'linux'",
+    "openvino>=2025.2.0,<2026",
+]
+# ~1 GB of CUDA-specific wheels; the engine must be built on the target GPU anyway.
+# Exact on purpose: the [[tool.uv.dependency-metadata]] override that keeps this on cu12
+# is keyed to this version, and a float once flipped the lock to tensorrt-cu13.
+trt = ["tensorrt==10.13.3.9; sys_platform == 'linux'"]
+# SAM3 pre-annotation (dfine_seg/etl/sam_labels.py).
+label = ["transformers>=5.15.0"]
+# Gradio UI (dfine_seg/app/demo.py). Capped: the UI is written against gradio 6 components.
+demo = [
+    "gradio>=6.16.0,<7",
+    "python-multipart>=0.0.31",
+    "starlette>=1.3.1",
+]
+# Niche single-script ETL helpers: remove_dups.py, preprocess.py.
+extra = [
+    "difPy>=4.2.1",
+    "pillow-heif>=1.4.0",
+]
+all = [
+    "dfine-seg[export]",
+    "dfine-seg[trt]",
+    "dfine-seg[label]",
+    "dfine-seg[demo]",
+    "dfine-seg[extra]",
+]
+# NOTE: litert-torch is paused - it caps torch<2.13.0. Re-add a `litert` extra when a
+# release supports torch>=2.13.
+
+[project.scripts]
+dfine = "dfine_seg.app.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ArgoHA/D-FINE-seg"
+Repository = "https://github.com/ArgoHA/D-FINE-seg"
+Issues = "https://github.com/ArgoHA/D-FINE-seg/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# dfine_seg/config/default.yaml and dfine_seg/data/ ride along as package data.
+packages = ["dfine_seg"]
+
+[tool.hatch.build.targets.sdist]
+# No root config.yaml: it is the dev machine's live config (absolute paths, private class
+# map). The sanitized twin ships inside the package as dfine_seg/config/default.yaml.
+include = ["dfine_seg", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [dependency-groups]
 dev = [
+    # Pull every extra into the default dev sync so `uv sync` / `uv run` keep the full
+    # clone workflow (export, trt, demo, …) working without extra flags.
+    "dfine-seg[all]",
     "pre-commit>=4.6.0",
     "pytest>=8",
     "pytest-xdist>=3",
@@ -68,12 +140,17 @@ filterwarnings = [
 ]
 
 [tool.uv]
-package = false
+# The dev group depends on dfine-seg[all], so a plain `uv sync` still installs every
+# extra and the clone workflow is unchanged. (uv 0.11 has no `default-extras` key.)
+default-groups = ["dev"]
 # Lock for both dev (mac) and training (linux) so uv.lock is portable.
 environments = [
     "sys_platform == 'darwin'",
     "sys_platform == 'linux'",
 ]
+
+[tool.uv.sources]
+dfine-seg = { workspace = true }
 
 [[tool.uv.dependency-metadata]]
 name = "tensorrt"

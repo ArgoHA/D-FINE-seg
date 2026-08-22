@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 from loguru import logger
 
-from src.dl.dataset import load_coco_split
-from src.dl.utils import poly_abs_to_mask
+from dfine_seg.dl.dataset import load_coco_split
+from dfine_seg.dl.utils import poly_abs_to_mask
 
 
 def _square(x, y, side):

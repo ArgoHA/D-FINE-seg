@@ -1,0 +1,442 @@
+from typing import Dict, List, Tuple
+
+import cv2
+import numpy as np
+import onnxruntime as ort
+import torch
+from numpy.typing import NDArray
+from torchvision.ops import nms
+
+
+class ONNXModel:
+    def __init__(
+        self,
+        model_path: str,
+        conf_thresh: float | List[float] = 0.5,
+        binarize_masks: bool = True,
+        mask_threshold: float = 0.5,
+        rect: bool = False,
+        keep_ratio: bool = False,
+        device: str | None = None,
+        apply_nms: bool = True,
+        nms_iou_thresh: float = 0.7,
+        labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
+    ):
+        self.model_path = model_path
+        self.rect = rect
+        self.keep_ratio = keep_ratio
+        self.binarize_masks = binarize_masks
+        self.mask_threshold = mask_threshold
+        self.np_dtype = np.float32
+
+        self.device = device or "cpu"
+        self.apply_nms = apply_nms
+        self.nms_iou_thresh = nms_iou_thresh
+        self.labels_to_use = labels_to_use or []
+
+        self._load_model()
+        self._read_model_metadata()
+
+        # No class count anywhere: the fused graph emits labels, and a per-class list carries
+        # its own length.
+        scalar = isinstance(conf_thresh, (int, float))
+        self.conf_thresh = float(conf_thresh) if scalar else None
+        self.conf_threshs = None if scalar else list(conf_thresh)
+        if scalar and not 0.0 <= self.conf_thresh <= 1.0:
+            # Catches the old `Model(path, n_outputs)` positional call, which would otherwise
+            # land the class count in conf_thresh and silently return nothing.
+            raise ValueError(
+                f"conf_thresh must be in [0, 1], got {conf_thresh!r}. The n_outputs argument "
+                "was removed - this wrapper reads everything it needs from the graph."
+            )
+
+        self._test_pred()
+
+    def _load_model(self) -> None:
+        providers = ["CUDAExecutionProvider"] if self.device == "cuda" else ["CPUExecutionProvider"]
+        provider_options = (
+            [{"cudnn_conv_algo_search": "DEFAULT"}] if self.device == "cuda" else [{}]
+        )
+        self.model = ort.InferenceSession(
+            self.model_path, providers=providers, provider_options=provider_options
+        )
+        print(f"ONNX model loaded: {self.model_path} on {self.device}")
+
+    def _read_model_metadata(self):
+        """Auto-read input_size, channel count, and detect graph type from the ONNX model."""
+        inp = self.model.get_inputs()[0]
+        self.channels = int(inp.shape[1])
+        self.input_size = (inp.shape[2], inp.shape[3])  # (H, W)
+        # single output = sem_seg fused-argmax graph; detection graphs have >= 3
+        self.sem_seg = len(self.model.get_outputs()) == 1
+        self.has_masks = len(self.model.get_outputs()) > 3
+
+    def _test_pred(self) -> None:
+        dummy = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
+        proc, proc_sz, orig_sz = self._prepare_inputs(dummy)
+        out = self._predict(proc)
+        self._postprocess(out, proc_sz, orig_sz)
+
+    @staticmethod
+    def rescale_boxes(boxes, processed_sizes, orig_sizes, keep_ratio):
+        """Rescale absolute xyxy boxes from input-size space to original image size."""
+        out = boxes.clone()
+        for i in range(boxes.shape[0]):
+            if keep_ratio:
+                out[i] = scale_boxes_ratio_kept(out[i], processed_sizes[i], orig_sizes[i])
+            else:
+                out[i] = scale_boxes(out[i], orig_sizes[i], processed_sizes[i])
+        return out
+
+    @staticmethod
+    def process_masks(
+        pred_masks,  # Tensor [B, Q, Hm, Wm] or [Q, Hm, Wm]
+        processed_size,  # (H, W) of network input (after your A.Compose)
+        orig_sizes,  # sequence of B (H, W) pairs - keep it on the host, it is only read there
+        keep_ratio: bool,
+    ) -> List[torch.Tensor]:
+        """Resize masks to original size (half on CUDA), handling letterbox padding if needed."""
+        single = pred_masks.dim() == 3  # [Q,Hm,Wm]
+        if single:
+            pred_masks = pred_masks.unsqueeze(0)  # -> [1,Q,Hm,Wm]
+
+        B, Q, Hm, Wm = pred_masks.shape
+        proc_h, proc_w = int(processed_size[0]), int(processed_size[1])
+
+        out = []
+        for b in range(B):
+            H0, W0 = int(orig_sizes[b][0]), int(orig_sizes[b][1])
+            m = pred_masks[b]  # [Q, Hm, Wm]
+
+            if keep_ratio:
+                # Compute same gain/pad as in scale_boxes_ratio_kept
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+
+                # Calculate crop region in mask space (scaled from processed_size to mask_size)
+                scale_h, scale_w = Hm / proc_h, Wm / proc_w
+                y1 = int(max(padh, 0) * scale_h)
+                y2 = int((proc_h - max(padh, 0)) * scale_h)
+                x1 = int(max(padw, 0) * scale_w)
+                x2 = int((proc_w - max(padw, 0)) * scale_w)
+                m = m[:, y1:y2, x1:x2]  # [Q, cropped_h, cropped_w]
+
+            # Single resize directly to original size, in fp16 on GPU: this is the largest
+            # tensor in postprocess ([Q, H0, W0]) and it is only compared against a
+            # threshold afterwards. No clamp - bilinear of values already in [0,1] is a
+            # convex combination, so it cannot leave [0,1].
+            if m.is_cuda:  # on CPU, half interpolate is ~1.7x slower than float
+                m = m.half()
+            m = torch.nn.functional.interpolate(
+                m.unsqueeze(0), size=(H0, W0), mode="bilinear", align_corners=False
+            ).squeeze(0)  # [Q, H0, W0]
+            out.append(m)
+
+        return [out[0]] if single else out
+
+    def _compute_nearest_size(self, shape, target_size, stride=32) -> Tuple[int, int]:
+        """Get nearest size that is divisible by 32"""
+        scale = target_size / max(shape)
+        new_shape = [int(round(dim * scale)) for dim in shape]
+        return [max(stride, int(np.ceil(dim / stride) * stride)) for dim in new_shape]
+
+    def _preprocess(self, img: NDArray, stride: int = 32, bgr: bool = True) -> torch.tensor:
+        if not self.keep_ratio:  # simple resize
+            img = cv2.resize(
+                img, (self.input_size[1], self.input_size[0]), interpolation=cv2.INTER_LINEAR
+            )
+        elif self.rect:  # keep ratio and cut paddings
+            target_height, target_width = self._compute_nearest_size(
+                img.shape[:2], max(*self.input_size)
+            )
+            img = letterbox(img, (target_height, target_width), stride=stride, auto=False)[0]
+        else:  # keep ratio adding paddings
+            img = letterbox(
+                img, (self.input_size[0], self.input_size[1]), stride=stride, auto=False
+            )[0]
+
+        # 3ch BGR (cv2.imread) needs a swap; 3ch .npy is RGB already; >3ch is RGB+extras.
+        if self.channels == 3 and bgr:
+            img = img[:, :, ::-1].transpose(2, 0, 1)
+        else:
+            img = img.transpose(2, 0, 1)
+        img = np.ascontiguousarray(img, dtype=self.np_dtype)
+        img /= 255.0
+        return img
+
+    def _prepare_inputs(self, inputs, bgr: bool = True):
+        original_sizes = []
+        processed_sizes = []
+
+        if isinstance(inputs, np.ndarray) and inputs.ndim == 3:  # single image
+            processed_inputs = self._preprocess(inputs, bgr=bgr)[None]
+            original_sizes.append((inputs.shape[0], inputs.shape[1]))
+            processed_sizes.append((processed_inputs[0].shape[1], processed_inputs[0].shape[2]))
+
+        elif isinstance(inputs, np.ndarray) and inputs.ndim == 4:  # batch of images
+            processed_inputs = np.zeros(
+                (inputs.shape[0], self.channels, self.input_size[0], self.input_size[1]),
+                dtype=self.np_dtype,
+            )
+            for idx, image in enumerate(inputs):
+                processed_inputs[idx] = self._preprocess(image, bgr=bgr)
+                original_sizes.append((image.shape[0], image.shape[1]))
+                processed_sizes.append(
+                    (processed_inputs[idx].shape[1], processed_inputs[idx].shape[2])
+                )
+        return processed_inputs, processed_sizes, original_sizes
+
+    def _predict(self, inputs: NDArray) -> List[NDArray]:
+        ort_inputs = {self.model.get_inputs()[0].name: inputs.astype(self.np_dtype)}
+        return self.model.run(None, ort_inputs)
+
+    def _postprocess_sem_seg(
+        self, outputs, processed_sizes, original_sizes
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Fused-argmax graph: NEAREST-resize each label map to its original size."""
+        maps = np.asarray(outputs[0])  # [B, H, W] int
+        if self.labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
+            maps = np.where(np.isin(maps, self.labels_to_use), maps, 255)
+        results = []
+        for b in range(maps.shape[0]):
+            m = maps[b].astype(np.uint8)
+            H0, W0 = int(original_sizes[b][0]), int(original_sizes[b][1])
+            if self.keep_ratio:
+                proc_h, proc_w = int(processed_sizes[b][0]), int(processed_sizes[b][1])
+                gain = min(proc_h / H0, proc_w / W0)
+                padw = round((proc_w - W0 * gain) / 2 - 0.1)
+                padh = round((proc_h - H0 * gain) / 2 - 0.1)
+                m = m[max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)]
+            m = cv2.resize(m, (W0, H0), interpolation=cv2.INTER_NEAREST)
+            results.append({"sem_seg": torch.from_numpy(m)})
+        return results
+
+    def _postprocess(
+        self,
+        outputs: List[NDArray],
+        processed_sizes: List[Tuple[int, int]],
+        original_sizes: List[Tuple[int, int]],
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Confidence filtering + box rescaling + mask resize."""
+        if self.sem_seg:
+            return self._postprocess_sem_seg(outputs, processed_sizes, original_sizes)
+        labels = torch.from_numpy(outputs[0])  # [B, K]
+        boxes = torch.from_numpy(outputs[1])  # [B, K, 4], absolute xyxy in input_size space
+        scores = torch.from_numpy(outputs[2])  # [B, K]
+        pred_masks = torch.from_numpy(outputs[3]) if self.has_masks else None  # [B, K, Hm, Wm]
+        B = labels.shape[0]
+
+        boxes = self.rescale_boxes(boxes, processed_sizes, original_sizes, self.keep_ratio)
+
+        results = []
+        for b in range(B):
+            sb, lb, bb = scores[b], labels[b], boxes[b]
+
+            # Apply per-class confidence thresholds
+            if self.conf_threshs is not None:
+                conf_t = torch.tensor(self.conf_threshs, device=sb.device)
+                conf_keep = sb >= conf_t[lb]
+            else:
+                conf_keep = sb >= self.conf_thresh
+            if self.labels_to_use:  # restrict to requested class ids
+                lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
+                conf_keep &= torch.isin(lb, lbl_set)
+            # index once and reuse: boolean indexing would re-run nonzero (and re-sync) per tensor
+            keep_indices = torch.nonzero(conf_keep, as_tuple=True)[0]
+            sb, lb, bb = sb[keep_indices], lb[keep_indices], bb[keep_indices]
+
+            if self.apply_nms and bb.numel() > 0:
+                nms_keep = nms(bb, sb, self.nms_iou_thresh)
+                sb, lb, bb = sb[nms_keep], lb[nms_keep], bb[nms_keep]
+                keep_indices = keep_indices[nms_keep]
+
+            out = {"labels": lb, "boxes": bb, "scores": sb}
+
+            if pred_masks is not None and lb.numel() > 0:
+                mb = pred_masks[b][keep_indices]  # [N, Hm, Wm]
+                # resize to original size (list of length 1)
+                masks_list = self.process_masks(
+                    mb.unsqueeze(0),
+                    processed_size=processed_sizes[b],
+                    orig_sizes=[original_sizes[b]],  # host-side (H, W)
+                    keep_ratio=self.keep_ratio,
+                )
+                out["masks"] = masks_list[0]  # [K, H, W]
+                if self.binarize_masks:
+                    # torch bool is one byte holding 0/1, so reinterpreting it as uint8 is
+                    # free; .to(uint8) would copy a tensor the size of the source image.
+                    out["masks"] = (out["masks"] >= self.mask_threshold).view(torch.uint8)
+                else:
+                    out["masks"] = out["masks"].float()
+                # clean up masks outside of the corresponding bbox
+                out["masks"] = cleanup_masks(out["masks"], out["boxes"])
+
+            results.append(out)
+        return results
+
+    def __call__(
+        self, inputs: NDArray[np.uint8], bgr: bool = True
+    ) -> List[Dict[str, torch.Tensor]]:
+        """
+        Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
+        3-channel inputs already in RGB order (e.g., ``.npy`` read via
+        ``read_image_hwc``); ignored for >3 channels.
+        Output:
+            List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
+            labels: torch.Tensor of shape (N,), dtype int64
+            boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
+            scores: torch.Tensor of shape (N,), dtype float32
+            masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            sem_seg models instead return {"sem_seg": uint8 (H, W) dense label map} per image.
+        """
+        processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
+        preds = self._predict(processed_inputs)
+        return self._postprocess(preds, processed_sizes, original_sizes)
+
+    @staticmethod
+    def mask2poly(masks: np.ndarray, img_shape: Tuple[int, int]) -> List[np.ndarray]:
+        """
+        Convert binary masks to normalized polygon coordinates for YOLO segmentation format.
+
+        Args:
+            masks: Binary masks array of shape [N, H, W] where N is number of instances
+            img_shape: Tuple of (height, width) of the original image
+
+        Returns:
+            List of normalized polygon coordinates, each as array of shape [num_points, 2]
+            with values in range [0, 1]. Returns empty array for invalid masks.
+        """
+        h, w = img_shape[:2]
+        polys = []
+
+        for mask in masks:
+            if not isinstance(mask, np.ndarray):
+                mask = mask.numpy()
+            mask = (mask > 0.5).astype(np.uint8)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                # Get the largest contour
+                contour = max(contours, key=cv2.contourArea)
+                contour = contour.reshape(-1, 2)
+                if len(contour) >= 3:  # Need at least 3 points for a valid polygon
+                    # Normalize coordinates
+                    norm_contour = contour.astype(np.float32)
+                    norm_contour[:, 0] /= w
+                    norm_contour[:, 1] /= h
+                    polys.append(norm_contour)
+                else:
+                    polys.append(np.array([]))
+            else:
+                polys.append(np.array([]))
+
+        return polys
+
+
+def letterbox(
+    im,
+    new_shape=(640, 640),
+    color=None,
+    auto=True,
+    scale_fill=False,
+    scaleup=True,
+    stride=32,
+):
+    # Resize and pad image while meeting stride-multiple constraints
+    shape = im.shape[:2]  # current shape [height, width]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+    if color is None:
+        c = im.shape[2] if im.ndim == 3 else 1
+        color = tuple([114] * c)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    if not scaleup:  # only scale down, do not scale up (for better val mAP)
+        r = min(r, 1.0)
+
+    # Compute padding
+    ratio = r, r  # initial uniform width, height ratios (may be updated below)
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif scale_fill:  # stretch
+        dw, dh = 0.0, 0.0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    if shape[::-1] != new_unpad:  # resize
+        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(np.floor(dh)), int(np.ceil(dh))
+    left, right = int(np.floor(dw)), int(np.ceil(dw))
+    im = cv2.copyMakeBorder(
+        im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color
+    )  # add border
+    return im, ratio, (dw, dh)
+
+
+def clip_boxes(boxes, shape):
+    # Clip boxes (xyxy) to image shape (height, width)
+    if isinstance(boxes, torch.Tensor):  # faster individually
+        boxes[..., 0].clamp_(0, shape[1])  # x1
+        boxes[..., 1].clamp_(0, shape[0])  # y1
+        boxes[..., 2].clamp_(0, shape[1])  # x2
+        boxes[..., 3].clamp_(0, shape[0])  # y2
+    else:  # np.array (faster grouped)
+        boxes[..., [0, 2]] = boxes[..., [0, 2]].clip(0, shape[1])  # x1, x2
+        boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0])  # y1, y2
+
+
+def scale_boxes_ratio_kept(boxes, img1_shape, img0_shape, ratio_pad=None, padding=True):
+    # Rescale boxes (xyxy) from img1_shape to img0_shape
+    if ratio_pad is None:  # calculate from img0_shape
+        gain = min(
+            img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1]
+        )  # gain  = old / new
+        pad = (
+            round((img1_shape[1] - img0_shape[1] * gain) / 2 - 0.1),
+            round((img1_shape[0] - img0_shape[0] * gain) / 2 - 0.1),
+        )  # wh padding
+    else:
+        gain = ratio_pad[0][0]
+        pad = ratio_pad[1]
+
+    if padding:
+        boxes[..., [0, 2]] -= pad[0]  # x padding
+        boxes[..., [1, 3]] -= pad[1]  # y padding
+    boxes[..., :4] /= gain
+    clip_boxes(boxes, img0_shape)
+    return boxes
+
+
+def scale_boxes(boxes, orig_shape, resized_shape):
+    scale_x = orig_shape[1] / resized_shape[1]
+    scale_y = orig_shape[0] / resized_shape[0]
+    boxes[:, 0] *= scale_x
+    boxes[:, 2] *= scale_x
+    boxes[:, 1] *= scale_y
+    boxes[:, 3] *= scale_y
+    return boxes
+
+
+def cleanup_masks(masks: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+    """Zero each mask outside its own bbox, in place.
+
+    The box test separates into a column term (N,1,W) and a row term (N,H,1), so it is
+    applied as two broadcast multiplies. Building the full (N,H,W) `inside` indicator
+    instead costs several extra tensors that size at the *original* image resolution.
+    """
+    N, H, W = masks.shape
+    device, dtype = masks.device, masks.dtype
+
+    ys = torch.arange(H, device=device)[None, :, None]  # (1, H, 1)
+    xs = torch.arange(W, device=device)[None, None, :]  # (1, 1, W)
+
+    x1, y1, x2, y2 = boxes.T  # each (N,)
+    in_x = ((xs >= x1[:, None, None]) & (xs < x2[:, None, None])).to(dtype)  # (N, 1, W)
+    in_y = ((ys >= y1[:, None, None]) & (ys < y2[:, None, None])).to(dtype)  # (N, H, 1)
+    return masks.mul_(in_x).mul_(in_y)

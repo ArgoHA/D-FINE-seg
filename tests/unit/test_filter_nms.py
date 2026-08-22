@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from src.infer.torch_model import cleanup_masks, filter_preds
+from dfine_seg.infer.torch_model import cleanup_masks, filter_preds
 
 
 def _pred(scores, labels, boxes):

@@ -8,8 +8,8 @@ Improve **D-FINE-seg itself** — the model + training (detection and segmentati
 ## 1. Hard rules (do not violate)
 1. **One change per experiment.** Isolate the variable, or the ledger is meaningless.
 2. **Init = ImageNet backbone only:** `train.imagenet_backbone=true` + `train.pretrained_model_path=null` (set in `research_visdrone.yaml`). Never load `dfine_*_coco.pt` — biases toward the current arch. The backbone is **always pretrained**; swapping in a different backbone means bringing *its* pretrained (ImageNet) weights too, so comparisons stay fair.
-3. **Frozen files — never edit to change a result:** `src/dl/validator.py`, `src/dl/bench.py`, `scripts/run_candidate.py`, `scripts/promote.py`. These define how success is measured. `promote.py` rejects any candidate whose diff touches them.
-4. **Edit the model and the training process:** `src/d_fine/` (arch, losses, matcher) and `src/dl/train.py` **when the change optimizes training** (optimizer, schedule, EMA, augmentation, loss wiring). Pure-config ideas go in `configs/research_visdrone.yaml` overrides.
+3. **Frozen files — never edit to change a result:** `dfine_seg/dl/validator.py`, `dfine_seg/dl/bench.py`, `scripts/run_candidate.py`, `scripts/promote.py`. These define how success is measured. `promote.py` rejects any candidate whose diff touches them.
+4. **Edit the model and the training process:** `dfine_seg/model/` (arch, losses, matcher) and `dfine_seg/dl/train.py` **when the change optimizes training** (optimizer, schedule, EMA, augmentation, loss wiring). Pure-config ideas go in `configs/research_visdrone.yaml` overrides.
 5. **Latency budget:** promote only if latency ≤ 1.05× baseline, OR ≤ 1.20× with a *2× margin* accuracy win. Enforced by `promote.py`.
 6. **Complexity / simplicity rule.** If a change adds a lot of code or large structural complexity and the accuracy/latency delta is marginal, **skip it.** Prefer the simpler model. A borderline metric win does not justify a big, hard-to-maintain change — say so in the notebook and keep the baseline.
 7. **`make test` must pass** before training (full suite, ~6s). If it fails, the change is broken — fix or abandon, don't train.
@@ -67,8 +67,8 @@ git branch -f main_exp HEAD            # control is the first 'best'
 agent picks up exactly where the last one stopped.
 
 **B. Research.** Pick the top item from `ideas.md` (or research a new one). Read the actual paper
-(WebSearch / WebFetch). Read the relevant code: `src/d_fine/arch/`, `src/d_fine/configs.py`, the
-loss/matcher in `src/d_fine/`, and `src/dl/train.py` for training-process ideas.
+(WebSearch / WebFetch). Read the relevant code: `dfine_seg/model/arch/`, `dfine_seg/model/configs.py`, the
+loss/matcher in `dfine_seg/model/`, and `dfine_seg/dl/train.py` for training-process ideas.
 
 **C. Propose (STOP for approval in interactive mode).** Present, in ~10 lines: the idea + paper, the
 exact change and files, why it should help convergence/accuracy, latency risk, complexity cost, and

@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pytest
 
-from src.dl.dataset import CustomDataset
+from dfine_seg.dl.dataset import CustomDataset
 
 
 def _build(in_channels):

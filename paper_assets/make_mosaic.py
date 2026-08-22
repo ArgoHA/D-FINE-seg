@@ -3,7 +3,7 @@
 All three prediction panels use S models trained on Cityscapes (paths under ROOT below).
 Renders one mosaic per --image. The committed assets/mosaic.jpg was made with:
 
-    uv run python scripts/make_mosaic.py --images munster_000165_000019 --out-dir assets
+    uv run python paper_assets/make_mosaic.py --images munster_000165_000019 --out-dir assets
 """
 
 import argparse
@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from src.dl.utils import Visualizer, overlay_sem_seg, sem_seg_palette
-from src.infer.torch_model import Torch_model
+from dfine_seg.infer.torch_model import TorchModel
+from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
 
 ROOT = Path("/home/argo/Desktop/Projects/cityscapes")
 IMG_DIR = ROOT / "data/dataset/images"
@@ -161,9 +161,9 @@ if __name__ == "__main__":
     colors = Visualizer.generate_colors(len(DET_NAMES))
     kw = dict(device=args.device)
     models = (
-        Torch_model("s", str(latest("det_s")), n_outputs=8, task="detect", **kw),
-        Torch_model("s", str(latest("seg_s")), n_outputs=8, task="segment", **kw),
-        Torch_model("s", str(latest("sem_seg_s")), n_outputs=19, task="sem_seg", **kw),
+        TorchModel(str(latest("det_s")), **kw),
+        TorchModel(str(latest("seg_s")), **kw),
+        TorchModel(str(latest("sem_seg_s")), **kw),
     )
 
     for name in args.images:

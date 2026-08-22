@@ -1,6 +1,6 @@
 """End-to-end CPU accuracy regression.
 
-Loads `dfine_s_coco.pt`, runs it through the production `Torch_model` wrapper on
+Loads `dfine_s_coco.pt`, runs it through the production `TorchModel` wrapper on
 a tiny fixture set, and asserts `mAP_50` matches what was pinned by
 `tests/generate_fixtures.py`. Anything that silently changes the model's CPU
 output (arch, weights loader, postprocess, letterbox, NMS, Validator math)
@@ -19,9 +19,9 @@ import numpy as np
 import pytest
 import torch
 
-from src.dl.utils import norm_xywh_to_abs_xyxy
-from src.dl.validator import Validator
-from src.infer.torch_model import Torch_model
+from dfine_seg.dl.utils import norm_xywh_to_abs_xyxy
+from dfine_seg.dl.validator import Validator
+from dfine_seg.infer.torch_model import TorchModel
 
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 BASELINE_PATH = ASSETS_DIR / "baseline.json"
@@ -72,7 +72,7 @@ def test_pretrained_s_cpu_mAP_holds_baseline(coco_pretrained_path):
     assert image_paths, f"no fixture images with labels found in {ASSETS_DIR}"
 
     # Use the production wrapper — the same path used by infer.py and bench.py.
-    model = Torch_model(
+    model = TorchModel(
         model_name="s",
         model_path=str(coco_pretrained_path),
         n_outputs=80,

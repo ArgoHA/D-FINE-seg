@@ -55,11 +55,11 @@ Minor improvement - now pretrained weigts automatically download from HuggingFac
 - Multi-channel images are stored as `.npy` (HWC uint8) — byte-faithful via `np.load`, unlike multi-channel TIFF which `cv2.imread` silently mangles. Channel convention: RGB in planes 0..2, extras in 3..N-1.
 - HGNetv2 stem conv is rewired for `in_channels=4`. Pretrained 3-channel weights are reused: stem is inflated to 4 channels by tiling the RGB filter mean, so COCO-pretrained fine-tuning still works out of the box.
 - All inference backends (torch, onnx, openvino, tensorrt, coreml, litert) auto-detect channel count from the exported model and preprocess accordingly.
-- `src/etl/m3fd_to_yolo.py` converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal benchmark (VOC XML + Vis/Ir PNGs) into the new layout as a reference example.
+- `dfine_seg/etl/m3fd_to_yolo.py` converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal benchmark (VOC XML + Vis/Ir PNGs) into the new layout as a reference example.
 
 ## 2026-06-21 - Muon + Adan optimizers
 
-- New `src/d_fine/muon.py` (`MuonWithAuxAdam`): Muon (Jordan et al., 2024) routes the encoder/decoder attention/MLP weight matrices to Newton-Schulz-orthogonalized momentum, while backbone, norms, biases, embeddings, and det/mask heads stay on an AdamW aux path inside one optimizer. **On by default** (`train.use_muon: True`).
+- New `dfine_seg/model/muon.py` (`MuonWithAuxAdam`): Muon (Jordan et al., 2024) routes the encoder/decoder attention/MLP weight matrices to Newton-Schulz-orthogonalized momentum, while backbone, norms, biases, embeddings, and det/mask heads stay on an AdamW aux path inside one optimizer. **On by default** (`train.use_muon: True`).
 - Adan (Xie et al., arXiv:2208.06677) is selectable for the aux groups via `train.aux_optimizer: adamw|adan`, with `train.adan_lr_mult` and `train.adan_betas` knobs.
 - Muon + Adan is the new best recipe on the VisDrone screen: +0.0078 mAP_50_95 over the AdamW-X reference, latency-neutral.
 
@@ -81,3 +81,7 @@ Minor improvement - now pretrained weigts automatically download from HuggingFac
 ## 2026-07-28 - Instance segmentation postprocessing speedup
 
 E2E inference latency of instance segmentation model improved by 25% (4.1ms -> 3.09ms) for TensorRT. Minor speedups for other formats too.
+
+## 2026-08-17 - Pypi
+
+D-FINE-seg is now pip-installable, has a public Python API and CLI. Repo folders were renamed, inference class names were standardized (PEP8). Torch model now autodetects `model_name`, `task`, `num_classes` and `in_channels`. Demo is also updated, now has a dropdown menu with 10 pretrained weights and allows user to load his weights from the UI. Added meta data to the checkpoints, so pt weights contain training info like the model_name, task, num_classes, label_to_name...

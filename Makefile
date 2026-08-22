@@ -1,49 +1,49 @@
-.PHONY: main train split export bench infer test test-fast test_batching check_errors ov_int8 trt_int8
+.PHONY: main train split export bench infer demo test test-fast test_batching check_errors ov_int8 trt_int8 build
 
-PY := uv run python
+# The `dfine` console script is installed by `uv sync` and handles DDP itself.
+CLI := uv run dfine
 
 main:
 	@$(MAKE) train
-	$(PY) -m src.dl.export
-	$(PY) -m src.dl.bench
+	$(CLI) export
+	$(CLI) bench
 
 split:
-	$(PY) -m src.etl.split
+	$(CLI) split
 
 train:
-	@DDP_ENABLED=$$($(PY) -c "import yaml; cfg=yaml.safe_load(open('config.yaml')); print(cfg.get('train', {}).get('ddp', {}).get('enabled', False))" 2>/dev/null || echo "False"); \
-	if [ "$$DDP_ENABLED" = "True" ] || [ "$$DDP_ENABLED" = "true" ]; then \
-		NUM_GPUS=$$($(PY) -c "import yaml; cfg=yaml.safe_load(open('config.yaml')); print(cfg.get('train', {}).get('ddp', {}).get('n_gpus', 2))" 2>/dev/null || echo "2"); \
-		echo "🚀 Training with DDP using $$NUM_GPUS GPUs..."; \
-		uv run torchrun --nproc_per_node=$$NUM_GPUS --master_port=29500 -m src.dl.train; \
-	else \
-		echo "🔧 Training with single GPU..."; \
-		$(PY) -m src.dl.train; \
-	fi
+	$(CLI) train
 
 export:
-	$(PY) -m src.dl.export
+	$(CLI) export
 
 bench:
-	$(PY) -m src.dl.bench
+	$(CLI) bench
 
 infer:
-	$(PY) -m src.dl.infer
+	$(CLI) infer
+
+demo:
+	$(CLI) demo
 
 test_batching:
-	$(PY) -m src.dl.test_batching
+	$(CLI) test-batching
 
 check_errors:
-	$(PY) -m src.dl.check_errors
+	$(CLI) check-errors
 
 ov_int8:
-	$(PY) -m src.dl.ov_int8
+	$(CLI) ov-int8
 
 trt_int8:
-	$(PY) -m src.dl.trt_int8
+	$(CLI) trt-int8
 
 test:
 	uv run pytest -q
 
 test-fast:
 	uv run pytest -q -m "not slow and not gpu"
+
+build:
+	rm -rf dist
+	uv build

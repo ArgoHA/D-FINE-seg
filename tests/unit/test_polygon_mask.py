@@ -7,14 +7,14 @@ shift mask boundaries — and silently degrade mask mAP.
 
 import numpy as np
 
-from src.dl.utils import (
+from dfine_seg.dl.utils import (
     clip_polygon_to_rect,
     norm_poly_to_abs,
     poly_abs_to_mask,
     resample_segments,
     segment2box,
 )
-from src.etl.polys2bbox import polygon_to_bbox
+from dfine_seg.etl.polys2bbox import polygon_to_bbox
 
 
 def test_norm_poly_to_abs_basic():
