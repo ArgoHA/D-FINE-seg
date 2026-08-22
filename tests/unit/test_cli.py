@@ -24,7 +24,7 @@ def clean_cwd(tmp_path, monkeypatch):
 def test_help_lists_every_command(monkeypatch, capsys):
     assert run(monkeypatch) == 0
     out = capsys.readouterr().out
-    for command in [*cli.COMMANDS, "init", "predict", "demo", "version"]:
+    for command in [*cli.COMMANDS, "init", "predict", "demo", "version", "main"]:
         assert command in out
 
 
@@ -123,7 +123,7 @@ def test_init_cannot_produce_an_undiscoverable_name(tmp_path, monkeypatch):
 
 
 def test_commands_refuse_to_run_without_config(clean_cwd, monkeypatch, capsys):
-    for command in cli.COMMANDS:
+    for command in [*cli.COMMANDS, "main"]:
         assert run(monkeypatch, command) == 1, command
         err = capsys.readouterr().err
         assert "dfine init" in err and cli.ENV_VAR in err
@@ -307,6 +307,40 @@ def test_predict_writes_output_for_a_backend_without_task(monkeypatch, tmp_path)
     dest = tmp_path / "out"
     assert run(monkeypatch, "predict", "model.onnx", str(img), "-o", str(dest)) == 0
     assert (dest / "a.jpg").is_file()
+
+
+# ---- main -------------------------------------------------------------------
+
+
+def test_main_runs_train_export_bench_in_order(monkeypatch):
+    seen = []
+
+    def fake_run(command, overrides):
+        seen.append((command, overrides))
+        return 0
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    assert cli._main_pipeline(["model_name=m"]) == 0
+    assert seen == [("train", ["model_name=m"]), ("export", ["model_name=m"]), ("bench", ["model_name=m"])]
+
+
+def test_main_stops_at_the_first_failure(monkeypatch):
+    seen = []
+
+    def fake_run(command, overrides):
+        seen.append(command)
+        return 1 if command == "train" else 0
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    assert cli._main_pipeline([]) == 1
+    assert seen == ["train"]  # export/bench never started
+
+
+def test_main_dispatch(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "_main_pipeline", lambda overrides: seen.append(overrides) or 7)
+    assert run(monkeypatch, "main", "train.epochs=1") == 7
+    assert seen == [["train.epochs=1"]]
 
 
 # ---- demo -------------------------------------------------------------------

@@ -1,7 +1,8 @@
 """`dfine` console script.
 
 Thin dispatcher over the existing Hydra entrypoints, plus `init` - which materializes a
-`config.yaml` into the cwd so pip users get the same config-driven workflow as a clone.
+`config.yaml` into the cwd so pip users get the same config-driven workflow as a clone -
+and `main` - which runs train -> export -> bench in sequence (the Makefile's default).
 Hydra overrides pass straight through: `dfine train model_name=m train.epochs=100`.
 """
 
@@ -36,6 +37,7 @@ USAGE = f"""dfine <command> [hydra overrides]
   init            write a config.yaml into the current directory
   predict         run a model on an image or folder, no config needed
   demo            launch the Gradio UI (needs `pip install 'dfine-seg[demo]'`)
+  main            train -> export -> bench in sequence (same as the bare `make` target)
 {_ROWS}
   version         print the installed version
 
@@ -244,6 +246,20 @@ def _ddp_launch(overrides: List[str]) -> Optional[int]:
     return subprocess.call(cmd + overrides)
 
 
+def _main_pipeline(overrides: List[str]) -> int:
+    """Mirror the Makefile's default target: train -> export -> bench, stop on failure.
+
+    The same overrides are passed to all three (Hydra ignores keys a command doesn't
+    read), so `dfine main model_name=m train.epochs=100` works like `make main ...`.
+    """
+    for command in ("train", "export", "bench"):
+        print(f"dfine main: {command}")
+        rc = _run(command, overrides)
+        if rc:
+            return rc
+    return 0
+
+
 def _run(command: str, overrides: List[str]) -> int:
     try:
         found = find_config()
@@ -289,6 +305,8 @@ def main() -> int:
 
         print(__version__)
         return 0
+    if command == "main":
+        return _main_pipeline(rest)
     if command not in COMMANDS:
         print(f"unknown command {command!r}\n\n{USAGE}", file=sys.stderr)
         return 2
