@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
-from src.dl.bench import BenchLoader
+from dfine_seg.dl.bench import BenchLoader
 
 H, W = 30, 40
 

@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import torch
 
-from src.dl.utils import set_seeds
+from dfine_seg.dl.utils import set_seeds
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -89,7 +89,7 @@ def fixtures_dir() -> Path:
 @pytest.fixture(scope="session")
 def coco_pretrained_path(tmp_path_factory) -> Path:
     """Ensure dfine_s_coco.pt is on disk (HF auto-download). Skip if offline."""
-    from src.d_fine.utils import ensure_pretrained
+    from dfine_seg.model.utils import ensure_pretrained
 
     target = REPO_ROOT / "pretrained" / "dfine_s_coco.pt"
     try:
@@ -104,7 +104,7 @@ def coco_pretrained_path(tmp_path_factory) -> Path:
 @pytest.fixture(scope="session")
 def coco_pretrained_s_cpu(coco_pretrained_path):
     """CPU `dfine_s` model with COCO weights, eval mode. Session-scoped."""
-    from src.d_fine.dfine import build_model
+    from dfine_seg.model.dfine import build_model
 
     model = build_model(
         model_name="s",

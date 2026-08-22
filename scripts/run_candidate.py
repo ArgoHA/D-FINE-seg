@@ -147,7 +147,7 @@ def main():
                 "run",
                 "python",
                 "-m",
-                "src.dl.train",
+                "dfine_seg.dl.train",
                 *base_args,
                 f"train.seed={seed}",
                 f"train.path_to_save={sd}",
@@ -155,8 +155,28 @@ def main():
             ]
         )
         # export + bench this seed
-        run(["uv", "run", "python", "-m", "src.dl.export", *base_args, f"train.path_to_save={sd}"])
-        run(["uv", "run", "python", "-m", "src.dl.bench", *base_args, f"train.path_to_save={sd}"])
+        run(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "dfine_seg.dl.export",
+                *base_args,
+                f"train.path_to_save={sd}",
+            ]
+        )
+        run(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "dfine_seg.dl.bench",
+                *base_args,
+                f"train.path_to_save={sd}",
+            ]
+        )
         f1, lat, f1_by = read_bench(sd)
         gap = (
             round(f1_by["tensorrt"] - f1_by["torch"], 4)

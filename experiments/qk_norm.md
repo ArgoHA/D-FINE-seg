@@ -51,7 +51,7 @@ sets on one graph flip correctness, ORT ground truth, version matrix).
 
 Reference diff: `git diff main_exp exp/qk-norm-lr -- src/` shows all of this in place.
 
-### 3.1 The attention module — `src/d_fine/arch/utils.py`
+### 3.1 The attention module — `dfine_seg/model/arch/utils.py`
 
 ```python
 class QKNormSelfAttention(nn.Module):
@@ -92,13 +92,13 @@ don't change. The bool-mask conversion is required for the decoder's denoising m
   Pass through `DFINETransformer.__init__` into both `decoder_layer` and `decoder_layer_wide`.
 - `arch/hybrid_encoder.py` `TransformerEncoderLayer.__init__`: same pattern; thread via
   `HybridEncoder.__init__`.
-- `src/d_fine/dfine.py` `build_model(..., qk_norm: bool = False)`:
+- `dfine_seg/model/dfine.py` `build_model(..., qk_norm: bool = False)`:
   `model_cfg["HybridEncoder"]["qk_norm"] = qk_norm; model_cfg["DFINETransformer"]["qk_norm"] = qk_norm`.
 - `config.yaml`: `train.qk_norm: False` (default off — existing users unaffected).
-- `src/dl/train.py` + `src/dl/export.py` `prepare_model`: pass `qk_norm=cfg.train.qk_norm` /
+- `dfine_seg/dl/train.py` + `dfine_seg/dl/export.py` `prepare_model`: pass `qk_norm=cfg.train.qk_norm` /
   `cfg.train.get("qk_norm", False)` into `build_model`.
 
-### 3.3 Checkpoint self-detection — `src/infer/torch_model.py`
+### 3.3 Checkpoint self-detection — `dfine_seg/infer/torch_model.py`
 
 Checkpoints self-describe via the `q_norm` keys, so inference wrappers rebuild the right arch:
 
@@ -108,7 +108,7 @@ qk_norm = any("q_norm" in k for k in state_dict)
 self.model = build_model(..., qk_norm=qk_norm)
 ```
 
-### 3.4 Warm COCO init — `src/d_fine/utils.py` (sha `a5445ab`)
+### 3.4 Warm COCO init — `dfine_seg/model/utils.py` (sha `a5445ab`)
 
 Stock checkpoints store self-attn as fused `in_proj_weight` ([3d, d] = q,k,v stacked); the split
 projections won't key-match, silently leaving 24 attention tensors random. Add to

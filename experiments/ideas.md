@@ -53,7 +53,7 @@ tied or regressed.
   (b) is run-length-specific → doesn't transfer to full runs. Skip unless investigating EMA dynamics.
 - **#7 Pre-resized image cache** — mosaic decodes ~3.4 full-res (~2000×1500) JPEGs/sample only to squash to
   640 (`dataset.py:431-470`). **Measure first:** log data-wait vs step time; if <5%, skip. ETL script
-  `src/etl/resize_cache.py` → long side 1280. Screen velocity only, not accuracy.
+  `dfine_seg/etl/resize_cache.py` → long side 1280. Screen velocity only, not accuracy.
 - **#8 Eval cadence** — val eval every epoch costs ~10-20% of the 60-min cap. Grid eval {4,8,12,16} then every
   epoch post-anneal; `train.eval_every: 1` default. **Measure wall-time first.** Accuracy-neutral.
 - **#9 PreciseBN** — recompute BN stats post-cap on clean data (arXiv:2105.07576). 🔴 **tie/no-op**: mAP 0.2117,

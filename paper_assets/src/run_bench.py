@@ -145,7 +145,7 @@ def export_one(phase: dict, size: str) -> tuple[str, int, Path]:
     cmd = [
         sys.executable,
         "-m",
-        "src.dl.export",
+        "dfine_seg.dl.export",
         f"exp_name={exp_name}",
         f"model_name={size}",
         f"task={phase['task']}",
@@ -160,7 +160,7 @@ def bench_one(phase: dict, size: str) -> tuple[str, int, Path]:
     cmd = [
         sys.executable,
         "-m",
-        "src.dl.bench",
+        "dfine_seg.dl.bench",
         f"exp_name={exp_name}",
         f"model_name={size}",
         f"task={phase['task']}",

@@ -8,9 +8,9 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from src.d_fine.arch.dfine_decoder import SemSegDecoder
-from src.d_fine.sem_seg_criterion import SemSegCriterion
-from src.dl.validator import SemSegValidator
+from dfine_seg.model.arch.dfine_decoder import SemSegDecoder
+from dfine_seg.model.sem_seg_criterion import SemSegCriterion
+from dfine_seg.dl.validator import SemSegValidator
 
 N_CLASSES = 7
 WEIGHTS = {"loss_ce": 1, "loss_dice": 1, "loss_aux": 0.4}
@@ -127,7 +127,7 @@ def test_validator_absent_class_excluded_from_miou():
 
 
 def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
-    from src.dl.dataset import SemSegDataset
+    from dfine_seg.dl.dataset import SemSegDataset
 
     cfg = OmegaConf.create(
         {
@@ -224,7 +224,7 @@ def test_load_mosaic_target_size_and_ignore_fill(tmp_path):
 
 
 def test_sem_seg_collate_filters_none():
-    from src.dl.dataset import sem_seg_collate_fn
+    from dfine_seg.dl.dataset import sem_seg_collate_fn
 
     item = (torch.zeros(3, 8, 8), torch.zeros(8, 8).long(), "a.jpg", torch.tensor([8, 8]))
     images, targets, paths = sem_seg_collate_fn([item, None])
@@ -247,19 +247,19 @@ def test_out_of_range_class_ids_fail_loudly(tmp_path):
 
 def test_torch_model_process_sem_seg():
     """Wrapper postprocess: argmax -> NEAREST to original size, uint8, per-image dicts."""
-    from src.infer.torch_model import Torch_model
+    from dfine_seg.infer.torch_model import TorchModel
 
     logits = torch.full((1, 4, 8, 8), -5.0)
     logits[:, 2, :4] = 5.0  # top half -> class 2, bottom half -> class 0
     logits[:, 0, 4:] = 5.0
-    out = Torch_model.process_sem_seg(logits, [(8, 8)], [(32, 16)], keep_ratio=False)
+    out = TorchModel.process_sem_seg(logits, [(8, 8)], [(32, 16)], keep_ratio=False)
     m = out[0]["sem_seg"]
     assert m.shape == (32, 16) and m.dtype == torch.uint8
     assert set(torch.unique(m).tolist()) == {0, 2}
     assert (m[:16] == 2).all() and (m[16:] == 0).all()  # NEAREST keeps the hard boundary
 
     # labels_to_use: ids not requested -> 255 (void); keep only class 2, class 0 -> 255
-    out = Torch_model.process_sem_seg(
+    out = TorchModel.process_sem_seg(
         logits, [(8, 8)], [(32, 16)], keep_ratio=False, labels_to_use=[2]
     )
     m = out[0]["sem_seg"]

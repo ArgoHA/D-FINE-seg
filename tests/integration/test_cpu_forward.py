@@ -10,7 +10,7 @@ import time
 import pytest
 import torch
 
-from src.d_fine.dfine import build_model
+from dfine_seg.model.dfine import build_model
 
 
 @pytest.fixture(scope="module")
@@ -85,7 +85,7 @@ def test_forward_shapes_cpu_sem_seg():
     assert torch.isfinite(out["sem_seg_logits"]).all()
 
     # fused export graph: argmax -> int32 [B, H, W]
-    from src.dl.export import SemSegExportWrapper
+    from dfine_seg.dl.export import SemSegExportWrapper
 
     with torch.no_grad():
         label_map = SemSegExportWrapper(model).eval()(x)

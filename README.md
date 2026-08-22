@@ -18,7 +18,7 @@
   <a href="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml"><img src="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <a href="https://arxiv.org/abs/2602.23043"><img src="https://img.shields.io/badge/arXiv-2602.23043-b31b1b.svg" alt="arXiv"></a>
   <a href="https://huggingface.co/ArgoSA/D-FINE-seg"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20Card-yellow.svg" alt="Hugging Face Model Card"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/ArgoHA/D-FINE-seg/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
   <a href="mailto:argo.cve@gmail.com"><img src="https://img.shields.io/badge/Contact%20me-email-green.svg" alt="Contact me"></a>
 </p>
 
@@ -34,11 +34,11 @@ D-FINE-seg is a framework for real-time **object detection**, **instance segment
 One frame, three tasks, one config flag:
 
 <p align="center">
-  <img src="assets/mosaic.jpg" width="100%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/mosaic.jpg" width="100%">
 </p>
 
 <p align="center">
-  <img src="assets/cityscapes_benchmark.png" width="100%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/cityscapes_benchmark.png" width="100%">
 </p>
 
 <p align="center">
@@ -60,14 +60,61 @@ One frame, three tasks, one config flag:
 ### Installation
 
 ```bash
+pip install dfine-seg           # inference + training
+pip install 'dfine-seg[all]'    # + every export backend, SAM3, Gradio demo
+```
+
+COCO-pretrained weights (detection **and** instance segmentation) auto-download from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use - no manual download needed.
+
+<details>
+<summary>Extras, if you need them (backends are large and platform-specific)</summary>
+
+| Install | Adds | For |
+|:--|:--|:--|
+| `pip install dfine-seg` | torch, torchvision, opencv, hydra, wandb, albumentations, … | inference + training |
+| `pip install 'dfine-seg[export]'` | onnx, onnxruntime, openvino, nncf, coremltools | `dfine export` |
+| `pip install 'dfine-seg[trt]'` | tensorrt *(Linux)* | TensorRT engines - build on the target GPU |
+| `pip install 'dfine-seg[label]'` | transformers | SAM3 auto-labeling |
+| `pip install 'dfine-seg[demo]'` | gradio | the Gradio UI |
+| `pip install 'dfine-seg[all]'` | everything above | full setup |
+
+</details>
+
+Two-line predict:
+
+```python
+from dfine_seg import load_model, read_image
+
+model = load_model("s")                              # COCO detection, weights auto-downloaded
+model = load_model("s", task="segment")              # COCO instance segmentation
+model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes/input size auto-detected
+model = load_model("output/models/exp/model.engine") # any exported artifact, picked by extension
+
+out = model(read_image("path/to/image.jpg"))[0]
+print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
+```
+
+`load_model` returns the very same wrapper you would construct by hand ([dfine_seg/infer/](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/infer/)) - it resolves the weights and picks the backend, then gets out of the way. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app.
+
+To train from a pip install, materialize a config and go:
+
+```bash
+dfine init          # writes ./config.yaml - edit train.root and train.label_to_name
+dfine split
+dfine train         # Hydra overrides work: dfine train model_name=m train.epochs=100
+```
+
+#### From source (contributors)
+
+```bash
 git clone https://github.com/ArgoHA/D-FINE-seg.git
 cd D-FINE-seg
 uv sync
 ```
 
-This creates a `.venv/` with all dependencies pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
+This creates a `.venv/` with the package installed editable and every extra present, pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
 
-Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) into `pretrained/` on first use, so no manual setup is needed. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
+Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use, so no manual setup is needed - into `pretrained/` for the config-driven commands, and into the shared Hugging Face cache for `load_model("s")` when there is no `pretrained/` copy to reuse. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
 
 ### Prepare Your Data
 
@@ -95,36 +142,14 @@ data/dataset/
 └── labels/    # one single-channel uint8 .png per image (same stem), pixel value = class id
 ```
 
-Every pixel gets a class from `label_to_name` (background included). Pixels with value `train.sem_seg.ignore_index` (default 255) are excluded from loss and metrics and during inference 255 is the "background" or "ignored" class. `make split` works unchanged; `keep_ratio: True` is supported (letterbox pad is filled with `ignore_index`, so pad pixels don't supervise); `coco_dataset: True` is not supported for this task.
+Every pixel gets a class from `label_to_name` (background included). Pixels with value `train.sem_seg.ignore_index` (default 255) are excluded from loss and metrics and during inference 255 is the "background" or "ignored" class. `dfine split` works unchanged; `keep_ratio: True` is supported (letterbox pad is filled with `ignore_index`, so pad pixels don't supervise); `coco_dataset: True` is not supported for this task.
 
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
 
-Set `train.in_channels: N` (default 3) to train on stacks beyond plain RGB.
-Supported range is `N=3` (RGB) or `N=4` (RGB + one extra modality, e.g. thermal,
-depth, NIR). Higher channel counts are not supported - cv2 / Albumentations
-ops cap at 4.
-
-Layout is the same; drop the stacks as **`.npy`** files (uint8 HWC arrays):
-
-``` bash
-data/dataset/
-├── images/    # one .npy per sample, shape (H, W, N), dtype uint8
-└── labels/    # YOLO .txt (same as 3-channel case)
-```
-
-Loader rules (see [src/dl/dataset.py](src/dl/dataset.py)):
-
-- `np.load` is byte-faithful - channels come back exactly as you saved them.
-- A file whose channel count doesn't match `train.in_channels` is skipped with a `loguru.warning` line (path + reason). Mosaic re-samples another index automatically.
-- Pretrained 3-channel backbone weights are reused: the stem conv is *inflated* to N input channels by tiling/averaging the RGB filters (`inflate_stem_weight` in [src/d_fine/utils.py](src/d_fine/utils.py)), so fine-tuning from COCO still works.
-- Stem freeze (`freeze_at` in [src/d_fine/configs.py](src/d_fine/configs.py)) is auto-bypassed when `in_channels > 3` so the inflated extra-channel weights can train; the size-configured `freeze_at` still applies for plain 3-channel RGB.
-
-Channel-order convention: write the RGB triplet in the first three planes
-(channels `0..2`) so they line up with the pretrained RGB stem; extra
-modalities go in channels `3..N-1`. Example for RGB + thermal: stack as
-`[R, G, B, T]`.
-
-Example: [src/etl/m3fd_to_yolo.py](src/etl/m3fd_to_yolo.py) converts the [M3FD](https://github.com/JinyuanLiu-CV/TarDAL) RGB+thermal detection benchmark (PASCAL VOC XML + paired `Vis/`/`Ir/` PNGs) into this exact layout.
+Set `train.in_channels: 4` (3 or 4 supported) to train on RGB + one extra modality
+(thermal / depth / NIR). Stacks are `.npy` uint8 HWC arrays in `images/` (RGB in planes
+0-2, extras after) with YOLO labels as usual; a mismatched channel count is skipped with
+a warning. See [dfine_seg/etl/m3fd_to_yolo.py](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/etl/m3fd_to_yolo.py) for a ready-made RGB+thermal converter.
 
 #### COCO JSON format
 
@@ -140,7 +165,7 @@ data/dataset/
 
 Enable COCO mode by setting `coco_dataset: True` in your config (see below). No CSV split generation step is needed - the splits are read directly from the JSON files.
 
-If you only have a single `coco.json`, run `make split` to produce `train.json` / `val.json` (and `test.json` when the ratios leave room) from it. It splits by image using the same `split:` ratios, seed and `ignore_negatives` as the YOLO path, keeps each image's annotations with it, and copies `categories` / `info` / `licenses` into every output.
+If you only have a single `coco.json`, run `dfine split` to produce `train.json` / `val.json` (and `test.json` when the ratios leave room) from it. It splits by image using the same `split:` ratios, seed and `ignore_negatives` as the YOLO path, keeps each image's annotations with it, and copies `categories` / `info` / `licenses` into every output.
 
 ### Configure
 
@@ -165,38 +190,37 @@ train:
 
 ### Usage
 
-```bash
-make split           # create train/val CSV splits (test split if configured)
-make train           # train the model
-make export          # export to ONNX, TensorRT, OpenVINO, CoreML, LiteRT
-make bench           # benchmark all exported models on the val set
-
-make infer           # run on test folder, save visualizations + YOLO txt predictions
-make check_errors    # compare predictions against GT, save only mismatches (FP/FN)
-make test_batching   # find optimal batch size for your GPU
-
-make ov_int8         # INT8 accuracy-aware quantization for OpenVINO (can take hours)
-```
+| Command | What it does |
+|:--|:--|
+| `dfine init` | write `config.yaml` from the packaged template (`--task`, `--model`, `-d`, `--force`) |
+| `dfine split` | create train/val CSV splits (test split if configured) |
+| `dfine train` | train the model |
+| `dfine export` | export to ONNX, TensorRT, OpenVINO, CoreML (+ LiteRT when named) |
+| `dfine bench` | benchmark all exported models on the val set |
+| `dfine infer` | run on test folder, save visualizations + YOLO txt predictions |
+| `dfine check-errors` | compare predictions against GT, save only mismatches (FP/FN) |
+| `dfine test-batching` | find optimal batch size for your GPU |
+| `dfine ov-int8` | INT8 accuracy-aware quantization for OpenVINO (can take hours) |
+| `dfine trt-int8` | TensorRT INT8 calibration |
+| `dfine main` | train -> export -> bench in sequence (same as the bare `make` target) |
+| `dfine demo` | launch the Gradio UI (needs `pip install 'dfine-seg[demo]'`) |
+| `dfine predict` | run a model on an image or folder, no config needed |
+| `dfine version` | print the installed version |
 
 Notes:
 
-- **YOLO format**: `make train` requires `train.csv` and `val.csv` in `train.data_path` (generated by `make split`).
-- **COCO format**: set `coco_dataset: True` - `train.json` and `val.json` are loaded directly; `make split` is only needed if you have a single `coco.json` to split.
-- `make infer` runs Torch inference on `train.path_to_test_data` and writes to `train.infer_path`.
+- Most commands read `config.yaml` and work off your trained run; exceptions — `init` (writes the config), `predict`, `demo`, `version` (no config needed). Every command's flags, defaults and examples: `dfine <command> -h`.
+- **YOLO format**: `dfine train` requires `train.csv` and `val.csv` in `train.data_path` (generated by `dfine split`).
+- **COCO format**: set `coco_dataset: True` - `train.json` and `val.json` are loaded directly; `dfine split` is only needed if you have a single `coco.json` to split.
+- `dfine infer` runs Torch inference on `train.path_to_test_data` and writes to `train.infer_path`. `infer` / `export` / `bench` auto-pick the latest `<exp_name>_<date>` run under `train.path_to_save`.
 
-Or run in sequence:
-
-```bash
-make                 # train -> export -> bench (does not run split)
-```
-
-Or run overwriting configs from CLI
+Every `dfine` command also has a `make` alias (`make train` == `dfine train`), and any config key can be overridden inline:
 
 ```bash
-uv run python -m src.dl.train exp_name=my_exp
+dfine train exp_name=my_exp model_name=m train.epochs=100
 ```
 
-Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `make train` - it auto-launches with `torchrun`.
+Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n_gpus: N` in config. Then just run `dfine train` - it auto-launches with `torchrun`.
 
 ### Training Features
 
@@ -229,7 +253,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 > **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
-> **Warning**: run TensorRT engines at **batch 1**. On TRT 10.13.3.9 a batched engine does not compute batch elements independently - feeding four byte-identical images through a single `execute_async_v3` call returns four different results (score spread up to 0.20, and different labels), so a detection's score depends on what it happened to be batched with. Batch 1 is exact, and reproduces in raw TensorRT for FP16 and FP32 and for every optimization-profile shape, while torch and ONNX Runtime stay identical across slots ([NVIDIA/TensorRT#4813](https://github.com/NVIDIA/TensorRT/issues/4813)).
+> **Warning**: run TensorRT engines at **batch 1**. On TRT 10.13.3.9 a batched engine does not compute batch elements independently - feeding four identical images through a single `execute_async_v3` call returns four different results (score spread up to 0.20, and different labels), so a detection's score depends on what it happened to be batched with. Batch 1 is exact, and reproduces in raw TensorRT for FP16 and FP32 and for every optimization-profile shape, while torch and ONNX Runtime stay identical across slots ([NVIDIA/TensorRT#4813](https://github.com/NVIDIA/TensorRT/issues/4813)).
 
 After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend - over the sorted top-K detection scores vs torch - to `parity.csv` next to the weights.
 
@@ -239,7 +263,7 @@ For `task: sem_seg` every backend gets the same fused-argmax graph: a single int
 
 ### Backends
 
-Six inference backends in `src/infer/`:
+Six inference backends in `dfine_seg/infer/`:
 
 | Backend | Format | Devices |
 |:--------|:-------|:--------|
@@ -250,7 +274,7 @@ Six inference backends in `src/infer/`:
 | **CoreML** | `.mlpackage` | macOS (GPU), iOS |
 | **LiteRT** | `.tflite` | CPU, mobile / edge (Android) |
 
-Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`); sem_seg wrappers return a single `sem_seg` `[H, W]` label map at original image resolution. For sem_seg, `make infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
+Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`); sem_seg wrappers return a single `sem_seg` `[H, W]` label map at original image resolution. For sem_seg, `dfine infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
 
 Also provided:
 
@@ -264,10 +288,12 @@ A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.068
 ### Gradio Demo
 
 ```bash
-uv run python -m demo.demo
+dfine demo         # == make demo   (pip: pip install 'dfine-seg[demo]')
 ```
 
-A web UI for uploading images and running inference interactively.
+A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation.
+
+It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the Model panel loads any path the browser sends, so anyone who can reach the port can load files off this machine. `dfine demo --host 127.0.0.1` restores local-only.
 
 ## Benchmarks
 
@@ -339,7 +365,7 @@ YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25
 
 > D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~7% higher mean relative F1-score with ~28% latency reduction. Notably, IoU is ~15% higher (mean relative improvement across all models).
 
-![VisDrone](assets/visdrone_bench.png)
+![VisDrone](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/visdrone_bench.png)
 
 </details>
 
@@ -493,21 +519,21 @@ Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessin
 
 **Training**
 
-![Training](assets/train.png)
+![Training](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/train.png)
 
 **Benchmarking**
 
-![Benchmarking](assets/bench.png)
+![Benchmarking](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/bench.png)
 
 **WandB dashboard**
 
-![WandB](assets/wandb.png)
+![WandB](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/wandb.png)
 
 **Inference**
 
 <p align="center">
-  <img src="assets/infer_detect.jpg" width="66%">
-  <img src="assets/infer_segment.jpg" width="28%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/infer_detect.jpg" width="66%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/infer_segment.jpg" width="28%">
 </p>
 
 ## Citation
@@ -539,7 +565,7 @@ And the original D-FINE paper:
 
 ## License
 
-This project is licensed under the [Apache 2.0 License](LICENSE).
+This project is licensed under the [Apache 2.0 License](https://github.com/ArgoHA/D-FINE-seg/blob/main/LICENSE).
 
 ## Acknowledgement
 

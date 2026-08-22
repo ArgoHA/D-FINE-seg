@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from src.dl.dataset import load_coco_split
-from src.etl.split import split, split_coco
+from dfine_seg.dl.dataset import load_coco_split
+from dfine_seg.etl.split import split, split_coco
 
 
 def _coco(n_images=20, empty_ids=()):

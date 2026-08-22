@@ -1,4 +1,4 @@
-"""Pin IoU / GIoU / cxcywh<->xyxy in `src/d_fine/arch/utils.py`.
+"""Pin IoU / GIoU / cxcywh<->xyxy in `dfine_seg/model/arch/utils.py`.
 
 These are inside the matcher and the GIoU loss — silent regressions here break
 training. Identity / disjoint / round-trip checks pin the invariants.
@@ -6,7 +6,7 @@ training. Identity / disjoint / round-trip checks pin the invariants.
 
 import torch
 
-from src.d_fine.arch.utils import (
+from dfine_seg.model.arch.utils import (
     box_cxcywh_to_xyxy,
     box_iou,
     box_xyxy_to_cxcywh,

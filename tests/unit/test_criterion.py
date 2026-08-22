@@ -7,8 +7,8 @@ approaches the target.
 
 import torch
 
-from src.d_fine.dfine_criterion import DFINECriterion
-from src.d_fine.matcher import HungarianMatcher
+from dfine_seg.model.dfine_criterion import DFINECriterion
+from dfine_seg.model.matcher import HungarianMatcher
 
 
 def _criterion(num_classes=5):

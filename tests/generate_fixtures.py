@@ -32,9 +32,9 @@ import cv2
 import numpy as np
 import torch
 
-from src.d_fine.utils import ensure_pretrained
-from src.dl.utils import abs_xyxy_to_norm_xywh
-from src.infer.torch_model import Torch_model
+from dfine_seg.model.utils import ensure_pretrained
+from dfine_seg.dl.utils import abs_xyxy_to_norm_xywh
+from dfine_seg.infer.torch_model import TorchModel
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -125,7 +125,7 @@ def main() -> None:
 
     # Use the production inference wrapper so we exercise the same preprocess /
     # postprocess path the real bench uses, not a hand-rolled mini-driver.
-    model = Torch_model(
+    model = TorchModel(
         model_name="s",
         model_path=str(weights_path),
         n_outputs=80,

@@ -6,7 +6,7 @@
 
 import torch
 
-from src.d_fine.matcher import HungarianMatcher, dice_cost, sigmoid_focal_cost
+from dfine_seg.model.matcher import HungarianMatcher, dice_cost, sigmoid_focal_cost
 
 
 def _matcher(use_focal=True, weights=None):

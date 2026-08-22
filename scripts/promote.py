@@ -45,8 +45,8 @@ LEDGER = REPO / "experiments" / "ledger.csv"
 # Files the research loop must NOT change — they define how we measure success.
 # A candidate diff touching these is rejected regardless of metrics.
 FROZEN = [
-    "src/dl/validator.py",
-    "src/dl/bench.py",
+    "dfine_seg/dl/validator.py",
+    "dfine_seg/dl/bench.py",
     "scripts/run_candidate.py",
     "scripts/promote.py",
 ]

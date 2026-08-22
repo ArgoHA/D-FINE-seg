@@ -7,8 +7,8 @@ on the keep_ratio path. If either drifts, predictions land in the wrong place.
 import albumentations as A
 import numpy as np
 
-from src.dl.utils import LetterboxRect, scale_boxes_ratio_kept
-from src.infer.torch_model import letterbox
+from dfine_seg.dl.utils import LetterboxRect, scale_boxes_ratio_kept
+from dfine_seg.infer.torch_model import letterbox
 
 
 def test_letterbox_preserves_aspect_ratio_no_auto():

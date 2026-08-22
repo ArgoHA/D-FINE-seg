@@ -1,0 +1,1287 @@
+import json
+import random
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import albumentations as A
+import cv2
+import numpy as np
+import pandas as pd
+import torch
+from albumentations.pytorch import ToTensorV2
+from loguru import logger
+from omegaconf import DictConfig
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
+
+from dfine_seg.model.dist_utils import is_main_process
+from dfine_seg.dl.utils import (
+    LetterboxRect,
+    abs_xyxy_to_norm_xywh,
+    clip_polygon_to_rect,
+    get_mosaic_coordinate,
+    get_transform_matrix,
+    norm_poly_to_abs,
+    norm_xywh_to_abs_xyxy,
+    poly_abs_to_mask,
+    random_affine,
+    seed_worker,
+    vis_one_box,
+)
+from dfine_seg.viz import overlay_sem_seg, sem_seg_palette
+
+
+def read_image_hwc(path) -> Optional[np.ndarray]:
+    """Load an image as an HWC uint8 array.
+
+    - ``.npy``: ``np.load`` (multi-channel data; project convention is RGB+extras).
+    - everything else: default ``cv2.imread`` (BGR uint8, 3 channels - grayscale
+      replicated, alpha dropped, uint16 quantized). Matches ``_read_image``'s
+      3-channel branch so inference call sites and the training reader share
+      the same source-of-truth.
+
+    Returns ``None`` if the file can't be decoded. Grayscale results from
+    ``.npy`` are promoted to HWC with a trailing axis so callers can rely on
+    ``shape[2]``.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".npy":
+        try:
+            img = np.load(str(path))
+        except (FileNotFoundError, ValueError, OSError):
+            return None
+        if img.ndim == 2:
+            img = img[..., None]
+        return img
+    return cv2.imread(str(path))
+
+
+def read_image_rgb(path, in_channels: int) -> Optional[np.ndarray]:
+    """Load an image as HWC with channels in RGB(+extras) order.
+
+    Delegates to ``read_image_hwc`` (cv2 default for non-.npy, np.load for
+    .npy) and applies the project conventions on top: cv2 sources need a
+    BGR->RGB swap; ``.npy`` sources are stored RGB(+extras) and need none.
+
+    Returns ``None`` if the file cannot be decoded.
+    Raises ``ValueError`` when the channel count doesn't match in_channels."""
+    image = read_image_hwc(path)
+    if image is None:
+        return None
+    if Path(path).suffix.lower() != ".npy":
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    if image.shape[2] != in_channels:
+        raise ValueError(f"Expected {in_channels} channels at {path}, got {image.shape[2]}")
+    return image
+
+
+def parse_yolo_label_file(path: Path):
+    """
+    Supports both pure detection lines (5 cols) and YOLO-Seg lines (>=7 cols).
+    Returns:
+      boxes_norm: np.ndarray (N,5) -> [cls, xc, yc, w, h] in norm (float32)
+      polys_norm: list of length N; entry i is that object's list of (K,2) normalized polygon
+                  parts (float32). One YOLO line = one part, so entries hold 0 or 1 part.
+    """
+    boxes_norm = []
+    polys_norm = []  # keep normalized here
+
+    with open(path, "r") as f:
+        for ln, raw in enumerate(f, 1):
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            parts = s.split()
+            cl = float(parts[0])
+
+            nums = [float(x) for x in parts[1:]]  # variable length
+            if len(nums) == 4:  # bbox annotations
+                boxes_norm.append([cl, *nums[:4]])
+                polys_norm.append([])  # no polygon
+            elif len(nums) >= 6:  # segmentation annotations
+                if len(nums) % 2 == 1:
+                    nums = nums[:-1]
+                    logger.warning(
+                        f"Odd number of coordinates in segmentation annotation at {path}:{ln}: {s}. "
+                        "Dropping the last value."
+                    )
+                poly = np.array(nums).reshape(-1, 2)  # (K, 2)
+                polys_norm.append([poly])
+                x_min, y_min = poly.min(axis=0)
+                x_max, y_max = poly.max(axis=0)
+                boxes_norm.append(
+                    [cl, (x_min + x_max) / 2, (y_min + y_max) / 2, x_max - x_min, y_max - y_min]
+                )
+            else:
+                raise ValueError(f"Invalid label line (wrong number of values) {path}:{ln}: {s}")
+
+    if len(boxes_norm) == 0:
+        return np.zeros((0, 5), dtype=np.float32), []
+    boxes_norm = np.asarray(boxes_norm, dtype=np.float32)
+    return boxes_norm, polys_norm
+
+
+def load_coco_split(json_path: Path, use_one_class: bool = False):
+    """
+    Load a COCO-format JSON annotation file and pre-parse all annotations.
+
+    Returns:
+      entries: list of dicts, each with:
+          'file_name': str
+          'targets': np.ndarray (N, 5) [class_id, x1, y1, x2, y2] absolute
+          'polys_abs': list of length N; entry i is that instance's list of (K, 2) absolute
+                       polygon parts (a COCO instance may be split into several islands)
+      cat_id_to_class_id: dict mapping COCO category_id -> 0-based contiguous class_id
+    """
+    with open(json_path, "r") as f:
+        coco = json.load(f)
+
+    categories = sorted(coco.get("categories", []), key=lambda c: c["id"])
+    cat_id_to_class_id = {c["id"]: i for i, c in enumerate(categories)}
+
+    img_to_anns = defaultdict(list)
+    for ann in coco.get("annotations", []):
+        img_to_anns[ann["image_id"]].append(ann)
+
+    entries = []
+    escaped_box = []  # anns whose mask sticks out of ann['bbox'] - see warning below
+    for img_info in coco.get("images", []):
+        img_id = img_info["id"]
+        file_name = img_info["file_name"]
+        anns = img_to_anns.get(img_id, [])
+
+        targets = []
+        polys_abs = []
+
+        for ann in anns:
+            if ann.get("iscrowd", 0):
+                continue
+
+            cat_id = ann["category_id"]
+            if cat_id not in cat_id_to_class_id:
+                continue
+
+            class_id = 0 if use_one_class else cat_id_to_class_id[cat_id]
+
+            bx, by, bw, bh = ann["bbox"]
+            targets.append([class_id, bx, by, bx + bw, by + bh])
+
+            seg = ann.get("segmentation")
+            if isinstance(seg, dict):
+                raise ValueError(
+                    f"{json_path}: ann {ann.get('id')} stores segmentation as RLE; only polygon "
+                    "lists are supported (iscrowd anns are skipped before this point)."
+                )
+            # every part is kept: one instance can be split into several islands by occluders
+            parts = []
+            if isinstance(seg, list):
+                parts = [np.array(p, dtype=np.float32).reshape(-1, 2) for p in seg if len(p) >= 6]
+            polys_abs.append(parts)
+
+            if parts:
+                all_pts = np.concatenate(parts, axis=0)
+                out = (all_pts.min(axis=0) < (bx - 1, by - 1)).any() or (
+                    all_pts.max(axis=0) > (bx + bw + 1, by + bh + 1)
+                ).any()
+                if out:
+                    escaped_box.append(ann.get("id"))
+
+        if len(targets) == 0:
+            targets_arr = np.zeros((0, 5), dtype=np.float32)
+            polys_abs = []
+        else:
+            targets_arr = np.array(targets, dtype=np.float32)
+
+        entries.append(
+            {
+                "file_name": file_name,
+                "targets": targets_arr,
+                "polys_abs": polys_abs,
+            }
+        )
+
+    if escaped_box and is_main_process():
+        # inference crops each mask to its own box (cleanup_masks), so mask area outside
+        # ann['bbox'] can never be predicted
+        logger.warning(
+            f"{json_path.name}: {len(escaped_box)} ann(s) have mask area outside ann['bbox'] "
+            f"(ids: {escaped_box[:5]}{', …' if len(escaped_box) > 5 else ''}). That area is "
+            "unreachable at inference - boxes should contain their segmentation."
+        )
+
+    return entries, cat_id_to_class_id
+
+
+def resolve_mosaic_prob(cfg) -> float:
+    p = cfg.train.mosaic_augs.mosaic_prob
+    if p is None:
+        return 0.8 if cfg.task == "detect" else 0.5
+    return float(p)
+
+
+class CustomDataset(Dataset):
+    def __init__(
+        self,
+        img_size: Tuple[int, int],  # h, w
+        root_path: Path,
+        split: pd.DataFrame,
+        debug_img_processing: bool,
+        mode: str,
+        cfg: DictConfig,
+        coco_annotations: Optional[List[Dict]] = None,
+    ) -> None:
+        self.project_path = Path(cfg.train.root)
+        self.root_path = root_path
+        self.split = split
+        self.target_h, self.target_w = img_size
+        self.coco_mode = coco_annotations is not None
+        self._coco_entries = coco_annotations
+        self.in_channels = int(cfg.train.in_channels)
+        if self.in_channels not in (3, 4):
+            raise ValueError(
+                f"train.in_channels must be 3 (RGB) or 4 (RGB+one extra modality); "
+                f"got {self.in_channels}."
+            )
+        self.norm = ([0.0] * self.in_channels, [1.0] * self.in_channels)
+        self.debug_img_processing = debug_img_processing
+        self.mode = mode
+
+        # Shared-memory flags: main process flips them, persistent workers read
+        # the change without a re-fork
+        self._shared_flags = torch.zeros(2).share_memory_()
+        self.ignore_background = False
+        self.label_to_name = cfg.train.label_to_name
+        self.return_masks = str(cfg.task).lower() == "segment"
+        if self.return_masks:
+            self._assert_has_polygons()
+
+        self.mosaic_prob = resolve_mosaic_prob(cfg)
+        self.mosaic_scale = cfg.train.mosaic_augs.mosaic_scale
+        self.degrees = cfg.train.mosaic_augs.degrees
+        self.translate = cfg.train.mosaic_augs.translate
+        self.shear = cfg.train.mosaic_augs.shear
+        self.keep_ratio = cfg.train.keep_ratio
+        self.use_one_class = cfg.train.use_one_class
+        self.cases_to_debug = 100
+
+        self._init_augs(cfg)
+
+        self.debug_img_path = Path(cfg.train.debug_img_path)
+
+    def _assert_has_polygons(self) -> None:
+        """bbox-only labels parse to empty polygons, so masks would silently be all-zero."""
+        if self.coco_mode:
+            if any(parts for e in self._coco_entries for parts in e["polys_abs"]):
+                return
+            raise ValueError(
+                f"task=segment but no polygon annotations in the COCO json ({self.mode} split): "
+                "every ann is bbox-only (missing/empty 'segmentation'). "
+                "Point train.data_path at the segmentation dataset."
+            )
+        for img_path in self.split.iloc[:, 0]:
+            labels_path = self.root_path / "labels" / f"{Path(img_path).stem}.txt"
+            if not labels_path.exists():
+                continue
+            with open(labels_path, "r") as f:
+                for raw in f:
+                    s = raw.strip()
+                    if s and not s.startswith("#") and len(s.split()) - 1 >= 6:
+                        return  # early exit: first polygon found is enough
+        raise ValueError(
+            f"task=segment but no polygon annotations in {self.root_path / 'labels'} "
+            f"({self.mode} split): all labels are bbox-only. "
+            "Point train.data_path at the segmentation dataset."
+        )
+
+    @property
+    def mosaic_prob(self) -> float:
+        return float(self._shared_flags[0])
+
+    @mosaic_prob.setter
+    def mosaic_prob(self, value: float) -> None:
+        self._shared_flags[0] = float(value)
+
+    @property
+    def ignore_background(self) -> bool:
+        return bool(self._shared_flags[1])
+
+    @ignore_background.setter
+    def ignore_background(self, value: bool) -> None:
+        self._shared_flags[1] = float(bool(value))
+
+    def _init_augs(self, cfg) -> None:
+        pad_color = tuple([114] * self.in_channels)
+        if self.keep_ratio:
+            scaleup = False
+            if self.mode == "train":
+                scaleup = True
+
+            resize = [
+                LetterboxRect(
+                    height=self.target_h,
+                    width=self.target_w,
+                    color=pad_color,
+                    scaleup=scaleup,
+                    always_apply=True,
+                )
+            ]
+        else:
+            resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_LINEAR)]
+
+        norm = [
+            A.Normalize(mean=self.norm[0], std=self.norm[1]),
+            ToTensorV2(),
+        ]
+
+        if self.mode == "train":
+            augs = [
+                A.CoarseDropout(
+                    num_holes_range=(1, 2),
+                    hole_height_range=(0.05, 0.15),
+                    hole_width_range=(0.05, 0.15),
+                    p=cfg.train.augs.coarse_dropout,
+                ),
+                A.RandomBrightnessContrast(p=cfg.train.augs.brightness),
+                A.RandomGamma(p=cfg.train.augs.gamma),
+                A.Blur(p=cfg.train.augs.blur),
+                A.GaussNoise(p=cfg.train.augs.noise, std_range=(0.1, 0.2)),
+                A.Affine(
+                    rotate=[90, 90],
+                    p=cfg.train.augs.rotate_90,
+                    fit_output=True,
+                    mask_interpolation=cv2.INTER_LINEAR,
+                ),
+                A.HorizontalFlip(p=cfg.train.augs.left_right_flip),
+                A.VerticalFlip(p=cfg.train.augs.up_down_flip),
+                A.Rotate(
+                    limit=cfg.train.augs.rotation_degree,
+                    p=cfg.train.augs.rotation_p,
+                    interpolation=cv2.INTER_LINEAR,
+                    border_mode=cv2.BORDER_CONSTANT,
+                    fill=pad_color,
+                    mask_interpolation=cv2.INTER_LINEAR,
+                ),
+            ]
+            # ToGray is RGB-only; skip silently when input is not 3-channel.
+            if self.in_channels == 3:
+                augs.insert(5, A.ToGray(p=cfg.train.augs.to_gray))
+
+            self.transform = A.Compose(
+                augs + resize + norm,
+                bbox_params=A.BboxParams(
+                    format="pascal_voc", label_fields=["class_labels", "box_indices"]
+                ),
+                mask_interpolation=cv2.INTER_LINEAR,
+            )
+        elif self.mode in ["val", "test", "bench"]:
+            self.mosaic_prob = 0
+            self.transform = A.Compose(
+                resize + norm,
+                bbox_params=A.BboxParams(
+                    format="pascal_voc", label_fields=["class_labels", "box_indices"]
+                ),
+                mask_interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            raise ValueError(
+                f"Unknown mode: {self.mode}, choose from ['train', 'val', 'test', 'bench']"
+            )
+
+        self.mosaic_transform = A.Compose(norm, mask_interpolation=cv2.INTER_LINEAR)
+
+    def _debug_image(
+        self,
+        idx,
+        image: torch.Tensor,
+        boxes: torch.Tensor,
+        classes: torch.Tensor,
+        img_path: Path,
+        masks=None,
+    ) -> None:
+        # Unnormalize the image
+        mean = np.array(self.norm[0]).reshape(-1, 1, 1)
+        std = np.array(self.norm[1]).reshape(-1, 1, 1)
+        image_np = image.cpu().numpy()
+        image_np = (image_np * std) + mean
+
+        # Convert from [C, H, W] to [H, W, C]
+        image_np = np.transpose(image_np, (1, 2, 0))
+
+        # For N>3 channels, only the first 3 are saved (assumed RGB) so the
+        # debug viewer stays useful.
+        if image_np.shape[2] > 3:
+            image_np = image_np[:, :, :3]
+
+        # Convert pixel values from [0, 1] to [0, 255]
+        image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
+        image_np = np.ascontiguousarray(image_np)
+
+        if masks is not None and masks.numel() > 0:
+            mnp = masks.cpu().numpy()
+            for k in range(mnp.shape[0]):
+                cnts, _ = cv2.findContours(
+                    mnp[k].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                cv2.drawContours(image_np, cnts, -1, (0, 255, 0), 1)
+
+        # Draw bounding boxes and class IDs
+        boxes_np = boxes.cpu().numpy().astype(int)
+        classes_np = classes.cpu().numpy()
+        for box, class_id in zip(boxes_np, classes_np):
+            vis_one_box(image_np, box, class_id, mode="gt", label_to_name=self.label_to_name)
+
+        # Save the image
+        save_dir = self.debug_img_path / self.mode
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / f"{idx}_idx_{img_path.stem}_debug.jpg"
+        cv2.imwrite(str(save_path), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
+
+    def _read_image(self, path) -> Optional[np.ndarray]:
+        return read_image_rgb(path, self.in_channels)
+
+    def _get_data(self, idx) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        returns np.ndarray image (RGB for 3ch, multi-channel TIFF as-is for >3ch);
+        targets as np.ndarray [[class_id, x1, y1, x2, y2]]
+        """
+        if self.coco_mode:
+            return self._get_data_coco(idx)
+
+        # Get image
+        image_path = Path(self.split.iloc[idx].values[0])
+        full_path = self.root_path / "images" / f"{image_path}"
+        try:
+            image = self._read_image(full_path)
+        except ValueError as e:
+            logger.warning(f"Skipping {full_path}: {e}")
+            image = None
+        except Exception as e:
+            logger.warning(f"Skipping {full_path} (unreadable): {e}")
+            image = None
+        if image is None:
+            return None
+
+        height, width, _ = image.shape
+        orig_size = torch.tensor([height, width])
+
+        # Get labels
+        labels_path = self.root_path / "labels" / f"{image_path.stem}.txt"
+        targets = np.zeros((0, 5), dtype=np.float32)
+        polys_abs = []  # per target row: list of (K, 2) abs polygon parts; may be []
+
+        if labels_path.exists() and labels_path.stat().st_size > 1:
+            boxes_norm, polys_norm = parse_yolo_label_file(labels_path)
+
+            if boxes_norm.shape[0] and self.use_one_class:
+                boxes_norm[:, 0] = 0
+
+            xyxy_abs = norm_xywh_to_abs_xyxy(boxes_norm[:, 1:5], height, width).astype(np.float32)
+            targets = np.concatenate([boxes_norm[:, [0]], xyxy_abs], axis=1)  # [N,5]
+            polys_abs = [
+                [norm_poly_to_abs(p, height, width) for p in parts] for parts in polys_norm
+            ]
+        return image, targets, orig_size, polys_abs
+
+    def _get_data_coco(self, idx) -> Tuple[np.ndarray, np.ndarray, torch.Tensor, list]:
+        """Load image and annotations from pre-parsed COCO entries."""
+        entry = self._coco_entries[idx]
+        image_path = Path(entry["file_name"])
+        full_path = self.root_path / "images" / str(image_path)
+        try:
+            image = self._read_image(full_path)
+        except ValueError as e:
+            logger.warning(f"Skipping {full_path}: {e}")
+            image = None
+        except Exception as e:
+            logger.warning(f"Skipping {full_path} (unreadable): {e}")
+            image = None
+        if image is None:
+            return None
+
+        height, width, _ = image.shape
+        orig_size = torch.tensor([height, width])
+
+        targets = entry["targets"].copy()
+        polys_abs = [[p.copy() for p in parts] for parts in entry["polys_abs"]]
+        return image, targets, orig_size, polys_abs
+
+    def _load_mosaic(self, idx):
+        mosaic_targets = []
+        mosaic_segments = []
+        yc = int(random.uniform(self.target_h * 0.6, self.target_h * 1.4))
+        xc = int(random.uniform(self.target_w * 0.6, self.target_w * 1.4))
+        indices = [idx] + [random.randint(0, self.__len__() - 1) for _ in range(3)]
+
+        mosaic_img = None
+        for i_mosaic, m_idx in enumerate(indices):
+            result = self._get_data(m_idx)
+            # Retry with random indices if image is corrupt
+            retries = 0
+            while result is None and retries < 3:
+                m_idx = random.randint(0, self.__len__() - 1)
+                result = self._get_data(m_idx)
+                retries += 1
+            if result is None:
+                return None
+            img, targets, _, polys_abs = result
+            (h, w, c) = img.shape[:3]
+
+            if self.keep_ratio:
+                scale_h = min(1.0 * self.target_h / h, 1.0 * self.target_w / w)
+                scale_w = scale_h
+            else:
+                scale_h, scale_w = (1.0 * self.target_h / h, 1.0 * self.target_w / w)
+
+            img = cv2.resize(
+                img, (int(w * scale_w), int(h * scale_h)), interpolation=cv2.INTER_LINEAR
+            )
+            (h, w, c) = img.shape[:3]
+
+            if mosaic_img is None:
+                mosaic_img = np.full((self.target_h * 2, self.target_w * 2, c), 114, dtype=np.uint8)
+
+            (l_x1, l_y1, l_x2, l_y2), (s_x1, s_y1, s_x2, s_y2) = get_mosaic_coordinate(
+                mosaic_img, i_mosaic, xc, yc, w, h, self.target_h, self.target_w
+            )
+
+            mosaic_img[l_y1:l_y2, l_x1:l_x2] = img[s_y1:s_y2, s_x1:s_x2]
+            padw, padh = l_x1 - s_x1, l_y1 - s_y1
+
+            if targets.size > 0:
+                targets = targets.copy()
+                targets[:, 1] = scale_w * targets[:, 1] + padw
+                targets[:, 2] = scale_h * targets[:, 2] + padh
+                targets[:, 3] = scale_w * targets[:, 3] + padw
+                targets[:, 4] = scale_h * targets[:, 4] + padh
+            mosaic_targets.append(targets)
+
+            # adjust polygons 1:1 with targets rows (each row = list of parts)
+            for parts in polys_abs:
+                scaled = []
+                for p in parts:
+                    pp = p.astype(np.float32).copy()
+                    pp[:, 0] = pp[:, 0] * scale_w + padw
+                    pp[:, 1] = pp[:, 1] * scale_h + padh
+                    scaled.append(pp)
+                mosaic_segments.append(scaled)
+
+        if len(mosaic_targets):
+            mosaic_targets = np.concatenate(mosaic_targets, 0)
+
+            # Clip polygons to the mosaic canvas and update bboxes from clipped polygons
+            canvas_w, canvas_h = 2 * self.target_w, 2 * self.target_h
+            clipped_segments = []
+            valid_indices = []
+            for i, parts in enumerate(mosaic_segments):
+                if not parts:
+                    # detection-only annotation (no polygon) - keep the box
+                    clipped_segments.append([])
+                    valid_indices.append(i)
+                    continue
+                kept = [
+                    c
+                    for c in (clip_polygon_to_rect(p, canvas_w, canvas_h) for p in parts)
+                    if c.size >= 6  # At least 3 points for a valid polygon
+                ]
+                if kept:
+                    clipped_segments.append(kept)
+                    valid_indices.append(i)
+                    # Update bbox from the union of the surviving parts
+                    all_pts = np.concatenate(kept, axis=0)
+                    mosaic_targets[i, 1:5] = [*all_pts.min(axis=0), *all_pts.max(axis=0)]
+                # else: every part clipped away - drop box and segment
+
+            # keep only rows whose polygon survived clipping (det-only rows always kept)
+            mosaic_targets = mosaic_targets[valid_indices]
+            mosaic_segments = clipped_segments
+
+            # Clip bboxes (for detection-only annotations that don't have polygons)
+            np.clip(mosaic_targets[:, 1], 0, canvas_w, out=mosaic_targets[:, 1])
+            np.clip(mosaic_targets[:, 2], 0, canvas_h, out=mosaic_targets[:, 2])
+            np.clip(mosaic_targets[:, 3], 0, canvas_w, out=mosaic_targets[:, 3])
+            np.clip(mosaic_targets[:, 4], 0, canvas_h, out=mosaic_targets[:, 4])
+
+        mosaic_img, mosaic_targets, mosaic_segs = random_affine(
+            mosaic_img,
+            mosaic_targets if len(mosaic_targets) else np.zeros((0, 5), dtype=np.float32),
+            mosaic_segments if len(mosaic_segments) else [],
+            target_size=(self.target_w, self.target_h),
+            degrees=self.degrees,
+            translate=self.translate,
+            scales=self.mosaic_scale,
+            shear=self.shear,
+        )
+
+        # remove tiny boxes after affine
+        if mosaic_targets.shape[0]:
+            box_heights = mosaic_targets[:, 3] - mosaic_targets[:, 1]
+            box_widths = mosaic_targets[:, 4] - mosaic_targets[:, 2]
+            keep = np.minimum(box_heights, box_widths) > 1
+            mosaic_targets = mosaic_targets[keep]
+            mosaic_segs = [p for p, k in zip(mosaic_segs, keep) if k]
+        else:
+            mosaic_segs = []
+
+        image = self.mosaic_transform(image=mosaic_img)["image"]
+        labels = torch.tensor(mosaic_targets[:, 0], dtype=torch.int64)
+        boxes = torch.tensor(mosaic_targets[:, 1:], dtype=torch.float32)
+
+        # rasterize masks from transformed polygons
+        if self.return_masks and len(mosaic_segs):
+            H, W = self.target_h, self.target_w
+            masks = [poly_abs_to_mask(parts, H, W) for parts in mosaic_segs]
+            masks_t = torch.from_numpy(np.stack(masks, 0)).to(torch.uint8)
+        else:
+            masks_t = torch.zeros((0, self.target_h, self.target_w), dtype=torch.uint8)
+        return image, labels, boxes, masks_t, (self.target_h, self.target_w)
+
+    def close_mosaic(self):
+        self.mosaic_prob = 0.0
+        if is_main_process():
+            logger.info("Closing mosaic")
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        returns
+            image: CHW tensor
+            labels: (N,) long
+            boxes: (N,4) normalized xywh
+            masks_t: (N,H,W) uint8 (possibly N=0)
+            image_path: Path
+            orig_size: torch.tensor([H, W])
+            polys_out: per row, list of (K,2) absolute polygon parts at ORIGINAL resolution,
+                aligned with labels/boxes - only for val/test segmentation eval, else None.
+        """
+        image_path = Path(self.split.iloc[idx].values[0])
+        # Original-resolution GT polygons, for val/test eval.
+        polys_out = None
+        if random.random() < self.mosaic_prob:
+            mosaic_result = self._load_mosaic(idx)
+            if mosaic_result is None:
+                return None
+            image, labels, boxes, masks_t, orig_size = mosaic_result
+        else:
+            result = self._get_data(idx)  # boxes in abs xyxy format
+            if result is None:
+                return None
+            image, targets, orig_size, polys_abs = result
+
+            if self.ignore_background and np.all(targets == 0) and self.mode == "train":
+                return None
+
+            # remove tiny objects
+            if targets.shape[0]:
+                box_heights = targets[:, 3] - targets[:, 1]
+                box_widths = targets[:, 4] - targets[:, 2]
+                keep = np.minimum(box_heights, box_widths) > 0
+                targets = targets[keep]
+                polys_abs = [p for p, k in zip(polys_abs, keep) if k]
+            else:
+                polys_abs = []
+
+            masks_list = []
+            if self.return_masks and len(polys_abs) > 0:
+                H, W = image.shape[0], image.shape[1]
+                masks_list = [poly_abs_to_mask(parts, H, W) for parts in polys_abs]  # orig shape
+
+            # Apply transformations
+            if self.return_masks:
+                transformed = self.transform(
+                    image=image,
+                    bboxes=targets[:, 1:],
+                    class_labels=targets[:, 0],
+                    masks=masks_list,
+                    box_indices=list(range(len(targets))),
+                )
+                masks_all = transformed.get("masks", [])
+                surviving_indices = transformed.get("box_indices", [])
+
+                # Albumentations filters bboxes (and label_fields) but NOT masks.
+                # Use surviving_indices to select only masks corresponding to surviving boxes.
+                if masks_all and surviving_indices:
+                    masks = [masks_all[int(i)] for i in surviving_indices]
+                    masks_t = torch.stack([m.squeeze().to(dtype=torch.uint8) for m in masks], dim=0)
+                    surviving_polys = [polys_abs[int(i)] for i in surviving_indices]
+                else:
+                    masks_t = torch.zeros(
+                        (0, transformed["image"].shape[1], transformed["image"].shape[2]),
+                        dtype=torch.uint8,
+                    )
+                    surviving_polys = []
+
+                if self.mode != "train":
+                    polys_out = surviving_polys
+            else:
+                transformed = self.transform(
+                    image=image,
+                    bboxes=targets[:, 1:],
+                    class_labels=targets[:, 0],
+                    box_indices=list(range(len(targets))),
+                )
+                masks_t = torch.zeros(
+                    (0, transformed["image"].shape[1], transformed["image"].shape[2]),
+                    dtype=torch.uint8,
+                )
+
+            image = transformed["image"]  # RGB, CHW
+            boxes = torch.as_tensor(
+                np.array(transformed["bboxes"]), dtype=torch.float32
+            )  # abs xyxy
+            labels = torch.as_tensor(np.array(transformed["class_labels"]), dtype=torch.int64)
+
+        if self.debug_img_processing and idx <= self.cases_to_debug:
+            self._debug_image(idx, image, boxes, labels, image_path, masks=masks_t)
+
+        # return back to normalized format for model
+        boxes = torch.tensor(
+            abs_xyxy_to_norm_xywh(boxes, image.shape[1], image.shape[2]), dtype=torch.float32
+        )
+        return image, labels, boxes, masks_t, image_path, orig_size, polys_out
+
+    def __len__(self):
+        return len(self.split)
+
+
+class SemSegDataset(Dataset):
+    """Dense per-pixel labels for task=sem_seg.
+
+    Layout: images/<stem>.<ext> + labels/<stem>.png (single channel uint8,
+    pixel value = class id; ignore_index excluded from loss and metrics).
+    Masks always use NEAREST interpolation (LINEAR corrupts integer class ids)
+    and every pad-introducing aug fills the mask with ignore_index.
+    """
+
+    def __init__(
+        self,
+        img_size: Tuple[int, int],  # h, w
+        root_path: Path,
+        split: pd.DataFrame,
+        debug_img_processing: bool,
+        mode: str,
+        cfg: DictConfig,
+    ) -> None:
+        self.root_path = root_path
+        self.split = split
+        self.target_h, self.target_w = img_size
+        self.in_channels = int(cfg.train.in_channels)
+        self.norm = ([0.0] * self.in_channels, [1.0] * self.in_channels)
+        self.debug_img_processing = debug_img_processing
+        self.debug_img_path = Path(cfg.train.debug_img_path)
+        self.mode = mode
+        self.label_to_name = cfg.train.label_to_name
+        self.ignore_index = int(cfg.train.sem_seg.ignore_index)
+        self.cases_to_debug = 20
+        # dense-mask mosaic shares the box path's mosaic_augs knobs (affine warps img+mask)
+        self.mosaic_scale = cfg.train.mosaic_augs.mosaic_scale
+        self.degrees = cfg.train.mosaic_augs.degrees
+        self.translate = cfg.train.mosaic_augs.translate
+        self.shear = cfg.train.mosaic_augs.shear
+        # shared-memory so close_mosaic() reaches persistent workers (mirrors CustomDataset)
+        self._shared_flags = torch.zeros(1).share_memory_()
+        self.mosaic_prob = resolve_mosaic_prob(cfg) if mode == "train" else 0.0
+        self.ignore_background = False
+        self.keep_ratio = cfg.train.keep_ratio
+        self._init_augs(cfg)
+
+    @property
+    def mosaic_prob(self) -> float:
+        return float(self._shared_flags[0])
+
+    @mosaic_prob.setter
+    def mosaic_prob(self, value: float) -> None:
+        self._shared_flags[0] = float(value)
+
+    def _init_augs(self, cfg) -> None:
+        pad_color = tuple([114] * self.in_channels)
+        if self.keep_ratio:
+            # letterbox img (LINEAR/114) + dense mask (NEAREST/ignore_index); scaleup=True to match
+            # the /infer letterbox() default so train-eval mIoU == bench mIoU
+            resize = [
+                LetterboxRect(
+                    height=self.target_h,
+                    width=self.target_w,
+                    color=pad_color,
+                    scaleup=True,
+                    dense_mask=True,
+                    mask_fill=self.ignore_index,
+                    always_apply=True,
+                )
+            ]
+        else:
+            resize = [A.Resize(self.target_h, self.target_w, interpolation=cv2.INTER_LINEAR)]
+        norm = [A.Normalize(mean=self.norm[0], std=self.norm[1]), ToTensorV2()]
+
+        if self.mode == "train":
+            augs = [
+                A.CoarseDropout(
+                    num_holes_range=(1, 2),
+                    hole_height_range=(0.05, 0.15),
+                    hole_width_range=(0.05, 0.15),
+                    fill_mask=self.ignore_index,  # don't supervise classes under occluders
+                    p=cfg.train.augs.coarse_dropout,
+                ),
+                A.RandomBrightnessContrast(p=cfg.train.augs.brightness),
+                A.RandomGamma(p=cfg.train.augs.gamma),
+                A.Blur(p=cfg.train.augs.blur),
+                A.GaussNoise(p=cfg.train.augs.noise, std_range=(0.1, 0.2)),
+                A.Affine(rotate=[90, 90], p=cfg.train.augs.rotate_90, fit_output=True),
+                A.HorizontalFlip(p=cfg.train.augs.left_right_flip),
+                A.VerticalFlip(p=cfg.train.augs.up_down_flip),
+                A.Rotate(
+                    limit=cfg.train.augs.rotation_degree,
+                    p=cfg.train.augs.rotation_p,
+                    interpolation=cv2.INTER_LINEAR,
+                    border_mode=cv2.BORDER_CONSTANT,
+                    fill=pad_color,
+                    fill_mask=self.ignore_index,
+                ),
+            ]
+            if self.in_channels == 3:
+                augs.insert(5, A.ToGray(p=cfg.train.augs.to_gray))
+
+            # scale-jitter + crop after the deployment-identical resize (mosaic alternative)
+            jitter = cfg.train.augs.scale_jitter
+            post_resize = []
+            if jitter:
+                lo, hi = float(jitter[0]), float(jitter[1])
+                post_resize = [
+                    A.RandomScale(scale_limit=(lo - 1.0, hi - 1.0), p=1.0),
+                    A.PadIfNeeded(
+                        min_height=self.target_h,
+                        min_width=self.target_w,
+                        border_mode=cv2.BORDER_CONSTANT,
+                        fill=pad_color,
+                        fill_mask=self.ignore_index,
+                        position="random",
+                    ),
+                    A.RandomCrop(self.target_h, self.target_w),
+                ]
+            self.transform = A.Compose(
+                augs + resize + post_resize + norm, mask_interpolation=cv2.INTER_NEAREST
+            )
+            # mosaic already emits a target-size affine crop -> augs + resize (snaps any aug size
+            # drift back to target, e.g. Affine fit_output) + norm; skips scale_jitter (affine's job)
+            self.mosaic_transform = A.Compose(
+                augs + resize + norm, mask_interpolation=cv2.INTER_NEAREST
+            )
+        elif self.mode in ["val", "test", "bench"]:
+            self.transform = A.Compose(resize + norm, mask_interpolation=cv2.INTER_NEAREST)
+        else:
+            raise ValueError(
+                f"Unknown mode: {self.mode}, choose from ['train', 'val', 'test', 'bench']"
+            )
+
+    def _debug_image(self, idx, image: torch.Tensor, sem_mask: torch.Tensor, img_path: Path):
+        mean = np.array(self.norm[0]).reshape(-1, 1, 1)
+        std = np.array(self.norm[1]).reshape(-1, 1, 1)
+        image_np = image.cpu().numpy() * std + mean
+        image_np = np.transpose(image_np, (1, 2, 0))[:, :, :3]
+        image_np = np.ascontiguousarray(np.clip(image_np * 255.0, 0, 255).astype(np.uint8))
+        image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+
+        palette = sem_seg_palette(len(self.label_to_name))
+        image_np = overlay_sem_seg(
+            image_np,
+            sem_mask.cpu().numpy().astype(np.uint8),
+            palette,
+            ignore_index=self.ignore_index,
+        )
+        save_dir = self.debug_img_path / self.mode
+        save_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(save_dir / f"{idx}_idx_{img_path.stem}_debug.jpg"), image_np)
+
+    def _load_image_mask(self, idx: int):
+        """Load one (image HWC, mask HW) pair at native resolution, or None if unreadable."""
+        image_path = Path(self.split.iloc[idx].values[0])
+        full_path = self.root_path / "images" / f"{image_path}"
+        try:
+            image = read_image_rgb(full_path, self.in_channels)
+        except ValueError as e:
+            logger.warning(f"Skipping {full_path}: {e}")
+            return None
+        if image is None:
+            return None
+        mask_path = self.root_path / "labels" / f"{image_path.stem}.png"
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            logger.warning(f"Skipping {full_path}: can't read mask")
+            return None
+        invalid = (mask >= len(self.label_to_name)) & (mask != self.ignore_index)
+        if invalid.any():
+            raise ValueError(
+                f"{mask_path}: class id {int(mask[invalid][0])} >= num_classes="
+                f"{len(self.label_to_name)} (ignore_index={self.ignore_index}); "
+                "masks must use contiguous label_to_name ids"
+            )
+        return image, mask
+
+    def _load_mosaic(self, idx: int):
+        """4-image mosaic for dense masks: mirrors the box-path mosaic but tiles the label map
+        alongside the image (NEAREST, ignore_index fill) - no polygons needed since the mask is
+        just a second image plane. Tiles into a 2H x 2W canvas at a jittered junction, then affine-
+        warps a target-size window out of it (scale/translate/shear from mosaic_augs; image
+        LINEAR/114, mask NEAREST/ignore_index) - the scale jitter + crop the box path gets."""
+        H, W = self.target_h, self.target_w
+        yc = int(random.uniform(H * 0.6, H * 1.4))
+        xc = int(random.uniform(W * 0.6, W * 1.4))
+        indices = [idx] + [random.randint(0, len(self.split) - 1) for _ in range(3)]
+        img4 = np.full((H * 2, W * 2, self.in_channels), 114, dtype=np.uint8)
+        mask4 = np.full((H * 2, W * 2), self.ignore_index, dtype=np.uint8)
+        for i, m_idx in enumerate(indices):
+            r, retries = self._load_image_mask(m_idx), 0
+            while r is None and retries < 3:
+                r = self._load_image_mask(random.randint(0, len(self.split) - 1))
+                retries += 1
+            if r is None:
+                return None
+            img, mask = r
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
+            mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
+            (lx1, ly1, lx2, ly2), (sx1, sy1, sx2, sy2) = get_mosaic_coordinate(
+                img4, i, xc, yc, W, H, H, W
+            )
+            img4[ly1:ly2, lx1:lx2] = img[sy1:sy2, sx1:sx2]
+            mask4[ly1:ly2, lx1:lx2] = mask[sy1:sy2, sx1:sx2]
+        M, _ = get_transform_matrix(
+            img4.shape[:2], (W, H), self.degrees, self.mosaic_scale, self.shear, self.translate
+        )
+        img4 = cv2.warpAffine(
+            img4,
+            M[:2],
+            dsize=(W, H),
+            flags=cv2.INTER_LINEAR,
+            borderValue=tuple([114] * self.in_channels),
+        )
+        mask4 = cv2.warpAffine(
+            mask4, M[:2], dsize=(W, H), flags=cv2.INTER_NEAREST, borderValue=self.ignore_index
+        )
+        return img4, mask4
+
+    def close_mosaic(self):
+        self.mosaic_prob = 0.0
+        logger.info("Closing mosaic")
+
+    def __getitem__(self, idx: int):
+        """returns (image CHW float, sem_mask (H,W) long, image_path, orig_size (H,W))"""
+        image_path = Path(self.split.iloc[idx].values[0])
+        if self.mosaic_prob and random.random() < self.mosaic_prob:
+            mosaic = self._load_mosaic(idx)
+            if mosaic is None:
+                return None
+            image, sem_mask = mosaic
+            orig_size = torch.tensor([self.target_h, self.target_w])  # train-only; orig res unused
+            transformed = self.mosaic_transform(image=image, mask=sem_mask)  # already target-size
+        else:
+            r = self._load_image_mask(idx)
+            if r is None:
+                return None
+            image, sem_mask = r
+            orig_size = torch.tensor(image.shape[:2])
+            transformed = self.transform(image=image, mask=sem_mask)
+
+        image_t = transformed["image"]
+        sem_mask_t = transformed["mask"].long()
+
+        if self.debug_img_processing and idx <= self.cases_to_debug:
+            self._debug_image(idx, image_t, sem_mask_t, image_path)
+        return image_t, sem_mask_t, image_path, orig_size
+
+    def __len__(self):
+        return len(self.split)
+
+
+def sem_seg_collate_fn(batch):
+    batch = [item for item in batch if item is not None]
+    if len(batch) == 0:
+        return None, None, None
+    images = torch.stack([item[0] for item in batch], dim=0)
+    targets = [{"sem_mask": item[1], "orig_size": item[3]} for item in batch]
+    img_paths = [item[2] for item in batch]
+    return images, targets, img_paths
+
+
+class Loader:
+    def __init__(
+        self,
+        root_path: Path,
+        img_size: Tuple[int, int],
+        batch_size: int,
+        num_workers: int,
+        cfg: DictConfig,
+        debug_img_processing: bool = False,
+    ) -> None:
+        self.root_path = root_path
+        self.img_size = img_size
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.cfg = cfg
+        self.task = str(cfg.task).lower()
+        self.use_one_class = cfg.train.use_one_class
+        self.coco_dataset = cfg.train.get("coco_dataset", False)
+        if self.task == "sem_seg" and self.coco_dataset:
+            raise ValueError("task=sem_seg expects PNG masks (labels/), not COCO JSON")
+        self.debug_img_processing = debug_img_processing
+        self.coco_annotations = {"train": None, "val": None, "test": None}
+        self._get_splits()
+        self.class_names = list(cfg.train.label_to_name.values())
+        self.multiscale_prob = cfg.train.augs.multiscale_prob
+        self.train_sampler = None
+
+    def _get_splits(self) -> None:
+        self.splits = {"train": None, "val": None, "test": None}
+        if self.coco_dataset:
+            self._get_splits_coco()
+        else:
+            self._get_splits_yolo()
+        assert len(self.splits["train"]) and len(self.splits["val"]), (
+            f"Train and Val splits must be present at {self.root_path}"
+        )
+
+    def _get_splits_yolo(self) -> None:
+        for split_name in self.splits:
+            if (self.root_path / f"{split_name}.csv").exists():
+                self.splits[split_name] = pd.read_csv(
+                    self.root_path / f"{split_name}.csv", header=None
+                )
+            else:
+                self.splits[split_name] = []
+
+    def _get_splits_coco(self) -> None:
+        for split_name in self.splits:
+            json_path = self.root_path / f"{split_name}.json"
+            if json_path.exists():
+                entries, _ = load_coco_split(json_path, use_one_class=self.use_one_class)
+                self.splits[split_name] = pd.DataFrame([e["file_name"] for e in entries])
+                self.coco_annotations[split_name] = entries
+                if is_main_process():
+                    logger.info(f"Loaded {len(entries)} images from {json_path.name}")
+            else:
+                self.splits[split_name] = []
+
+    def _get_label_stats(self) -> Dict:
+        if self.use_one_class:
+            classes = {"target": 0}
+        else:
+            classes = {class_name: 0 for class_name in self.class_names}
+
+        if self.coco_dataset:
+            for coco_anns in self.coco_annotations.values():
+                if coco_anns is None:
+                    continue
+                for entry in coco_anns:
+                    targets = entry["targets"]
+                    if targets.shape[0] == 0:
+                        continue
+                    for class_id in targets[:, 0]:
+                        if self.use_one_class:
+                            classes["target"] += 1
+                        else:
+                            classes[self.class_names[int(class_id)]] += 1
+        else:
+            for split in self.splits.values():
+                if not np.any(split):
+                    continue
+                for image_path in split.iloc[:, 0]:
+                    labels_path = self.root_path / "labels" / f"{Path(image_path).stem}.txt"
+                    if not (labels_path.exists() and labels_path.stat().st_size > 1):
+                        continue
+                    targets, _ = parse_yolo_label_file(labels_path)
+                    if targets.ndim == 1:
+                        targets = targets.reshape(1, -1)
+                    labels = targets[:, 0]
+                    for class_id in labels:
+                        if self.use_one_class:
+                            classes["target"] += 1
+                        else:
+                            classes[self.class_names[int(class_id)]] += 1
+        return classes
+
+    def _get_amount_of_background(self):
+        if self.coco_dataset:
+            count = 0
+            for coco_anns in self.coco_annotations.values():
+                if coco_anns is None:
+                    continue
+                for entry in coco_anns:
+                    if entry["targets"].shape[0] == 0:
+                        count += 1
+            return count
+
+        labels = set()
+        for label_path in (self.root_path / "labels").iterdir():
+            if not label_path.stat().st_size:
+                label_path.unlink()  # remove empty txt files
+            elif not (label_path.stem.startswith(".") and label_path.name == "labels.txt"):
+                labels.add(label_path.stem)
+
+        raw_split_images = set()
+        for split in self.splits.values():
+            if np.any(split):
+                raw_split_images.update(split.iloc[:, 0].values)
+
+        split_images = []
+        for split_image in raw_split_images:
+            split_images.append(Path(split_image).stem)
+
+        images = {
+            f.stem for f in (self.root_path / "images").iterdir() if not f.stem.startswith(".")
+        }
+        images = images.intersection(split_images)
+        return len(images - labels)
+
+    def _build_dataloader_impl(
+        self, dataset: Dataset, shuffle: bool = False, distributed: bool = False
+    ) -> DataLoader:
+        collate_fn = self.val_collate_fn
+        if dataset.mode == "train":
+            collate_fn = self.train_collate_fn
+        if self.task == "sem_seg":
+            collate_fn = sem_seg_collate_fn
+
+        sampler = None
+        shuffle_flag = shuffle
+
+        if distributed:
+            # Use DistributedSampler for both train and val/test in DDP mode
+            # For val/test: shuffle=False, drop_last=False to ensure all samples are evaluated
+            sampler = DistributedSampler(
+                dataset, shuffle=(shuffle and dataset.mode == "train"), drop_last=False
+            )
+            shuffle_flag = False  # cannot use shuffle=True when sampler is set
+
+        dl_kwargs = dict(
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=shuffle_flag,
+            sampler=sampler,
+            collate_fn=collate_fn,
+            worker_init_fn=seed_worker,
+            pin_memory=True,
+        )
+        if self.num_workers > 0:
+            dl_kwargs["prefetch_factor"] = 2
+            # Only train benefits from persistent workers (avoids re-forking from a
+            # post-validation bloated parent each epoch). Val/test run briefly once
+            # per epoch; keeping their workers alive is pure RAM overhead.
+            dl_kwargs["persistent_workers"] = dataset.mode == "train"
+
+        dataloader = DataLoader(dataset, **dl_kwargs)
+
+        if dataset.mode == "train":
+            self.train_sampler = sampler
+
+        return dataloader
+
+    def _make_dataset(self, split: str, mode: Optional[str] = None) -> Dataset:
+        """`split` picks the data; `mode` overrides the dataset mode (bench reuses val/test)."""
+        mode = mode or split
+        if self.task == "sem_seg":
+            return SemSegDataset(
+                self.img_size,
+                self.root_path,
+                self.splits[split],
+                self.debug_img_processing,
+                mode=mode,
+                cfg=self.cfg,
+            )
+        return CustomDataset(
+            self.img_size,
+            self.root_path,
+            self.splits[split],
+            self.debug_img_processing,
+            mode=mode,
+            cfg=self.cfg,
+            coco_annotations=self.coco_annotations[split],
+        )
+
+    def build_dataloaders(
+        self, distributed: bool = False
+    ) -> Tuple[DataLoader, DataLoader, DataLoader]:
+        train_ds = self._make_dataset("train")
+        val_ds = self._make_dataset("val")
+
+        train_loader = self._build_dataloader_impl(train_ds, shuffle=True, distributed=distributed)
+        val_loader = self._build_dataloader_impl(val_ds, shuffle=False, distributed=distributed)
+
+        test_loader = None
+        test_ds = []
+        if len(self.splits["test"]):
+            test_ds = self._make_dataset("test")
+            test_loader = self._build_dataloader_impl(
+                test_ds, shuffle=False, distributed=distributed
+            )
+
+        if is_main_process():
+            logger.info(
+                f"Images in train: {len(train_ds)}, val: {len(val_ds)}, test: {len(test_ds)}"
+            )
+            if self.task != "sem_seg":  # object/background stats are box-label based
+                obj_stats = self._get_label_stats()
+                sorted_obj_stats = dict(
+                    sorted(obj_stats.items(), key=lambda item: item[1], reverse=True)
+                )
+                logger.info(
+                    f"Objects count: {', '.join(f'{key}: {value}' for key, value in sorted_obj_stats.items())}"
+                )
+                logger.info(f"Background images: {self._get_amount_of_background()}")
+        return train_loader, val_loader, test_loader
+
+    def _collate_fn(self, batch) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+        """
+        Input: List[Tuple[Tensor[channel, height, width], Tensor[labels], Tensor[boxes]], ...]
+        where each tuple is a an item in a batch...]
+        """
+        batch = [item for item in batch if item is not None]
+        if len(batch) == 0:
+            return None, None, None
+        images = []
+        targets = []
+        img_paths = []
+
+        for item in batch:
+            target_dict = {
+                "labels": item[1],
+                "boxes": item[2],
+                "masks": item[3],
+                "orig_size": item[5],
+                "polys": item[6],
+            }
+            images.append(item[0])
+            targets.append(target_dict)
+            img_paths.append(item[4])
+
+        images = torch.stack(images, dim=0)
+        return images, targets, img_paths
+
+    def val_collate_fn(self, batch) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+        return self._collate_fn(batch)
+
+    def train_collate_fn(
+        self, batch
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+        """
+        During traing add multiscale augmentation to the batch
+        """
+        images, targets, img_paths = self._collate_fn(batch)
+
+        if random.random() < self.multiscale_prob:
+            offset = random.choice([-2, -1, 1, 2]) * 32
+            new_h = images.shape[2] + offset
+            new_w = images.shape[3] + offset
+
+            # boxes are normalized, so only image should be resized
+            images = torch.nn.functional.interpolate(
+                images, size=(new_h, new_w), mode="bilinear", align_corners=False
+            )
+
+            for t in targets:
+                m = t["masks"]
+                if m.numel() == 0:
+                    continue
+                m = m.unsqueeze(1).float()  # (N,1,H,W)
+                m = torch.nn.functional.interpolate(
+                    m, size=(new_h, new_w), mode="bilinear", align_corners=False
+                )
+                t["masks"] = (m.squeeze(1) > 0.5).to(torch.uint8)  # back to (N,H,W)
+        return images, targets, img_paths

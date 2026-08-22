@@ -8,8 +8,8 @@ tests/integration/test_muon_param_groups.py.
 
 import torch
 
-from src.d_fine.dfine import MUON_TOKENS, _is_muon_param
-from src.d_fine.muon import MuonWithAuxAdam, _zeropower_via_newtonschulz5
+from dfine_seg.model.dfine import MUON_TOKENS, _is_muon_param
+from dfine_seg.model.muon import MuonWithAuxAdam, _zeropower_via_newtonschulz5
 
 
 def _p(ndim):

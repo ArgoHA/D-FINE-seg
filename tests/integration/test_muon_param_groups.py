@@ -8,8 +8,8 @@ group — both caught here. No weights loaded (random init), CPU only.
 import pytest
 from torch import optim
 
-from src.d_fine.dfine import _is_muon_param, build_model, build_optimizer
-from src.d_fine.muon import MuonWithAuxAdam
+from dfine_seg.model.dfine import _is_muon_param, build_model, build_optimizer
+from dfine_seg.model.muon import MuonWithAuxAdam
 
 
 @pytest.fixture(scope="module")

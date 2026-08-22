@@ -1,4 +1,4 @@
-"""Pin coordinate / box conversions in `src/dl/utils.py`.
+"""Pin coordinate / box conversions in `dfine_seg/dl/utils.py`.
 
 These are the workhorses behind every detection postprocess and the YOLO label
 writer — any silent change here corrupts both eval and exported labels.
@@ -7,7 +7,7 @@ writer — any silent change here corrupts both eval and exported labels.
 import numpy as np
 import torch
 
-from src.dl.utils import (
+from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,
     clip_boxes,
     norm_xywh_to_abs_xyxy,
