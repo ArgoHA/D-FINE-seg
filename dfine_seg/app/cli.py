@@ -47,6 +47,8 @@ Examples:
   dfine demo --port 8080
   dfine train model_name=m train.epochs=100
   dfine export export.formats=[onnx]
+
+Full help, flags and examples: dfine <command> -h
 """
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".npy"}
@@ -54,11 +56,24 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".npy"}
 
 def _predict(argv: List[str]) -> int:
     """Config-free inference, so a pip user can try a model straight after installing."""
-    ap = argparse.ArgumentParser(prog="dfine predict")
+    ap = argparse.ArgumentParser(
+        prog="dfine predict",
+        epilog=(
+            "examples:\n"
+            "  dfine predict s photo.jpg -o out/\n"
+            "  dfine predict model.engine frames/ --task segment --conf 0.3 -o out/\n"
+            "  dfine predict path/to/model.pt dir/ --device cpu\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("model", help="size (n|s|m|l|x) or path to a .pt/.engine/.onnx/.xml/…")
     ap.add_argument("source", type=Path, help="image file or a directory of images")
-    ap.add_argument("--task", choices=("detect", "segment", "sem_seg"))
-    ap.add_argument("--conf", type=float, default=0.5, help="confidence threshold")
+    ap.add_argument(
+        "--task",
+        choices=("detect", "segment", "sem_seg"),
+        help="task for .pt weights (graph artifacts carry it)",
+    )
+    ap.add_argument("--conf", type=float, default=0.5, help="confidence threshold (default 0.5)")
     ap.add_argument("--device", help="cuda | cpu | mps (default: best available)")
     ap.add_argument("-o", "--out", type=Path, help="save annotated images / label maps here")
     args = ap.parse_args(argv)
