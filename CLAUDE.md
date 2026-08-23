@@ -61,7 +61,7 @@ Every command is Hydra — any key overrides on the CLI: `dfine train exp_name=m
 `.npy` (RGB+extras); wrappers take `bgr: bool = True`. `task=segment` needs real polygons — bbox-only
 COCO/JSON raises `_assert_has_polygons`.
 **SAM3:** `python -m dfine_seg.etl.sam_labels /abs/images --prompt person --format coco --task segment`
-writes `coco.json` (or YOLO txts) into `<src>_labels/`. Detect labels SAM3's box head; segment measures
+writes `coco.json` (or YOLO txts) into `<src>_labels/`; repeat `--prompt` for multi-class ("car, person" in one flag also works). Detect labels SAM3's box head; segment measures
 boxes off the written polygons (never raw mask extent). Needs `[label]` (in `uv sync`); gated `facebook/sam3`
 is cache-only — `--model <local snapshot>` or `HF_HUB_OFFLINE=1`.
 

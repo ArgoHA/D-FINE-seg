@@ -280,7 +280,7 @@ Output contract: detection / instance segmentation wrappers return `labels`, `bo
 Also provided:
 
 - `Bytetrack` - simple implementation of object tracker
-- `SAM3` - text-promptable zero-shot segmentation for auto-labeling
+- `SAM3` - text-promptable zero-shot segmentation for auto-labeling (multi-class: repeat `--prompt` or pass `"car, person"`)
 
 ### Multi-Object Tracking
 
@@ -292,7 +292,7 @@ A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.068
 dfine demo         # == make demo   (pip: pip install 'dfine-seg[demo]')
 ```
 
-A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation.
+A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation (prompts are comma- or newline-separated - each one becomes a class).
 
 It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the Model panel loads any path the browser sends, so anyone who can reach the port can load files off this machine. `dfine demo --host 127.0.0.1` restores local-only.
 

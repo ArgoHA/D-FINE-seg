@@ -21,8 +21,9 @@ Usage:
 
 Output lands in `~/data/frames_labels` unless `--out` says otherwise; the COCO file is
 named `coco.json` so `make split` can consume it directly. Repeat `--prompt` for a
-multi-class dataset: COCO category ids and YOLO class indices follow the order the
-prompts are given in, and the YOLO output records the names in `labels.txt`.
+multi-class dataset (one comma-separated flag works too): COCO category ids and YOLO
+class indices follow the order the prompts are given in, and the YOLO output records
+the names in `labels.txt`.
 
 Needs `transformers`, which the project venv does not carry - run it with an interpreter
 that has it. `facebook/sam3` is gated, so without a token that has access the processor's
@@ -129,31 +130,31 @@ def _polygon_bbox_area(
     return bbox, int(canvas.sum())
 
 
-def build_instances(
-    res: dict, category_index: int, width: int, height: int, options: Options
-) -> list[Instance]:
-    """Convert one prompt's SAM3 output into instances in original-image pixels.
+def build_instances(res: dict, width: int, height: int, options: Options) -> list[Instance]:
+    """Convert SAM3's merged multi-prompt output into instances in original-image pixels.
 
     `detect` takes SAM3's own box head, clamped to the image. `segment` measures the rings
     it emits instead, because a box that doesn't contain its polygons is mask area the
-    training loader flags as unreachable at inference.
+    training loader flags as unreachable at inference. Class ids come from the wrapper's
+    `labels` (prompt index, in `--prompt` order).
     """
     scores = res["scores"].numpy()
+    labels = res["labels"].numpy()
     if options.task == "detect":
         boxes = res["boxes"].numpy().clip((0, 0, 0, 0), (width, height, width, height))
         return [
             Instance(
-                category_index=category_index,
+                category_index=int(label),
                 score=float(score),
                 bbox=(x1, y1, x2 - x1, y2 - y1),
                 area=int(round((x2 - x1) * (y2 - y1))),
             )
-            for (x1, y1, x2, y2), score in zip(boxes, scores)
+            for (x1, y1, x2, y2), score, label in zip(boxes, scores, labels)
             if x2 > x1 and y2 > y1
         ]
 
     instances = []
-    for mask, score in zip(res["masks"].numpy(), scores):
+    for mask, score, label in zip(res["masks"].numpy(), scores, labels):
         mask = np.ascontiguousarray(mask.reshape(mask.shape[-2:]), np.uint8)
         polygons = mask_to_polygons(mask, options.min_island_px, options.polygon_epsilon)
         if not polygons:
@@ -161,7 +162,7 @@ def build_instances(
         bbox, area = _polygon_bbox_area(polygons)
         instances.append(
             Instance(
-                category_index=category_index,
+                category_index=int(label),
                 score=float(score),
                 bbox=bbox,
                 area=area,
@@ -174,18 +175,15 @@ def build_instances(
 def annotate_image(model: SAM3Model, path: Path, name: str, options: Options) -> ImageRecord:
     """Segment one image against every prompt and collect the instances found.
 
-    SAM3 takes one text prompt per forward, so a multi-class run re-encodes the image
-    once per prompt.
+    The wrapper runs one forward per prompt (SAM3 takes a single text) and merges the
+    detections, tagging each instance with its prompt index.
     """
     image = cv2.imread(str(path))
     if image is None:
         raise ValueError(f"unreadable image: {path}")
     height, width = image.shape[:2]
 
-    instances: list[Instance] = []
-    for category_index, prompt in enumerate(options.prompts):
-        res = model(image, prompt=prompt)[0]
-        instances.extend(build_instances(res, category_index, width, height, options))
+    instances = build_instances(model(image, prompts=options.prompts)[0], width, height, options)
     return ImageRecord(file_name=name, width=width, height=height, instances=instances)
 
 
@@ -376,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     options = Options(
-        prompts=[prompt.strip() for prompt in args.prompts],
+        prompts=[p for value in args.prompts for p in SAM3Model.parse_prompts(value)],
         task=args.task,
         format=args.format,
         min_island_px=args.min_island_px,
