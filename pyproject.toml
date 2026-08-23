@@ -1,6 +1,6 @@
 [project]
 name = "dfine-seg"
-version = "0.3.0"
+version = "0.3.1"
 description = "D-FINE-seg: detection + instance + semantic segmentation framework"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

@@ -542,7 +542,7 @@ wheels = [
 
 [[package]]
 name = "dfine-seg"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "albumentations", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
