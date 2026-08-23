@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from dfine_seg.infer.sam3_model import SAM3Model
+pytest.importorskip("transformers")  # the [label] extra
+
+from dfine_seg.infer.sam3_model import SAM3Model  # noqa: E402
 
 
 @pytest.mark.parametrize(
