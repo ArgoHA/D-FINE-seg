@@ -292,4 +292,10 @@ def _hf_download(filename: str, local_dir: str | None, hint: str) -> str:
             f"Install with `pip install huggingface_hub` or place the file at {hint} manually."
         ) from e
     kwargs = {"local_dir": local_dir} if local_dir else {}
+    # The Hub counts downloads against the repo's query file (config.json by default);
+    # fetch it with every weight, or .pt requests never move the public counter.
+    try:
+        hf_hub_download(repo_id=HF_REPO_ID, filename="config.json", **kwargs)
+    except Exception:
+        logger.debug(f"No config.json in {HF_REPO_ID}; download counter may stay at 0")
     return hf_hub_download(repo_id=HF_REPO_ID, filename=filename, **kwargs)

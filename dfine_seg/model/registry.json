@@ -1,0 +1,62 @@
+{
+  "repo_id": "ArgoSA/D-FINE-seg",
+  "version": "0.3.0",
+  "tasks": [
+    "detect",
+    "segment"
+  ],
+  "datasets": [
+    "coco",
+    "obj2coco"
+  ],
+  "img_size": [
+    640,
+    640
+  ],
+  "files": {
+    "n": {
+      "detect": {
+        "coco": "dfine_n_coco.pt"
+      },
+      "segment": {
+        "coco": "dfine_seg_n_coco.pt"
+      }
+    },
+    "s": {
+      "detect": {
+        "coco": "dfine_s_coco.pt",
+        "obj2coco": "dfine_s_obj2coco.pt"
+      },
+      "segment": {
+        "coco": "dfine_seg_s_coco.pt"
+      }
+    },
+    "m": {
+      "detect": {
+        "coco": "dfine_m_coco.pt",
+        "obj2coco": "dfine_m_obj2coco.pt"
+      },
+      "segment": {
+        "coco": "dfine_seg_m_coco.pt"
+      }
+    },
+    "l": {
+      "detect": {
+        "coco": "dfine_l_coco.pt",
+        "obj2coco": "dfine_l_obj2coco.pt"
+      },
+      "segment": {
+        "coco": "dfine_seg_l_coco.pt"
+      }
+    },
+    "x": {
+      "detect": {
+        "coco": "dfine_x_coco.pt",
+        "obj2coco": "dfine_x_obj2coco.pt"
+      },
+      "segment": {
+        "coco": "dfine_seg_x_coco.pt"
+      }
+    }
+  }
+}

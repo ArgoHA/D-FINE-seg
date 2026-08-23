@@ -16,6 +16,7 @@
 
 <p align="center">
   <a href="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml"><img src="https://github.com/ArgoHA/D-FINE-seg/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <a href="https://pypi.org/project/dfine-seg/"><img src="https://img.shields.io/pypi/v/dfine-seg" alt="PyPI version"></a>
   <a href="https://arxiv.org/abs/2602.23043"><img src="https://img.shields.io/badge/arXiv-2602.23043-b31b1b.svg" alt="arXiv"></a>
   <a href="https://huggingface.co/ArgoSA/D-FINE-seg"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20Card-yellow.svg" alt="Hugging Face Model Card"></a>
   <a href="https://github.com/ArgoHA/D-FINE-seg/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
