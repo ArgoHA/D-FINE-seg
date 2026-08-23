@@ -109,7 +109,8 @@ jobs:
         run: |
           # PyPI rejects a file-name reuse with 400, so a release whose version was
           # already uploaded (e.g. manually) must skip publishing instead of failing.
-          VERSION=$(python -c "import re,sys;print(re.match(r'dfine_seg-(.+)-py3',sys.argv[1]).group(1))" "$(ls dist/*.whl)")
+          WHL=$(basename "$(ls dist/*.whl | head -1)")
+          VERSION=$(python -c "import re,sys;print(re.match(r'dfine_seg-(.+)-py3',sys.argv[1]).group(1))" "$WHL")
           CODE=$(curl -s -o /dev/null -w '%{http_code}' "$INDEX/pypi/dfine-seg/$VERSION/json")
           echo "version=$VERSION index_http=$CODE"
           echo "exists=$([ "$CODE" = "200" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
