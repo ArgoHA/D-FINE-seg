@@ -14,7 +14,8 @@ Backends selectable in the UI:
     .engine  -> TensorRT  (CUDA)
     .onnx    -> ONNXRuntime
     .xml     -> OpenVINO  (CPU / iGPU)
-  SAM3       - text-promptable instance segmentation (facebook/sam3, lazy-loaded)
+  SAM3       - text-promptable instance segmentation (facebook/sam3, lazy-loaded);
+              comma- or newline-separated prompts = classes (e.g. `car, person`)
 
 Tabs:
   1. Images - upload or webcam snapshot -> annotated result
@@ -159,7 +160,6 @@ def _get_sam_model():
 
 # ─── Initialization ─────────────────────────────────────────────────────
 DEFAULT_BACKEND = "D-FINE-seg"
-sam_visualizer = Visualizer(n_classes=1)  # single prompt class; name set per-run
 
 
 # ─── Inference helpers ───────────────────────────────────────────────────
@@ -178,10 +178,9 @@ def _select_backend(backend: str, prompt: str, conf_thresh: float):
     """Return (model, visualizer) for the chosen backend, applying conf / prompt."""
     if backend == "SAM3":
         m = _get_sam_model()
-        m.prompt = (prompt or "object").strip()
+        m.prompts = m.parse_prompts(prompt)
         m.conf_thresh = float(np.clip(conf_thresh, 0.0, 1.0))
-        sam_visualizer.class_names = {0: m.prompt}
-        return m, sam_visualizer
+        return m, Visualizer(n_classes=len(m.prompts), class_names=dict(enumerate(m.prompts)))
     if CURRENT.model is None:
         raise gr.Error("No model loaded - fix the model settings above and press Load.")
     _set_model_conf_threshold(CURRENT.model, conf_thresh)
@@ -383,8 +382,8 @@ def build_ui(model: str = DEFAULT_MODEL, task: str = DEFAULT_TASK) -> gr.Blocks:
                         )
                         img_prompt = gr.Textbox(
                             value="person",
-                            label="Text prompt",
-                            info="used only when Backend is SAM3",
+                            label="Text prompts",
+                            info="SAM3 only - comma- or newline-separated; each prompt = a class",
                         )
                         img_conf_thresh = gr.Slider(
                             minimum=0.0,
@@ -420,8 +419,8 @@ def build_ui(model: str = DEFAULT_MODEL, task: str = DEFAULT_TASK) -> gr.Blocks:
                         )
                         vid_prompt = gr.Textbox(
                             value="person",
-                            label="Text prompt",
-                            info="used only when Backend is SAM3",
+                            label="Text prompts",
+                            info="SAM3 only - comma- or newline-separated; each prompt = a class",
                         )
                         vid_conf_thresh = gr.Slider(
                             minimum=0.0,
