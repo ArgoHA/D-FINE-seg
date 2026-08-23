@@ -280,3 +280,55 @@ def test_read_image_accepts_str_and_path(tmp_path):
     p = tmp_path / "x.npy"
     np.save(p, arr)
     assert read_image(str(p)).shape == read_image(Path(p)).shape
+
+
+# ---- hub downloads -----------------------------------------------------------
+
+
+def test_hf_download_also_fetches_config_json(monkeypatch, tmp_path):
+    """The Hub counts downloads against the repo's query file (config.json). Fetch
+    it alongside every weight or the public counter stays at 0."""
+    import sys
+    import types
+
+    from dfine_seg.model import utils
+
+    calls = []
+
+    class _FakeHub:
+        @staticmethod
+        def hf_hub_download(repo_id, filename, **kwargs):
+            calls.append((repo_id, filename))
+            p = tmp_path / filename
+            p.write_text("{}" if filename == "config.json" else "")
+            return str(p)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(hf_hub_download=_FakeHub.hf_hub_download),
+    )
+
+    out = utils._hf_download("dfine_s_coco.pt", local_dir=str(tmp_path), hint="x")
+    assert [c[1] for c in calls] == ["config.json", "dfine_s_coco.pt"]
+    assert calls[0][0] == utils.HF_REPO_ID
+    assert out.endswith("dfine_s_coco.pt")
+
+
+def test_hf_download_survives_missing_config_json(monkeypatch, tmp_path):
+    """Older mirrors without config.json must not break weight downloads."""
+    import sys
+    import types
+
+    from dfine_seg.model import utils
+
+    def fake(repo_id, filename, **kwargs):
+        if filename == "config.json":
+            raise FileNotFoundError("404")
+        p = tmp_path / filename
+        p.write_text("")
+        return str(p)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=fake))
+    out = utils._hf_download("dfine_s_coco.pt", local_dir=str(tmp_path), hint="x")
+    assert out.endswith("dfine_s_coco.pt")
