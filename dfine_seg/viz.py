@@ -1,23 +1,52 @@
-"""Rendering shared by the training pipeline, the CLI and the demo.
+"""Rendering shared by the public API, the training pipeline, the CLI and the demo.
 
 Lives outside `dl/` so `dfine predict` and the Gradio demo can draw without importing
 the training stack (wandb, pandas, albumentations). Single source of the class colors:
 a second copy of this in demo.py had already drifted to a different hue formula.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
 import torch
 
 
+def classes_from_model(model) -> Tuple[int, Dict[int, str]]:
+    """(class count, names) read off an inference wrapper; count is 0 when neither is known.
+
+    Fused-postprocess graphs (.onnx/.engine/.mlpackage) carry no class count at all, so
+    names may be the only source.
+    """
+    names = getattr(model, "names", None) or {}
+    n_outputs = getattr(model, "n_outputs", 0) or 0
+    return max(n_outputs, max(names) + 1 if names else 0), names
+
+
 class Visualizer:
     """Draws detection / segmentation results with consistent per-class colors for inference."""
 
-    def __init__(self, n_classes: int, class_names: Dict[int, str] = None):
+    def __init__(
+        self,
+        model=None,
+        *,
+        n_classes: int = None,
+        class_names: Dict[int, str] = None,
+        ignore_index: int = 255,
+    ):
+        """*model*: a wrapper from `load_model` (class count and names read off it), or an int
+        class count. Falls back to 80 (COCO) when a graph artifact carries neither."""
+        if isinstance(model, int):
+            n_classes = model
+        elif model is not None:
+            known, names = classes_from_model(model)
+            n_classes = n_classes or known or 80
+            class_names = class_names or names or None
+        self.n_classes = n_classes = max(n_classes or 80, 1)
         self.class_names = class_names or {i: str(i) for i in range(n_classes)}
         self.colors = self.generate_colors(n_classes)
+        self.ignore_index = ignore_index
+        self._palette = None
 
     @staticmethod
     def generate_colors(n: int) -> List[tuple]:
@@ -34,6 +63,38 @@ class Visualizer:
         return colors
 
     # ── public API ──────────────────────────────────────────────────────
+    @property
+    def palette(self) -> np.ndarray:
+        """sem_seg lookup table, built once per instance - deriving it from the labels present
+        in one frame would repaint every class as the scene changes."""
+        if self._palette is None:
+            self._palette = sem_seg_palette(self.n_classes)
+        return self._palette
+
+    def __call__(self, img: np.ndarray, results: dict, **kwargs) -> np.ndarray:
+        """Draw whatever the wrapper returned: boxes/masks, or a palette overlay for sem_seg.
+
+        Args:
+            img: BGR, HWC, uint8 - 3 channels (slice a 4-channel `.npy` stack yourself).
+            results: one image's result dict, i.e. `model(img)[0]`.
+            kwargs: forwarded to `draw` (`alpha`, `minimize`) / `overlay_sem_seg` (`alpha`).
+        """
+        if isinstance(results, (list, tuple)):
+            raise TypeError("pass one image's result dict, e.g. model(img)[0]")
+        if img.ndim == 3 and img.shape[2] > 3:
+            raise ValueError(
+                f"{img.shape[2]}-channel input; pass 3-channel BGR, e.g. img[:, :, :3]"
+            )
+        if "sem_seg" in results:
+            label_map = results["sem_seg"]
+            if isinstance(label_map, torch.Tensor):
+                label_map = label_map.cpu().numpy()
+            kwargs.pop("minimize", None)  # a dense overlay draws no text to hide
+            return overlay_sem_seg(
+                img, label_map, self.palette, ignore_index=self.ignore_index, **kwargs
+            )
+        return self.draw(img, results, **kwargs)
+
     def draw(
         self, img: np.ndarray, results: dict, alpha: float = 0.6, minimize: bool = False
     ) -> np.ndarray:

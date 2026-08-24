@@ -48,7 +48,7 @@ def test_import_package_is_light():
 
 
 def test_import_api_symbols_is_light():
-    assert _leaked("from dfine_seg import load_model, read_image") == []
+    assert _leaked("from dfine_seg import load_model, read_image, Visualizer") == []
 
 
 def test_torch_wrapper_import_is_light():

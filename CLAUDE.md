@@ -23,7 +23,8 @@ dfine_seg/
   etl/            # split, yolo2coco, coco2yolo, sam_labels, … (`python -m dfine_seg.etl.<name>`)
   dl/             # train, export, bench, infer, validator, ov_int8, trt_int8, …
   infer/          # standalone backend wrappers (torch/onnx/ov/trt/coreml/litert) users copy out
-  model/          # arch, losses, matcher; viz.py = Visualizer + sem_seg palette
+  model/          # arch, losses, matcher
+  viz.py          # Visualizer (public) + sem_seg palette; drawing for API, CLI, demo, training
 tests/            # pytest, zero training data needed
 scripts/          # research/ops helpers (run_candidate.py, promote.py, regression_test.py, …)
 ```
@@ -112,11 +113,15 @@ int32 `[B,H,W]` at input resolution; wrappers NEAREST-resize to original). INT8:
 accuracy-aware, `export.ov_int8_max_drop`), `make trt_int8`. Also: `dfine test-batching`, `dfine check-errors`.
 
 ## 9. Public API / packaging invariants
-- `from dfine_seg import load_model, read_image` (also `pretrained_path`, `SIZES`, `TASKS`). **`load_model`
-  is a factory, not a wrapper** — returns the same `TorchModel`/`TRTModel`/… you'd build by hand (backend by
-  file suffix, size string → HF weights, kwargs verbatim, `.names` attached). Don't reintroduce a wrapping
-  class; never force outputs to `.cpu()`. `task=` forwards only for `.pt` — graph artifacts carry the task.
-  `read_image`: BGR for `.jpg/.png`, RGB for `.npy`/PIL (pass `bgr=False`).
+- `from dfine_seg import load_model, read_image, Visualizer` (also `pretrained_path`, `SIZES`, `TASKS`).
+  **`load_model` is a factory, not a wrapper** — returns the same `TorchModel`/`TRTModel`/… you'd build by
+  hand (backend by file suffix, size string → HF weights, kwargs verbatim, `.names` attached). Don't
+  reintroduce a wrapping class; never force outputs to `.cpu()`. `task=` forwards only for `.pt` — graph
+  artifacts carry the task. `read_image`: BGR for `.jpg/.png`, RGB for `.npy`/PIL (pass `bgr=False`).
+- **`Visualizer(model)` is the one drawing entry point** — `vis(img, out)` dispatches boxes/masks vs the
+  sem_seg overlay (`classes_from_model` reads count+names off the wrapper, 80 when a graph carries neither;
+  palette built lazily, once). Takes 3-channel BGR only: callers slice/flip `.npy` stacks themselves
+  (`cli.py`, `dl/infer.py`). `Visualizer(n_classes=…, class_names=…)` still works for the training paths.
 - **`import dfine_seg` must stay torch-only.** hydra/wandb/albumentations/matplotlib/pandas/sklearn/
   torchmetrics must not be reachable from API module scope (`tests/integration/test_light_import.py` +
   `core-install` CI job).
