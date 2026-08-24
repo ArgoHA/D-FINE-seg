@@ -37,7 +37,7 @@ import numpy as np
 
 from dfine_seg import load_model
 from dfine_seg.api.loader import SIZES
-from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
+from dfine_seg.viz import Visualizer, classes_from_model
 
 # ─── Startup defaults (all overridable in the UI) ───────────────────────
 DEFAULT_MODEL = "s"  # size (n|s|m|l|x) -> COCO weights, or a path to .pt/.engine/.onnx/.xml
@@ -57,11 +57,10 @@ class Loaded:
     """The D-FINE backend currently serving both tabs."""
 
     model: object = None
+    # Fixed at load time, not per frame: its colors come from the model's class count, not
+    # from the labels present in one frame, which would repaint every class as the scene changes.
     vis: Optional[Visualizer] = None
     names: Dict[int, str] = field(default_factory=dict)
-    # Fixed at load time, not per frame: deriving it from the labels present in one frame
-    # repaints every class as the scene changes.
-    palette: Optional[np.ndarray] = None
 
 
 CURRENT = Loaded()
@@ -117,15 +116,12 @@ def load_backend(spec: str, names_text: str, input_size: str, task: str = "auto"
         kept = f" - keeping {Path(CURRENT.model.model_path).name}" if CURRENT.model else ""
         return f"❌ {type(e).__name__}: {e}{kept}"
 
-    names = model.names or {}
     # Fused-postprocess graphs (.onnx/.engine/.mlpackage) carry no class count anywhere, so
     # their wrappers have no n_outputs at all and the names box is all we have.
-    known = getattr(model, "n_outputs", 0) or 0
-    known = max(known, max(names) + 1 if names else 0)
+    known, names = classes_from_model(model)
     CURRENT.model = model
     CURRENT.names = names
-    CURRENT.vis = Visualizer(n_classes=known or 80, class_names=names or None)
-    CURRENT.palette = sem_seg_palette(known or 80)
+    CURRENT.vis = Visualizer(model)
 
     h, w = getattr(model, "input_size", (None, None))
     note = f" ({len(names)} named)" if 0 < len(names) < known else ("" if names else " (unnamed)")
@@ -189,14 +185,7 @@ def _select_backend(backend: str, prompt: str, conf_thresh: float):
 
 def _run_on_bgr(img_bgr, model_obj, vis_obj, minimize: bool = False) -> np.ndarray:
     """Run model + visualizer on a single BGR frame. Returns annotated BGR."""
-    return _draw(img_bgr, model_obj(img_bgr)[0], vis_obj, minimize=minimize)
-
-
-def _draw(img_bgr, results: dict, vis_obj, minimize: bool = False) -> np.ndarray:
-    """Boxes/masks, or a palette overlay when the model is dense (sem_seg)."""
-    if "sem_seg" in results:
-        return overlay_sem_seg(img_bgr, results["sem_seg"].cpu().numpy(), CURRENT.palette)
-    return vis_obj.draw(img_bgr, results, minimize=minimize)
+    return vis_obj(img_bgr, model_obj(img_bgr)[0], minimize=minimize)
 
 
 # ─── Tab 1: Images (single upload or webcam snapshot) ───────────────────
@@ -260,7 +249,7 @@ def predict_video(
             results = model_obj(frame)
             last_results = results[0]
         if last_results is not None:
-            frame = _draw(frame, last_results, vis_obj, minimize=minimize)
+            frame = vis_obj(frame, last_results, minimize=minimize)
         writer.write(frame)
         idx += 1
         if idx % 100 == 0:

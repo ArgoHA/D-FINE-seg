@@ -92,24 +92,26 @@ def _predict(argv: List[str]) -> int:
     import cv2
     import numpy as np
 
-    from dfine_seg import load_model, read_image
-    from dfine_seg.viz import Visualizer
+    from dfine_seg import Visualizer, load_model, read_image
 
     kwargs = {"conf_thresh": args.conf}
     if args.device:
         kwargs["device"] = args.device
     model = load_model(args.model, task=args.task, **kwargs)
     names = model.names or {}
+    visualizer = Visualizer(model)
 
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
-    # Built on the first boxed output rather than up front: `task` is a TorchModel attribute,
-    # and the output itself is what actually says whether this model draws boxes or a map.
-    visualizer = None
 
     for path in images:
         img = read_image(path)
-        out = model(img, bgr=path.suffix.lower() != ".npy")[0]
+        is_npy = path.suffix.lower() == ".npy"
+        out = model(img, bgr=not is_npy)[0]
+        # The drawer takes 3-channel BGR; `.npy` stacks come back RGB and may carry extras.
+        vis_img = img[:, :, :3]
+        if is_npy:
+            vis_img = np.ascontiguousarray(vis_img[..., ::-1])
 
         if "sem_seg" in out:
             label_map = out["sem_seg"].cpu().numpy()
@@ -118,7 +120,8 @@ def _predict(argv: List[str]) -> int:
                 f"{names.get(int(i), i)} {c / label_map.size:.0%}" for i, c in zip(ids, counts)
             )
             print(f"{path.name}: {len(ids)} classes - {share}")
-            if args.out:  # grayscale label map, same format as `dfine infer`
+            if args.out:  # overlay + grayscale label map, same as `dfine infer`
+                cv2.imwrite(str(args.out / f"{path.stem}.jpg"), visualizer(vis_img, out))
                 cv2.imwrite(str(args.out / f"{path.stem}.png"), label_map)
             continue
 
@@ -129,11 +132,7 @@ def _predict(argv: List[str]) -> int:
         )
         print(f"{path.name}: {len(scores)} objects{' - ' + found if len(scores) else ''}")
         if args.out:
-            if visualizer is None:
-                n_classes = max(names) + 1 if names else 80
-                visualizer = Visualizer(n_classes=n_classes, class_names=names or None)
-            drawn = visualizer.draw(img, {k: v.cpu() for k, v in out.items()})
-            cv2.imwrite(str(args.out / f"{path.stem}.jpg"), drawn)
+            cv2.imwrite(str(args.out / f"{path.stem}.jpg"), visualizer(vis_img, out))
 
     if args.out:
         print(f"wrote {len(images)} file(s) to {args.out}")

@@ -84,18 +84,20 @@ COCO-pretrained weights (detection **and** instance segmentation) auto-download 
 Two-line predict:
 
 ```python
-from dfine_seg import load_model, read_image
+from dfine_seg import load_model, read_image, Visualizer
 
 model = load_model("s")                              # COCO detection, weights auto-downloaded
 model = load_model("s", task="segment")              # COCO instance segmentation
-model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes/input size auto-detected
-model = load_model("output/models/exp/model.engine") # any exported artifact, picked by extension
+model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes/input size auto-detected, supports: .pt | .engine | .onnx | .xml
 
-out = model(read_image("path/to/image.jpg"))[0]
+img = read_image("path/to/image.jpg")
+out = model(img)[0]
 print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
+
+drawn = Visualizer(model)(img, out)                  # annotated BGR copy - boxes, masks or a sem_seg overlay
 ```
 
-`load_model` returns the very same wrapper you would construct by hand ([dfine_seg/infer/](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/infer/)) - it resolves the weights and picks the backend, then gets out of the way. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app.
+`load_model` returns the very same wrapper you would construct by hand ([dfine_seg/infer/](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/infer/)) - it resolves the weights and picks the backend, then gets out of the way. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app. `Visualizer` reads the class count and names off the model it is given, then draws whatever that model returned - boxes, instance masks or a dense label map - so one call covers every task (BGR uint8 in, BGR uint8 out).
 
 To train from a pip install, materialize a config and go:
 
