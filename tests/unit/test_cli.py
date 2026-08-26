@@ -24,7 +24,7 @@ def clean_cwd(tmp_path, monkeypatch):
 def test_help_lists_every_command(monkeypatch, capsys):
     assert run(monkeypatch) == 0
     out = capsys.readouterr().out
-    for command in [*cli.COMMANDS, "init", "predict", "demo", "version", "main"]:
+    for command in [*cli.COMMANDS, "init", "predict", "hw_bench", "demo", "version", "main"]:
         assert command in out
 
 
@@ -307,6 +307,104 @@ def test_predict_writes_output_for_a_backend_without_task(monkeypatch, tmp_path)
     dest = tmp_path / "out"
     assert run(monkeypatch, "predict", "model.onnx", str(img), "-o", str(dest)) == 0
     assert (dest / "a.jpg").is_file()
+
+
+# ---- hw_bench ---------------------------------------------------------------
+
+
+class _BenchModel:
+    """Stands in for TorchModel: records call shapes, no weights on disk."""
+
+    device = "cpu"
+    model_name = "s"
+    task = "detect"
+    input_size = (640, 640)
+
+    def __init__(self, seen):
+        self.seen = seen
+
+    def __call__(self, imgs, bgr=True):
+        self.seen.setdefault("shapes", []).append((imgs.shape, bgr))
+        import torch
+
+        return [
+            {
+                "labels": torch.zeros(0, dtype=torch.long),
+                "boxes": torch.zeros((0, 4)),
+                "scores": torch.zeros(0),
+            }
+        ]
+
+
+def _fake_bench_model(monkeypatch, seen):
+    class Factory:
+        def __call__(self, spec=None, task=None, **kw):
+            seen["spec"], seen["kw"] = spec, kw
+            return _BenchModel(seen)
+
+    monkeypatch.setattr("dfine_seg.load_model", Factory())
+
+
+def test_hw_bench_runs_and_reports_a_score(monkeypatch, capsys):
+    seen = {}
+    _fake_bench_model(monkeypatch, seen)
+    assert run(monkeypatch, "hw_bench", "--duration", "0.1", "--warmup", "0") == 0
+    out = capsys.readouterr().out
+    assert seen["spec"] == "s" and seen["kw"] == {"conf_thresh": 0.5}
+    assert "images/s" in out and "device" in out and "per call" in out
+
+
+def test_hw_bench_forwards_device_batch_and_img_size(monkeypatch):
+    seen = {}
+    _fake_bench_model(monkeypatch, seen)
+    assert (
+        run(
+            monkeypatch,
+            "hw_bench",
+            "m",
+            "--device",
+            "cpu",
+            "--batch",
+            "4",
+            "--img-size",
+            "1280",
+            "--duration",
+            "0.1",
+            "--warmup",
+            "0",
+        )
+        == 0
+    )
+    assert seen["spec"] == "m"
+    assert seen["kw"] == {
+        "conf_thresh": 0.5,
+        "device": "cpu",
+        "input_width": 1280,
+        "input_height": 1280,
+    }
+    shapes, bgrs = zip(*seen["shapes"])
+    assert all(s == (4, 1080, 1920, 3) for s in shapes)  # batch stacked, source kept
+    assert all(bgrs)  # bgr=True like predict
+
+
+def test_hw_bench_rejects_non_torch_artifacts(monkeypatch, capsys):
+    assert run(monkeypatch, "hw_bench", "model.onnx") == 1
+    assert ".pt" in capsys.readouterr().err
+
+
+def test_hw_bench_needs_no_config(clean_cwd, monkeypatch, capsys):
+    """Config-free like predict/demo - no config.yaml, no Hydra command table entry."""
+    assert "hw_bench" not in cli.COMMANDS
+    _fake_bench_model(monkeypatch, {})
+    assert run(monkeypatch, "hw_bench", "--duration", "0.1", "--warmup", "0") == 0
+    assert "images/s" in capsys.readouterr().out
+
+
+def test_hw_bench_validates_arguments(monkeypatch, capsys):
+    assert run(monkeypatch, "hw_bench", "--duration", "0") == 1
+    assert "--duration" in capsys.readouterr().err
+    assert run(monkeypatch, "hw_bench", "--batch", "0") == 1
+    assert "--batch" in capsys.readouterr().err
 
 
 # ---- main -------------------------------------------------------------------
