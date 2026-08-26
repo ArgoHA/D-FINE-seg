@@ -36,6 +36,7 @@ USAGE = f"""dfine <command> [hydra overrides]
 
   init            write a config.yaml into the current directory
   predict         run a model on an image or folder, no config needed
+  hw_bench        benchmark torch inference throughput on this device (cuda/mps/cpu)
   demo            launch the Gradio UI (needs `pip install 'dfine-seg[demo]'`)
   main            train -> export -> bench in sequence (same as the bare `make` target)
 {_ROWS}
@@ -137,6 +138,53 @@ def _predict(argv: List[str]) -> int:
     if args.out:
         print(f"wrote {len(images)} file(s) to {args.out}")
     return 0
+
+
+def _hw_bench(argv: List[str]) -> int:
+    """Throughput benchmark of the Torch path - iterations of `dfine predict` per window."""
+    ap = argparse.ArgumentParser(
+        prog="dfine hw_bench",
+        epilog=(
+            "examples:\n"
+            "  dfine hw_bench\n"
+            "  dfine hw_bench m --batch 8 --duration 10\n"
+            "  dfine hw_bench model.pt --device cuda --img-size 1280\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("model", nargs="?", default="s", help="size (n|s|m|l|x) or path to a .pt")
+    ap.add_argument("--device", help="cuda | mps | cpu (default: best available)")
+    ap.add_argument(
+        "--duration", type=float, default=5.0, help="timed window in seconds (default 5)"
+    )
+    ap.add_argument(
+        "--warmup", type=int, default=5, help="ignored calls before the window (default 5)"
+    )
+    ap.add_argument("--batch", type=int, default=1, help="frames per forward call (default 1)")
+    ap.add_argument(
+        "--img-size", type=int, help="square network input size (default: from weights, 640)"
+    )
+    args = ap.parse_args(argv)
+    if args.duration < 0.1:
+        print("--duration must be at least 0.1s", file=sys.stderr)
+        return 1
+    if args.batch < 1:
+        print("--batch must be >= 1", file=sys.stderr)
+        return 1
+    if args.warmup < 0:
+        print("--warmup must be >= 0", file=sys.stderr)
+        return 1
+
+    from dfine_seg.app.hw_bench import main as hw_bench_main
+
+    return hw_bench_main(
+        args.model,
+        device=args.device,
+        duration=args.duration,
+        warmup=args.warmup,
+        batch=args.batch,
+        img_size=args.img_size,
+    )
 
 
 def _demo(argv: List[str]) -> int:
@@ -312,6 +360,8 @@ def main() -> int:
         return _init(rest)
     if command == "predict":
         return _predict(rest)
+    if command == "hw_bench":
+        return _hw_bench(rest)
     if command == "demo":
         return _demo(rest)
     if command in ("version", "--version", "-V"):
