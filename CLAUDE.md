@@ -91,7 +91,7 @@ Outputs under `${train.path_to_save}` (= `${train.root}/output/models/<exp_name>
   defaults in [dfine_seg/dl/infer.py](dfine_seg/dl/infer.py), override via top-level `track:`; fresh tracker
   per video). sem_seg: overlay + grayscale label PNGs; crops/txt/tracking skipped, videos become
   `<stem>_sem_seg.mp4`.
-- Config-free tools: `dfine predict <size|path> <image|dir> [--task --conf --device -o out/]`; `dfine demo`
+- Config-free tools: `dfine predict <size|path> <image|dir> [--task --conf --device -o out/]`; `dfine hw_bench [model] [--device --duration --warmup --batch --img-size]` (throughput of the Torch path on a synthetic 1920x1080 frame, [dfine_seg/app/hw_bench.py](dfine_seg/app/hw_bench.py); `--batch` is the GPU-saturation knob, a batch-1 stream underutilizes big GPUs); `dfine demo`
   binds **0.0.0.0** by default — the Model panel loads any path the browser sends, so `--host 127.0.0.1`
   for local-only.
 
