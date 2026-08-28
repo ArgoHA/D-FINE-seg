@@ -1,9 +1,13 @@
 import os
 import warnings
+from datetime import timedelta
 
 import numpy as np
 import torch
 import torch.distributed as dist
+
+# Rank 0 computes eval metrics alone while other ranks wait in collectives
+PG_TIMEOUT = timedelta(minutes=60)
 
 
 def is_dist_available_and_initialized() -> bool:
@@ -40,13 +44,14 @@ def init_distributed_mode() -> None:
                 backend=backend,
                 init_method="env://",
                 device_id=local_rank,  # this removes the barrier() warning
+                timeout=PG_TIMEOUT,
             )
         except TypeError:
             # for older PyTorch versions that don't support device_id
-            dist.init_process_group(backend=backend, init_method="env://")
+            dist.init_process_group(backend=backend, init_method="env://", timeout=PG_TIMEOUT)
     else:
         backend = "gloo"
-        dist.init_process_group(backend=backend, init_method="env://")
+        dist.init_process_group(backend=backend, init_method="env://", timeout=PG_TIMEOUT)
 
 
 def cleanup_distributed() -> None:
