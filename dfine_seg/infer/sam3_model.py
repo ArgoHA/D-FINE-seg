@@ -17,6 +17,12 @@ class SAM3Model:
 
     Multi-class: ``prompt`` takes ``"car, person"`` or ``["car", "person"]`` - each
     prompt runs one forward and becomes one class (``labels`` = prompt index).
+
+    ``task="detect"`` drops the masks from the output. Worth it when they are not used:
+    SAM3 binarizes every candidate above ``conf_thresh`` at the original resolution, which
+    at a low threshold on a 4K frame costs seconds and gigabytes. Boxes and scores are
+    unaffected - both post-processors read the same ``pred_boxes`` and the same
+    ``pred_logits.sigmoid() * presence_logits.sigmoid()``.
     """
 
     def __init__(
@@ -26,6 +32,7 @@ class SAM3Model:
         conf_thresh: float = 0.5,
         mask_threshold: float = 0.5,  # SAM3 always binarizes masks internally
         device: str = None,
+        task: str = "segment",  # detect -> boxes/scores only, no masks in the output
     ):
         # Same fallback chain as the D-FINE wrappers: cuda -> mps -> cpu.
         # SAM3 autocasts to bf16, which mps handles (verified torch 2.13, macOS 26).
@@ -39,6 +46,7 @@ class SAM3Model:
         self.prompts = self.parse_prompts(prompt)
         self.conf_thresh = conf_thresh
         self.mask_threshold = mask_threshold
+        self.task = task
 
         self.processor, self.model = self._load(model_path)
         self.model = self.model.to(self.device).eval()
@@ -88,15 +96,17 @@ class SAM3Model:
         """
         Input image as ndarray (BGR, HWC). Pass ``bgr=False`` for RGB input.
         ``prompts`` overrides ``self.prompts`` for this call (and persists).
-        Output: list of length 1 with dict {"labels", "boxes", "scores", "masks"};
-        one forward per prompt, all detections merged, ``labels`` = prompt index; a prompt
-        that finds nothing contributes nothing (its masks are not at the image resolution).
+        Output: list of length 1 with dict {"labels", "boxes", "scores", "masks"}, without
+        ``masks`` when ``task="detect"``; one forward per prompt, all detections merged,
+        ``labels`` = prompt index; a prompt that finds nothing contributes nothing (its masks
+        are not at the image resolution).
         """
         if prompts is not None:
             self.prompts = self.parse_prompts(prompts)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if bgr else img
         h, w = rgb.shape[:2]
 
+        detect = self.task == "detect"
         boxes, scores, masks, labels = [], [], [], []
         for cls_idx, text in enumerate(self.prompts):
             inputs = self.processor(images=Image.fromarray(rgb), text=text, return_tensors="pt").to(
@@ -104,32 +114,38 @@ class SAM3Model:
             )
             with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
                 outputs = self.model(**inputs)
-            res = self.processor.post_process_instance_segmentation(
-                outputs,
-                threshold=self.conf_thresh,
-                mask_threshold=self.mask_threshold,
-                target_sizes=[(h, w)],
-            )[0]
+            if detect:
+                res = self.processor.post_process_object_detection(
+                    outputs, threshold=self.conf_thresh, target_sizes=[(h, w)]
+                )[0]
+            else:
+                res = self.processor.post_process_instance_segmentation(
+                    outputs,
+                    threshold=self.conf_thresh,
+                    mask_threshold=self.mask_threshold,
+                    target_sizes=[(h, w)],
+                )[0]
             if not len(res["scores"]):
                 continue  # a prompt that found nothing keeps SAM3's mask resolution - never cat it
             boxes.append(res["boxes"].cpu().float())
             scores.append(res["scores"].cpu().float())
-            masks.append(res["masks"].cpu().to(torch.uint8))  # already binary (0/1)
             labels.append(torch.full((len(res["boxes"]),), cls_idx, dtype=torch.long))
+            if not detect:
+                masks.append(res["masks"].cpu().to(torch.uint8))  # already binary (0/1)
         if not boxes:
-            return [
-                {
-                    "labels": torch.zeros(0, dtype=torch.long),
-                    "boxes": torch.zeros(0, 4),
-                    "scores": torch.zeros(0),
-                    "masks": torch.zeros(0, h, w, dtype=torch.uint8),
-                }
-            ]
-        return [
-            {
-                "labels": torch.cat(labels),
-                "boxes": torch.cat(boxes),
-                "scores": torch.cat(scores),
-                "masks": torch.cat(masks),
+            empty = {
+                "labels": torch.zeros(0, dtype=torch.long),
+                "boxes": torch.zeros(0, 4),
+                "scores": torch.zeros(0),
             }
-        ]
+            if not detect:
+                empty["masks"] = torch.zeros(0, h, w, dtype=torch.uint8)
+            return [empty]
+        merged = {
+            "labels": torch.cat(labels),
+            "boxes": torch.cat(boxes),
+            "scores": torch.cat(scores),
+        }
+        if not detect:
+            merged["masks"] = torch.cat(masks)
+        return [merged]
