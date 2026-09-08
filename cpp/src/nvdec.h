@@ -29,7 +29,7 @@ class NvDecoder {
   bool next(Nv12View& out, int& slot);
   // Record `consumer`'s progress; the ring slot is reused only after that work completed.
   void release(int slot, cudaStream_t consumer);
-  int width = 0, height = 0;  // display size from the container
+  int width = 0, height = 0;  // display size from the bitstream (what the frame ring holds)
   double fps = 0;
   bool bt709 = true;  // what PyNvVideoCodec assumes for untagged streams
   long frames = 0;
@@ -40,6 +40,7 @@ class NvDecoder {
   static int disp_cb(void* u, CUVIDPARSERDISPINFO* d);
   bool pump();  // feed one packet (or EOS) into the parser; false when nothing more to feed
   void parse(CUVIDSOURCEDATAPACKET* p);
+  void destroy();  // also runs when the constructor throws
 
   CUcontext ctx_;
   CuvidFunctions* cv_;

@@ -27,11 +27,12 @@ static GUID preset_guid(const std::string& p) {
 NvEncoder::NvEncoder(const std::string& out_path, int w, int h, double fps, CUcontext ctx,
                      CUstream stream, NvencFunctions* nv, const NvEncOpts& o)
     : stream_(stream), w_(w), h_(h) {
-  uint32_t max_ver = 0;
+  uint32_t max_ver = 0;  // driver support is (major << 4) | minor, unlike NVENCAPI_VERSION
+  const uint32_t hdr_ver = (NVENCAPI_MAJOR_VERSION << 4) | NVENCAPI_MINOR_VERSION;
   NVE(nv->NvEncodeAPIGetMaxSupportedVersion(&max_ver));
-  if (max_ver < NVENCAPI_VERSION)
-    throw std::runtime_error("driver NVENC API " + std::to_string(max_ver & 0xff) + "." +
-                             std::to_string(max_ver >> 24) + " < header " +
+  if (max_ver < hdr_ver)
+    throw std::runtime_error("driver NVENC API " + std::to_string(max_ver >> 4) + "." +
+                             std::to_string(max_ver & 0xf) + " < header " +
                              std::to_string(NVENCAPI_MAJOR_VERSION) + "." +
                              std::to_string(NVENCAPI_MINOR_VERSION) + " (vendor an older nvEncodeAPI.h)");
   fn_.version = NV_ENCODE_API_FUNCTION_LIST_VER;
@@ -73,6 +74,8 @@ NvEncoder::NvEncoder(const std::string& out_path, int w, int h, double fps, CUco
   frame_interval_p = cfg.frameIntervalP;
   lookahead = cfg.rcParams.lookaheadDepth;
   depth_ = cfg.frameIntervalP + cfg.rcParams.lookaheadDepth + o.extra_delay;
+  if (depth_ < 1)  // depth_ is a ring modulus: 0 would divide by zero in submit()
+    throw std::runtime_error("NVENC ring depth " + std::to_string(depth_) + " (--enc-delay too small)");
   reorder_ = std::max(cfg.frameIntervalP - 1, 0);  // max decode-to-display delay with B-frames
 
   NVE(fn_.nvEncSetIOCudaStreams(enc_, (NV_ENC_CUSTREAM_PTR)&stream_, (NV_ENC_CUSTREAM_PTR)&stream_));

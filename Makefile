@@ -1,4 +1,4 @@
-.PHONY: main train split export bench infer demo test test-fast test_batching check_errors ov_int8 trt_int8 build
+.PHONY: main train split export bench infer demo test test-fast test_batching check_errors ov_int8 trt_int8 build cpp_e2e
 
 # The `dfine` console script is installed by `uv sync` and handles DDP itself.
 CLI := uv run dfine

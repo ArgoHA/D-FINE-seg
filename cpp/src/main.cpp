@@ -24,6 +24,9 @@
 
 namespace fs = std::filesystem;
 
+// Blend strengths, mirroring the Annotator in scripts/dfine_gpu_end2end.py (not CLI-settable).
+constexpr float kBoxAlpha = 0.6f, kMaskBodyAlpha = 0.45f, kMaskEdgeAlpha = 0.70f, kSemAlpha = 0.5f;
+
 struct Args {
   std::string engine = "./model.engine";
   std::string videos = "./test_videos";
@@ -33,11 +36,9 @@ struct Args {
   std::string dump_map;  // optional prefix: mask owner map (uint16 [mh,mw]) / sem_seg map (int32) per frame
   long dump_input_i = 0;
   std::vector<long> dump_map_i;
-  std::vector<std::string> classes = {"person", "rider", "car", "truck", "bus", "train", "motorcycle", "bicycle"};
-  int n_classes = 0;  // 0 = classes.size(); sem_seg engines carry no class count (19 for cityscapes)
+  int n_classes = 0;  // palette size; 0 = 8, or 19 for sem_seg (graphs carry no class count)
   std::vector<int> labels_to_use;  // empty = all
-  float conf = 0.5f, nms_iou = 0.7f, box_alpha = 0.6f;
-  float mask_scale = 0.5f, mask_body_alpha = 0.45f, mask_edge_alpha = 0.70f, sem_alpha = 0.5f;
+  float conf = 0.5f, nms_iou = 0.7f, mask_scale = 0.5f;
   int workers = 8, max_dim = 1920, display_delay = 4, gpu = 0;
   std::string stage = "full";  // prefix of the pipeline to run; see --help
   NvEncOpts enc;
@@ -69,9 +70,14 @@ static Args parse(int argc, char** argv) {
     else if (k == "--dump") a.dump = need(i);
     else if (k == "--dump-input") { a.dump_input = need(i); a.dump_input_i = std::stol(need(i)); }
     else if (k == "--dump-map") { a.dump_map = need(i); for (auto& t : split(need(i), ',')) a.dump_map_i.push_back(std::stol(t)); }
-    else if (k == "--classes") a.classes = split(need(i), ',');
     else if (k == "--n-classes") a.n_classes = std::stoi(need(i));
-    else if (k == "--labels") for (auto& t : split(need(i), ',')) a.labels_to_use.push_back(std::stoi(t));
+    else if (k == "--labels") {
+      for (auto& t : split(need(i), ',')) {  // the class filter is a 64-bit mask
+        int l = std::stoi(t);
+        if (l < 0 || l >= 64) throw std::runtime_error("--labels id out of range (0-63): " + t);
+        a.labels_to_use.push_back(l);
+      }
+    }
     else if (k == "--conf") a.conf = std::stof(need(i));
     else if (k == "--nms") a.nms_iou = std::stof(need(i));
     else if (k == "--mask-scale") a.mask_scale = std::stof(need(i));
@@ -86,14 +92,17 @@ static Args parse(int argc, char** argv) {
     else if (k == "--stage") a.stage = need(i);
     else if (k == "-h" || k == "--help") {
       std::printf(
-          "dfine_e2e [--engine E] [--videos DIR] [--out DIR] [--classes a,b,..] [--n-classes N] [--labels 0,2]\n"
+          "dfine_e2e [--engine E] [--videos DIR] [--out DIR] [--n-classes N] [--labels 0,2]\n"
           "          [--conf 0.5] [--nms 0.7] [--mask-scale 0.5] [--workers 8] [--max-dim 1920]\n"
           "          [--display-delay 4] [--preset P4] [--low-latency] [--enc-delay 3] [--bitrate BPS]\n"
           "          [--gpu 0] [--stage parse|decode|infer|draw|full|bench]\n"
           "          [--dump DIR] [--dump-input FILE FRAME] [--dump-map PREFIX FRAME,FRAME,..]\n"
+          "\nThe engine must be exported with keep_ratio=False: the preprocess kernel squishes the\n"
+          "frame to the engine input, it has no letterbox path (like TRTModel.gpu_run).\n"
           "\nThe task follows the engine: labels/boxes/scores = detect, + masks = instance segmentation\n"
           "(masks computed at --mask-scale of the output size, like the Python pipeline), a single\n"
-          "int32 map = semantic segmentation (--n-classes sets the palette size, default 19).\n"
+          "int32 map = semantic segmentation. --n-classes sizes the colour palette (default 8, or 19\n"
+          "for sem_seg); --labels keeps only those class ids (0-63).\n"
           "\n--stage runs a prefix of the pipeline, for locating the bottleneck:\n"
           "  parse  NVDEC only (map/unmap, no copy-out)      draw  + overlay\n"
           "  decode + copy into the frame ring               full  + NVENC and MP4 muxing\n"
@@ -106,6 +115,11 @@ static Args parse(int argc, char** argv) {
   if (a.stage != "full" && a.stage != "draw" && a.stage != "infer" && a.stage != "decode" &&
       a.stage != "parse" && a.stage != "bench")
     throw std::runtime_error("--stage must be parse, decode, infer, draw, full or bench");
+  if (a.display_delay < 0 || a.enc.extra_delay < 0)
+    throw std::runtime_error("--display-delay and --enc-delay must be >= 0");
+  const bool infers = a.stage == "full" || a.stage == "draw" || a.stage == "infer";
+  if (!infers && (!a.dump.empty() || !a.dump_input.empty() || !a.dump_map.empty()))
+    throw std::runtime_error("--dump/--dump-input/--dump-map need --stage infer, draw or full");
   return a;
 }
 
@@ -187,9 +201,27 @@ static void ensure_owner(Worker& w, const Geo& g) {
   size_t need = (size_t)g.mh * g.mw;
   if (need <= w.owner_cap) return;
   if (w.owner) cudaFree(w.owner);
+  w.owner = nullptr;
+  w.owner_cap = 0;
   CK(cudaMalloc(&w.owner, need * sizeof(uint16_t)));
   w.owner_cap = need;
 }
+
+// Per-clip device/pinned scratch: freed on every exit path, so a clip that throws (bad codec,
+// ring overflow) does not leak GPU or pinned memory in a worker that moves on to the next one.
+struct Scratch {
+  cudaStream_t s;
+  std::vector<Nv12View> frames;  // painted double buffer when NVENC is off
+  std::vector<cudaEvent_t> ev;   // --dump: detections copied out
+  std::vector<Dets*> hdets;
+  explicit Scratch(cudaStream_t stream) : s(stream) {}
+  ~Scratch() {
+    cudaStreamSynchronize(s);  // buffers may still be referenced by queued work
+    for (auto& v : frames) cudaFree(v.y);
+    for (auto e : ev) cudaEventDestroy(e);
+    for (auto* p : hdets) cudaFreeHost(p);
+  }
+};
 
 // Everything after the engine, per task; `outv` is the frame being painted.
 static void annotate(Shared& sh, Worker& w, const Geo& g, const Nv12View& outv, bool draw) {
@@ -197,7 +229,7 @@ static void annotate(Shared& sh, Worker& w, const Geo& g, const Nv12View& outv, 
   const TrtEngine& e = *sh.engine;
   if (e.sem_seg) {
     if (draw)
-      draw_sem_seg(outv, w.tctx->sem, e.sem_h, e.sem_w, sh.palette, sh.n_classes, sh.class_mask, a.sem_alpha, w.main);
+      draw_sem_seg(outv, w.tctx->sem, e.sem_h, e.sem_w, sh.palette, sh.n_classes, sh.class_mask, kSemAlpha, w.main);
     return;
   }
   postprocess(w.tctx->labels, e.labels_i64, w.tctx->boxes, w.tctx->scores, e.k, a.conf, sh.class_mask,
@@ -205,10 +237,10 @@ static void annotate(Shared& sh, Worker& w, const Geo& g, const Nv12View& outv, 
   if (e.has_masks) {
     mask_owners(w.dets, w.tctx->masks, e.mask_h, e.mask_w, g.mh, g.mw, g.bsx, g.bsy, w.owner, w.main);
     if (draw)
-      draw_masks(outv, w.dets, w.owner, g.mh, g.mw, sh.palette, sh.n_classes, a.mask_body_alpha,
-                 a.mask_edge_alpha, w.main);
+      draw_masks(outv, w.dets, w.owner, g.mh, g.mw, sh.palette, sh.n_classes, kMaskBodyAlpha,
+                 kMaskEdgeAlpha, w.main);
   }
-  if (draw) draw_boxes(outv, w.dets, g.sx, g.sy, sh.palette, sh.n_classes, sh.thick, a.box_alpha, w.main);
+  if (draw) draw_boxes(outv, w.dets, g.sx, g.sy, sh.palette, sh.n_classes, sh.thick, kBoxAlpha, w.main);
 }
 
 // Isolated timing of the inference path on one resident frame: no decode, no encode, so the
@@ -222,9 +254,11 @@ static void bench_infer(Shared& sh, Worker& w, const fs::path& clip) {
   if (!dec.next(src, slot)) throw std::runtime_error("no frames");
   Geo g = geometry(a, e, dec.width, dec.height);
   ensure_owner(w, g);
+  Scratch sc(w.main);
   uint8_t* outp = nullptr;
   CK(cudaMalloc(&outp, (size_t)g.ow * g.oh * 3 / 2));
   Nv12View outv{outp, outp + (size_t)g.ow * g.oh, g.ow, g.ow, g.oh};
+  sc.frames.push_back(outv);
   const int N = 2000;
   auto time_it = [&](const char* name, int steps) {
     for (int warm = 0; warm < 2; ++warm) {
@@ -252,7 +286,6 @@ static void bench_infer(Shared& sh, Worker& w, const fs::path& clip) {
   char buf[64];
   std::snprintf(buf, sizeof buf, "+ resize to %dx%d and draw", g.ow, g.oh);
   time_it(buf, 4);
-  cudaFree(outp);
 }
 
 static long process_clip(Shared& sh, Worker& w, const fs::path& clip) {
@@ -271,30 +304,30 @@ static long process_clip(Shared& sh, Worker& w, const fs::path& clip) {
     enc.reset(new NvEncoder(out.string(), g.ow, g.oh, dec.fps, sh.ctx, w.main, sh.nv, a.enc));
   }
   // Without the encoder there is no NVENC input ring, so paint into a private double buffer.
-  std::vector<Nv12View> scratch;
+  Scratch sc(w.main);
   const int R = do_encode ? enc->depth() : 2;
   if (!do_encode)
     for (int j = 0; j < R; ++j) {
       uint8_t* p = nullptr;
       CK(cudaMalloc(&p, (size_t)g.ow * g.oh * 3 / 2));
-      scratch.push_back(Nv12View{p, p + (size_t)g.ow * g.oh, g.ow, g.ow, g.oh});
+      sc.frames.push_back(Nv12View{p, p + (size_t)g.ow * g.oh, g.ow, g.ow, g.oh});
     }
 
-  std::vector<cudaEvent_t> dumped;
-  std::vector<Dets*> hdets;
   std::ofstream dump;
-  if (!a.dump.empty() && !e.sem_seg) {
+  if (!a.dump.empty()) {
     fs::create_directories(a.dump);
     dump.open((fs::path(a.dump) / (clip.parent_path().filename().string() + "_" + clip.stem().string() + ".txt")).string());
-    dumped.resize(R);
-    hdets.resize(R);
     for (int j = 0; j < R; ++j) {
-      CK(cudaEventCreateWithFlags(&dumped[j], cudaEventDisableTiming));
-      CK(cudaMallocHost((void**)&hdets[j], sizeof(Dets)));
+      cudaEvent_t ev = nullptr;
+      Dets* hd = nullptr;
+      CK(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
+      sc.ev.push_back(ev);
+      CK(cudaMallocHost((void**)&hd, sizeof(Dets)));
+      sc.hdets.push_back(hd);
     }
   }
   auto write_dump = [&](long i) {  // boxes in output-frame pixels, like the Python dump
-    const Dets* d = hdets[i % R];
+    const Dets* d = sc.hdets[i % R];
     dump << i << ' ' << d->count;
     for (int j = 0; j < d->count; ++j)
       dump << ' ' << d->boxes[j * 4] * g.sx << ' ' << d->boxes[j * 4 + 1] * g.sy << ' ' << d->boxes[j * 4 + 2] * g.sx
@@ -315,11 +348,11 @@ static long process_clip(Shared& sh, Worker& w, const fs::path& clip) {
     if (!dec.next(src, slot)) break;
     const int s = (int)(i % R);
     if (dump.is_open() && i >= R) {
-      CK(cudaEventSynchronize(dumped[s]));
+      CK(cudaEventSynchronize(sc.ev[s]));
       write_dump(i - R);
     }
     if (!do_copy) { ++n; continue; }
-    Nv12View outv = do_encode ? enc->slot(s) : scratch[s];
+    Nv12View outv = do_encode ? enc->slot(s) : sc.frames[s];
     if (do_infer) nv12_to_input(src, w.tctx->input, e.in_h, e.in_w, dec.bt709, w.main);
     nv12_resize(src, outv, w.main);
     if (i == a.dump_input_i && !a.dump_input.empty())
@@ -335,25 +368,19 @@ static long process_clip(Shared& sh, Worker& w, const fs::path& clip) {
       }
     }
     if (dump.is_open()) {
-      CK(cudaMemcpyAsync(hdets[s], w.dets, sizeof(Dets), cudaMemcpyDeviceToHost, w.main));
-      CK(cudaEventRecord(dumped[s], w.main));
+      CK(cudaMemcpyAsync(sc.hdets[s], w.dets, sizeof(Dets), cudaMemcpyDeviceToHost, w.main));
+      CK(cudaEventRecord(sc.ev[s], w.main));
     }
     if (do_encode) enc->submit(i);  // NVENC waits on w.main (nvEncSetIOCudaStreams)
     ++n;
   }
   if (do_encode) enc->finish();
   CK(cudaStreamSynchronize(w.main));
-  for (auto& v : scratch) cudaFree(v.y);
-  if (dump.is_open()) {
+  if (dump.is_open())
     for (long i = std::max(0L, n - R); i < n; ++i) {
-      CK(cudaEventSynchronize(dumped[i % R]));
+      CK(cudaEventSynchronize(sc.ev[i % R]));
       write_dump(i);
     }
-    for (int j = 0; j < R; ++j) {
-      cudaEventDestroy(dumped[j]);
-      cudaFreeHost(hdets[j]);
-    }
-  }
   {
     std::lock_guard<std::mutex> lk(sh.log_mu);
     if (!do_encode) {
@@ -420,14 +447,18 @@ int main(int argc, char** argv) {
     TrtEngine engine(a.engine);
     sh.engine = &engine;
     if (engine.k > kMaxDet) throw std::runtime_error("engine top-K exceeds kMaxDet");
+    if (engine.sem_seg && !a.dump.empty())
+      throw std::runtime_error("--dump has no detections on a sem_seg engine (use --dump-map)");
+    if (!engine.sem_seg && !engine.has_masks && !a.dump_map.empty())
+      throw std::runtime_error("--dump-map has no map on a detect engine (use --dump)");
     if (engine.sem_seg)
       LOG("engine: %s, input %dx%d, label map %dx%d", engine.task(), engine.in_w, engine.in_h, engine.sem_w, engine.sem_h);
     else
       LOG("engine: %s, input %dx%d, top-K %d, labels %s%s", engine.task(), engine.in_w, engine.in_h, engine.k,
           engine.labels_i64 ? "int64" : "int32", engine.has_masks ? ", masks" : "");
 
-    // sem_seg graphs carry no class count; cityscapes' 19 is the default when none is given.
-    sh.n_classes = a.n_classes > 0 ? a.n_classes : engine.sem_seg && a.classes.size() == 8 ? 19 : (int)a.classes.size();
+    // Graph exports carry no class count: --n-classes, else cityscapes' 19 for sem_seg and 8.
+    sh.n_classes = a.n_classes > 0 ? a.n_classes : engine.sem_seg ? 19 : 8;
     int nc = sh.n_classes;
     std::vector<uint8_t> pal(nc * 3);
     for (int i = 0; i < nc; ++i) {
@@ -437,8 +468,8 @@ int main(int argc, char** argv) {
     }
     CK(cudaMalloc(&sh.palette, pal.size()));
     CK(cudaMemcpy(sh.palette, pal.data(), pal.size(), cudaMemcpyHostToDevice));
-    sh.class_mask = 0;
-    for (int l : a.labels_to_use) if (l >= 0 && l < 64) sh.class_mask |= 1ULL << l;
+    sh.class_mask = 0;  // 0 = every class; parse() rejected ids outside [0, 63]
+    for (int l : a.labels_to_use) sh.class_mask |= 1ULL << l;
     sh.thick = std::max(1, (a.max_dim > 0 ? a.max_dim : 1920) / 400);
 
     // Per-worker streams + TRT contexts (graphs captured here, before any other thread runs CUDA).

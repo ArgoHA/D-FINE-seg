@@ -34,6 +34,9 @@ TrtEngine::TrtEngine(const std::string& path) {
     if (engine_->getTensorIOMode(n) == nvinfer1::TensorIOMode::kINPUT) {
       if (d.nbDims != 4 || d.d[0] != 1)
         throw std::runtime_error("expected static batch-1 NCHW input");
+      if (d.d[1] != 3)  // the NV12 preprocess kernel writes exactly 3 planes
+        throw std::runtime_error("expected a 3-channel input, engine wants " +
+                                 std::to_string(d.d[1]));
       in_c = d.d[1]; in_h = d.d[2]; in_w = d.d[3];
       continue;
     }
@@ -79,12 +82,18 @@ TrtContext::TrtContext(TrtEngine& eng, cudaStream_t s) {
     if (!ctx_->enqueueV3(s)) throw std::runtime_error("enqueueV3 failed");
   CK(cudaStreamSynchronize(s));
   cudaGraph_t g = nullptr;
-  if (cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal) == cudaSuccess && ctx_->enqueueV3(s) &&
-      cudaStreamEndCapture(s, &g) == cudaSuccess && cudaGraphInstantiate(&graph_, g, 0) == cudaSuccess) {
-    cudaGraphDestroy(g);
-  } else {
-    cudaGetLastError();
+  bool ok = cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal) == cudaSuccess;
+  if (ok) {
+    ok = ctx_->enqueueV3(s);
+    // Always end a capture that began: a stream left in capture mode fails every later launch
+    // on it, including the enqueueV3 fallback below.
+    if (cudaStreamEndCapture(s, &g) != cudaSuccess || !g) ok = false;
+    if (ok) ok = cudaGraphInstantiate(&graph_, g, 0) == cudaSuccess;
+    if (g) cudaGraphDestroy(g);
+  }
+  if (!ok) {
     graph_ = nullptr;
+    cudaGetLastError();
     LOG("[TRT] CUDA graph capture failed, using enqueueV3");
   }
 }

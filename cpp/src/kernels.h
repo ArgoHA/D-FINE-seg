@@ -23,7 +23,8 @@ struct Dets {  // postprocess output, lives on device; boxes are xyxy in engine-
 };
 
 // NV12 -> float CHW RGB/255 at (in_h, in_w), bilinear like F.interpolate(align_corners=False)
-// over the decoder's uint8 RGB (BT.601 or BT.709 limited range, nearest chroma).
+// over the decoder's uint8 RGB (BT.601 or BT.709 limited range, nearest chroma). Squish resize,
+// no letterbox: keep_ratio=False engines only, like TRTModel.gpu_run.
 void nv12_to_input(const Nv12View& src, float* dst, int in_h, int in_w, bool bt709,
                    cudaStream_t s);
 // NV12 bilinear resize (luma and chroma planes independently); memcpy when sizes match.

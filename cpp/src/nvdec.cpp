@@ -1,5 +1,6 @@
 #include "nvdec.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "common.h"
@@ -18,7 +19,9 @@ static cudaVideoCodec av_to_cuvid(AVCodecID id) {
 
 NvDecoder::NvDecoder(const std::string& path, CUcontext ctx, CuvidFunctions* cv, CUstream s,
                      int display_delay, int ring, bool no_copy)
-    : ctx_(ctx), cv_(cv), stream_(s), ring_(ring), no_copy_(no_copy) {
+    // The end-of-stream flush hands every reordered picture to disp_cb in one parser call, with
+    // no consumer running in between, so the ring has to outsize the display delay.
+    : ctx_(ctx), cv_(cv), stream_(s), ring_(std::max(ring, display_delay + 4)), no_copy_(no_copy) {
   if (avformat_open_input(&fmt_, path.c_str(), nullptr, nullptr) < 0)
     throw std::runtime_error("avformat_open_input failed: " + path);
   if (avformat_find_stream_info(fmt_, nullptr) < 0) throw std::runtime_error("no stream info");
@@ -26,8 +29,6 @@ NvDecoder::NvDecoder(const std::string& path, CUcontext ctx, CuvidFunctions* cv,
   if (vidx_ < 0) throw std::runtime_error("no video stream: " + path);
   AVStream* st = fmt_->streams[vidx_];
   AVCodecParameters* par = st->codecpar;
-  width = par->width;
-  height = par->height;
   fps = av_q2d(st->r_frame_rate.num ? st->r_frame_rate : st->avg_frame_rate);  // nominal, like ffprobe
 
   const char* bsf_name = par->codec_id == AV_CODEC_ID_H264   ? "h264_mp4toannexb"
@@ -51,9 +52,21 @@ NvDecoder::NvDecoder(const std::string& path, CUcontext ctx, CuvidFunctions* cv,
   pp.pfnDecodePicture = dec_cb;
   pp.pfnDisplayPicture = disp_cb;
   CU(cv_->cuvidCreateVideoParser(&parser_, &pp));
+  try {  // parse the first sequence header now: the display size is the bitstream's, not the
+         // container's, and it is what the frame ring holds
+    while (!dec_ && pump()) {}
+    if (!dec_) throw std::runtime_error("no sequence header: " + path);
+    width = disp_w_;
+    height = disp_h_;
+  } catch (...) {
+    destroy();  // the destructor does not run for a throwing constructor
+    throw;
+  }
 }
 
-NvDecoder::~NvDecoder() {
+NvDecoder::~NvDecoder() { destroy(); }
+
+void NvDecoder::destroy() {
   if (parser_) cv_->cuvidDestroyVideoParser(parser_);
   if (dec_) cv_->cuvidDestroyDecoder(dec_);
   if (lock_) cv_->cuvidCtxLockDestroy(lock_);
@@ -66,10 +79,21 @@ NvDecoder::~NvDecoder() {
 
 int NvDecoder::seq_cb(void* u, CUVIDEOFORMAT* f) {
   auto* self = (NvDecoder*)u;
-  if (self->dec_) return f->min_num_decode_surfaces;  // no reconfigure support; keep going
   if (f->chroma_format != cudaVideoChromaFormat_420 || f->bit_depth_luma_minus8 != 0) {
     self->err_ = "only 8-bit 4:2:0 is supported";
     return 0;
+  }
+  const int dw = (f->display_area.right - f->display_area.left) & ~1;
+  const int dh = (f->display_area.bottom - f->display_area.top) & ~1;
+  // No reconfigure support: the ring slots and the copy rect are fixed by the first sequence, so
+  // a later one may not change the geometry (copying at a stale offset silently shears the frame).
+  if (self->dec_) {
+    if (dw != self->disp_w_ || dh != self->disp_h_ || (int)f->coded_height != self->surf_h_ ||
+        f->display_area.left != self->disp_x_ || f->display_area.top != self->disp_y_) {
+      self->err_ = "mid-stream sequence change is not supported";
+      return 0;
+    }
+    return f->min_num_decode_surfaces;
   }
   CUVIDDECODECREATEINFO ci{};
   ci.CodecType = f->codec;
@@ -90,8 +114,8 @@ int NvDecoder::seq_cb(void* u, CUVIDEOFORMAT* f) {
   self->surf_h_ = f->coded_height;
   self->disp_x_ = f->display_area.left;
   self->disp_y_ = f->display_area.top;
-  self->disp_w_ = (f->display_area.right - f->display_area.left) & ~1;
-  self->disp_h_ = (f->display_area.bottom - f->display_area.top) & ~1;
+  self->disp_w_ = dw;
+  self->disp_h_ = dh;
   unsigned m = f->video_signal_description.matrix_coefficients;
   self->bt709 = !(m == 5 || m == 6);  // 470bg / smpte170m -> BT.601, everything else BT.709
   CUresult r = self->cv_->cuvidCreateDecoder(&self->dec_, &ci);
