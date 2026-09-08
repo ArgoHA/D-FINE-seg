@@ -47,3 +47,8 @@ test-fast:
 build:
 	rm -rf dist
 	uv build
+
+cpp_e2e:
+	cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+	cmake --build cpp/build -j
+	cpp/build/dfine_e2e $(ARGS)

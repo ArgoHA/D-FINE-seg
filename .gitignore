@@ -35,3 +35,4 @@ pretrained/
 # sem_seg working notes — keep local only
 SEM_SEG_PLAN.md
 SEM_SEG_PROGRESS.md
+cpp/build/
