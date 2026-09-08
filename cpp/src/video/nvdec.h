@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "kernels.h"
+#include "kernels_video.h"
 
 extern "C" {
 #include <libavcodec/bsf.h>

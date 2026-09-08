@@ -16,10 +16,10 @@
 #include <vector>
 
 #include "common.h"
-#include "kernels.h"
+#include "engine.h"
+#include "kernels_video.h"
 #include "nvdec.h"
 #include "nvenc.h"
-#include "trt_model.h"
 #include <ffnvcodec/dynlink_loader.h>
 
 namespace fs = std::filesystem;
@@ -232,8 +232,10 @@ static void annotate(Shared& sh, Worker& w, const Geo& g, const Nv12View& outv, 
       draw_sem_seg(outv, w.tctx->sem, e.sem_h, e.sem_w, sh.palette, sh.n_classes, sh.class_mask, kSemAlpha, w.main);
     return;
   }
+  // sx=sy=1: the overlay path keeps boxes in engine-input space and scales them per frame
+  // (g.sx, g.sy) into the output frame, which is a different size from the source.
   postprocess(w.tctx->labels, e.labels_i64, w.tctx->boxes, w.tctx->scores, e.k, a.conf, sh.class_mask,
-              a.nms_iou, w.dets, w.main);
+              a.nms_iou, 1.f, 1.f, w.dets, w.main);
   if (e.has_masks) {
     mask_owners(w.dets, w.tctx->masks, e.mask_h, e.mask_w, g.mh, g.mw, g.bsx, g.bsy, w.owner, w.main);
     if (draw)
@@ -362,7 +364,10 @@ static long process_clip(Shared& sh, Worker& w, const fs::path& clip) {
       w.tctx->run(w.main);
       annotate(sh, w, g, outv, do_draw);
       if (std::find(a.dump_map_i.begin(), a.dump_map_i.end(), i) != a.dump_map_i.end()) {
-        std::string f = a.dump_map + "_" + clip.parent_path().filename().string() + "_" + std::to_string(i) + ".bin";
+        // Stem included like --dump: without it two clips in one directory race to write
+        // the same file and the dump silently reports whichever worker finished last.
+        std::string f = a.dump_map + "_" + clip.parent_path().filename().string() + "_" +
+                        clip.stem().string() + "_" + std::to_string(i) + ".bin";
         if (e.sem_seg) dump_dev(f, w.tctx->sem, (size_t)e.sem_h * e.sem_w * 4);
         else if (e.has_masks) dump_dev(f, w.owner, (size_t)g.mh * g.mw * 2);
       }

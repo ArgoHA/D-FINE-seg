@@ -1,4 +1,6 @@
-#include "kernels.h"
+#include "kernels_video.h"
+
+#include "kernel_util.cuh"
 
 #include <cuda_fp16.h>
 
@@ -6,18 +8,6 @@
 
 namespace {
 
-__device__ __forceinline__ uint8_t clamp_u8(float v) {
-  return (uint8_t)fminf(fmaxf(v, 0.f), 255.f);  // truncation, like torch .to(uint8)
-}
-
-// PyTorch bilinear source index: max(0, (dst + 0.5) * scale - 0.5), then i1 = min(i0 + 1, n - 1).
-__device__ __forceinline__ void src_index(int dst, float scale, int n, int& i0, int& i1,
-                                          float& l1) {
-  float r = fmaxf((dst + 0.5f) * scale - 0.5f, 0.f);
-  i0 = (int)r;
-  i1 = i0 < n - 1 ? i0 + 1 : i0;
-  l1 = r - i0;
-}
 
 // One decoded pixel -> uint8 RGB exactly as PyNvVideoCodec's RGB output computes it (verified
 // bit-exact on real frames): limited range, 255/219 luma and 255/224 chroma gain, kr/kb-derived
@@ -37,7 +27,7 @@ __device__ __forceinline__ float3 rgb_at(const Nv12View& f, int x, int y, bool b
   float r = __fadd_rn(fy, __fmul_rn(rv, fv));
   float g = __fadd_rn(__fadd_rn(fy, __fmul_rn(gu, fu)), __fmul_rn(gv, fv));
   float b = __fadd_rn(fy, __fmul_rn(bu, fu));
-  return make_float3(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+  return make_float3(dfine_clamp_u8(r), dfine_clamp_u8(g), dfine_clamp_u8(b));
 }
 
 __global__ void k_nv12_to_input(Nv12View src, float* dst, int in_h, int in_w, bool bt709) {
@@ -46,8 +36,8 @@ __global__ void k_nv12_to_input(Nv12View src, float* dst, int in_h, int in_w, bo
   if (dx >= in_w || dy >= in_h) return;
   int x0, x1, y0, y1;
   float lx, ly;
-  src_index(dx, (float)src.w / in_w, src.w, x0, x1, lx);
-  src_index(dy, (float)src.h / in_h, src.h, y0, y1, ly);
+  dfine_src_index(dx, (float)src.w / in_w, src.w, x0, x1, lx);
+  dfine_src_index(dy, (float)src.h / in_h, src.h, y0, y1, ly);
   float3 a = rgb_at(src, x0, y0, bt709), b = rgb_at(src, x1, y0, bt709);
   float3 c = rgb_at(src, x0, y1, bt709), d = rgb_at(src, x1, y1, bt709);
   // Bit-exact with torch's CUDA upsample_bilinear2d + div_(255): nvcc contracts each
@@ -72,66 +62,15 @@ __global__ void k_resize_plane(const uint8_t* src, int sp, int sw, int sh, uint8
   if (dx >= dw || dy >= dh) return;
   int x0, x1, y0, y1;
   float lx, ly;
-  src_index(dx, (float)sw / dw, sw, x0, x1, lx);
-  src_index(dy, (float)sh / dh, sh, y0, y1, ly);
+  dfine_src_index(dx, (float)sw / dw, sw, x0, x1, lx);
+  dfine_src_index(dy, (float)sh / dh, sh, y0, y1, ly);
   for (int c = 0; c < ch; ++c) {
     float v = (1.f - ly) * ((1.f - lx) * src[y0 * sp + x0 * ch + c] + lx * src[y0 * sp + x1 * ch + c]) +
               ly * ((1.f - lx) * src[y1 * sp + x0 * ch + c] + lx * src[y1 * sp + x1 * ch + c]);
-    dst[dy * dp + dx * ch + c] = clamp_u8(v);
+    dst[dy * dp + dx * ch + c] = dfine_clamp_u8(v);
   }
 }
 
-__device__ __forceinline__ float iou(const float* a, const float* b) {
-  float iw = fminf(a[2], b[2]) - fmaxf(a[0], b[0]);
-  float ih = fminf(a[3], b[3]) - fmaxf(a[1], b[1]);
-  float inter = fmaxf(iw, 0.f) * fmaxf(ih, 0.f);
-  float ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter;
-  return inter / ua;
-}
-
-// One block. Candidates are already score-descending (TopK); valid ones are compacted in
-// order, then greedy NMS runs over the (small) compacted set with one sync per survivor.
-template <typename L>
-__global__ void k_postprocess(const L* labels, const float* boxes, const float* scores, int k,
-                              float conf, uint64_t class_mask, float thr, Dets* out) {
-  __shared__ int idx[kMaxDet];
-  __shared__ float sb[kMaxDet * 4];
-  __shared__ int sup[kMaxDet];
-  __shared__ int n;
-  int t = threadIdx.x;
-  if (t == 0) {
-    n = 0;
-    for (int i = 0; i < k; ++i) {
-      long long l = (long long)labels[i];
-      bool ok = scores[i] >= conf && (class_mask == 0 || (l >= 0 && l < 64 && ((class_mask >> l) & 1)));
-      if (ok) idx[n++] = i;
-    }
-  }
-  __syncthreads();
-  int m = n;
-  if (t < m) {
-    for (int c = 0; c < 4; ++c) sb[t * 4 + c] = boxes[idx[t] * 4 + c];
-    sup[t] = 0;
-  }
-  __syncthreads();
-  for (int i = 0; i < m; ++i) {
-    if (sup[i]) continue;  // uniform across the block: sup[i] is final before iteration i
-    if (t > i && t < m && !sup[t] && iou(sb + i * 4, sb + t * 4) > thr) sup[t] = 1;
-    __syncthreads();
-  }
-  if (t == 0) {
-    int c = 0;
-    for (int i = 0; i < m; ++i) {
-      if (sup[i]) continue;
-      for (int j = 0; j < 4; ++j) out->boxes[c * 4 + j] = sb[i * 4 + j];
-      out->labels[c] = (int)labels[idx[i]];
-      out->scores[c] = scores[idx[i]];
-      out->src[c] = idx[i];
-      ++c;
-    }
-    out->count = c;
-  }
-}
 
 // Perimeter of a box split into 4 disjoint bands (top, bottom, then left/right between them).
 struct Bands {
@@ -185,7 +124,7 @@ __global__ void k_draw_boxes(Nv12View f, const Dets* d, float sx, float sy, cons
     int x, y;
     band_xy(L, i, x, y);
     uint8_t* p = f.y + y * f.pitch + x;
-    *p = clamp_u8(*p * ia + cy * alpha);
+    *p = dfine_clamp_u8(*p * ia + cy * alpha);
   }
   // Chroma: same bands in half-res coordinates.
   int tc = max(1, (thick + 1) >> 1);
@@ -195,8 +134,8 @@ __global__ void k_draw_boxes(Nv12View f, const Dets* d, float sx, float sy, cons
     int x, y;
     band_xy(C, i, x, y);
     uint8_t* p = f.uv + y * f.pitch + x * 2;
-    p[0] = clamp_u8(p[0] * ia + cu * alpha);
-    p[1] = clamp_u8(p[1] * ia + cv * alpha);
+    p[0] = dfine_clamp_u8(p[0] * ia + cu * alpha);
+    p[1] = dfine_clamp_u8(p[1] * ia + cv * alpha);
   }
 }
 
@@ -220,8 +159,8 @@ __global__ void k_mask_owners(const Dets* d, const float* masks, int mh0, int mw
   if (x >= mw || y >= mh) return;
   int x0, x1, y0, y1;
   float lx, ly;
-  src_index(x, (float)mw0 / mw, mw0, x0, x1, lx);
-  src_index(y, (float)mh0 / mh, mh0, y0, y1, ly);
+  dfine_src_index(x, (float)mw0 / mw, mw0, x0, x1, lx);
+  dfine_src_index(y, (float)mh0 / mh, mh0, y0, y1, ly);
   const float fx = (float)x, fy = (float)y, w0 = 1.f - lx, h0 = 1.f - ly;
   uint16_t o = 0;
   for (int i = 0; i < cnt; ++i) {
@@ -256,7 +195,7 @@ __global__ void k_blend_blocks(Nv12View f, S s) {
     if (s(x, y, a, py, pu, pv)) {
       hit = true;
       uint8_t* p = f.y + y * f.pitch + x;
-      *p = clamp_u8(*p * (1.f - a) + py * a);
+      *p = dfine_clamp_u8(*p * (1.f - a) + py * a);
       su += u0 * (1.f - a) + pu * a;
       sv += v0 * (1.f - a) + pv * a;
     } else {
@@ -265,8 +204,8 @@ __global__ void k_blend_blocks(Nv12View f, S s) {
     }
   }
   if (!hit) return;
-  uv[0] = clamp_u8(su * 0.25f);
-  uv[1] = clamp_u8(sv * 0.25f);
+  uv[0] = dfine_clamp_u8(su * 0.25f);
+  uv[1] = dfine_clamp_u8(sv * 0.25f);
 }
 
 struct MaskSampler {
@@ -328,16 +267,6 @@ void nv12_resize(const Nv12View& src, const Nv12View& dst, cudaStream_t s) {
   k_resize_plane<<<gy, blk, 0, s>>>(src.y, src.pitch, src.w, src.h, dst.y, dst.pitch, dst.w, dst.h, 1);
   k_resize_plane<<<gc, blk, 0, s>>>(src.uv, src.pitch, src.w / 2, src.h / 2, dst.uv, dst.pitch,
                                     dst.w / 2, dst.h / 2, 2);
-}
-
-void postprocess(const void* labels, bool labels_i64, const float* boxes, const float* scores,
-                 int k, float conf, uint64_t class_mask, float nms_iou, Dets* out, cudaStream_t s) {
-  if (labels_i64)
-    k_postprocess<long long><<<1, kMaxDet, 0, s>>>((const long long*)labels, boxes, scores, k, conf,
-                                                   class_mask, nms_iou, out);
-  else
-    k_postprocess<int><<<1, kMaxDet, 0, s>>>((const int*)labels, boxes, scores, k, conf, class_mask,
-                                             nms_iou, out);
 }
 
 void draw_boxes(const Nv12View& frame, const Dets* dets, float sx, float sy, const uint8_t* palette,
