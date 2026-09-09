@@ -119,6 +119,28 @@ This creates a `.venv/` with the package installed editable and every extra pres
 
 Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use, so no manual setup is needed - into `pretrained/` for the config-driven commands, and into the shared Hugging Face cache for `load_model("s")` when there is no `pretrained/` copy to reuse. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
 
+### Optional faster COCO evaluation
+
+From this source checkout, install the ultrafast backend and select it for training validation:
+
+```bash
+pip install -e '.[ultrafast]'
+dfine train train.coco_backend=ultrafast
+```
+
+`train.coco_backend` defaults to `faster_coco_eval`. The `ultrafast` option uses
+[ultrafast-pycocotools](https://github.com/developer0hye/ultrafast-pycocotools)
+for bbox and instance-segmentation mAP on the CPU. It also applies wherever the
+shared Validator computes mAP, including INT8 validation. F1, threshold sweeps,
+semantic-segmentation metrics and model inference keep their existing computation.
+`dfine bench` currently disables mAP, so changing this option does not accelerate
+its reported inference latency or F1 calculation.
+
+For direct use, pass `coco_backend="ultrafast"` to `Validator`. The adapter changes
+only that metric instance and retains TorchMetrics' update/reset lifecycle.
+Tests compare full bbox/segm evaluation arrays with pycocotools and the existing
+backend, including crowd annotations, tied scores, empty detections and RLE masks.
+
 ### Prepare Your Data
 
 Two annotation formats are supported: **YOLO** (default) and **COCO JSON**. Semantic segmentation uses **PNG masks** instead (see below).

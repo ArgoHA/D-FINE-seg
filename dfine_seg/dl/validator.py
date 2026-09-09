@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from loguru import logger
-from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from torchvision.ops import box_iou
 
+from dfine_seg.dl.coco_metric import coco_metric
 from dfine_seg.dl.utils import filter_preds, rle_to_masks
 
 # Suppress verbose output from faster_coco_eval
@@ -28,6 +28,7 @@ class Validator:
         iou_thresh=0.5,
         mask_batch_size=1000,
         compute_maps=True,
+        coco_backend="faster_coco_eval",
     ) -> None:
         """
         Format example:
@@ -36,7 +37,8 @@ class Validator:
         bboxes are in format [x1, y1, x2, y2], absolute values
 
         mask_batch_size - Number of images to process at once when computing mask metrics.
-            Lower values use less RAM but may be slower. Default 500.
+            Lower values use less RAM but may be slower. Default 1000.
+        coco_backend - "faster_coco_eval" (default) or "ultrafast" (requires [ultrafast]).
         """
         self.gt = gt
         self.preds = preds
@@ -50,11 +52,7 @@ class Validator:
         self.mask_batch_size = mask_batch_size
         self.compute_maps = compute_maps
 
-        # Use faster_coco_eval backend for numpy 2.x compatibility
-        self.torch_metric = MeanAveragePrecision(
-            box_format="xyxy", iou_type="bbox", sync_on_compute=False, backend="faster_coco_eval"
-        )
-        self.torch_metric.warn_on_many_detections = False
+        self.torch_metric = coco_metric("bbox", coco_backend)
 
         # get raw preds for torchmetrics (only needed when computing mAPs; the deepcopy
         # duplicates every dense mask, so skip it otherwise to avoid an OOM spike)
@@ -81,13 +79,7 @@ class Validator:
 
         self.use_masks = any(_has_masks(p) for p in preds) and any(_has_masks(g) for g in gt)
         if self.use_masks and self.compute_maps:
-            self.torch_metric_mask = MeanAveragePrecision(
-                box_format="xyxy",
-                iou_type="segm",
-                sync_on_compute=False,
-                backend="faster_coco_eval",
-            )
-            self.torch_metric_mask.warn_on_many_detections = False
+            self.torch_metric_mask = coco_metric("segm", coco_backend)
             # Decode RLE masks for torchmetrics in batches to avoid OOM
             # torchmetrics supports incremental .update() calls
             batch_size = self.mask_batch_size

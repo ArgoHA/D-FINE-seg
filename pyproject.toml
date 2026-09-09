@@ -53,6 +53,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional CPU evaluator for bbox and instance-segmentation mAP.
+ultrafast = ["ultrafast-pycocotools>=0.1.9,<0.2"]
 # `make export` / `dfine export` backends. Large, so opt-in. nncf and openvino are
 # capped at the tested major: a silent API change there yields a bad artifact, not an error.
 export = [
@@ -83,6 +85,7 @@ extra = [
     "pillow-heif>=1.4.0",
 ]
 all = [
+    "dfine-seg[ultrafast]",
     "dfine-seg[export]",
     "dfine-seg[trt]",
     "dfine-seg[label]",
@@ -120,6 +123,7 @@ dev = [
     "dfine-seg[all]",
     "pre-commit>=4.6.0",
     "pytest>=8",
+    "pycocotools>=2.0.11",
     "pytest-xdist>=3",
     "ruff==0.15.20",
 ]

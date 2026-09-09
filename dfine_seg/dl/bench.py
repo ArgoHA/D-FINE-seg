@@ -126,6 +126,7 @@ def test_model(
     label_to_name: Dict[int, str],
     compute_maps: bool,
     to_draw_gt: bool,
+    coco_backend: str = "faster_coco_eval",
 ):
     logger.info(f"Testing {name} model")
     latency = []
@@ -225,6 +226,7 @@ def test_model(
         conf_thresh=conf_thresh,
         iou_thresh=iou_thresh,
         label_to_name=label_to_name,
+        coco_backend=coco_backend,
         compute_maps=compute_maps,  # as inference done with a conf threshold, mAPs don't make much sense
     )
 
@@ -454,6 +456,7 @@ def main(cfg: DictConfig):
                 label_to_name=cfg.train.label_to_name,
                 compute_maps=compute_maps,
                 to_draw_gt=to_draw_gt,
+                coco_backend=getattr(cfg.train, "coco_backend", "faster_coco_eval"),
             )
         del model
         gc.collect()

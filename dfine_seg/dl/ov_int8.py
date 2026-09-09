@@ -128,6 +128,7 @@ def main(cfg: DictConfig):
             label_to_name=label_to_name,
             conf_thresh=conf_thresh,
             iou_thresh=iou_thresh,
+            coco_backend=getattr(cfg.train, "coco_backend", "faster_coco_eval"),
         )
         metrics = validator.compute_metrics(extended=False)
         f1_score = metrics["f1"]

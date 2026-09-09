@@ -59,7 +59,10 @@ def _load_yolo_labels(
 
 
 @pytest.mark.slow
-def test_pretrained_s_cpu_mAP_holds_baseline(coco_pretrained_path):
+@pytest.mark.parametrize("coco_backend", ["faster_coco_eval", "ultrafast"])
+def test_pretrained_s_cpu_mAP_holds_baseline(coco_pretrained_path, coco_backend):
+    if coco_backend == "ultrafast":
+        pytest.importorskip("ultrafast_pycocotools")
     baseline = _require_fixtures()
     # Only images with a matching label file count as fixture inputs — that's
     # what the bootstrap writes, and it lets stray source images sit in the
@@ -104,6 +107,7 @@ def test_pretrained_s_cpu_mAP_holds_baseline(coco_pretrained_path):
         gt.append({"labels": gt_labels, "boxes": gt_boxes})
 
     v = Validator(
+        coco_backend=coco_backend,
         gt=copy.deepcopy(gt),
         preds=copy.deepcopy(preds),
         label_to_name=COCO80,

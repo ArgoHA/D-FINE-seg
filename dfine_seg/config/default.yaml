@@ -69,6 +69,7 @@ train:
   early_stopping: 0 # 0 - no early stopping
   ignore_background_epochs: 0 # background images not used for N epochs in train set. Ignored for sem_seg
   num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
+  coco_backend: faster_coco_eval # faster_coco_eval | ultrafast (install [ultrafast])
   mask_batch_size: 150 # number of images to process at once when computing mask metrics
   freeze_except_mask: False # freeze everything except MaskDecoder
 

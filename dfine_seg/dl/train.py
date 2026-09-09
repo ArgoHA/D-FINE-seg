@@ -40,6 +40,7 @@ from dfine_seg.model.dist_utils import (
 )
 from dfine_seg.model.utils import save_checkpoint, unwrap_checkpoint
 from dfine_seg.dl.dataset import Loader
+from dfine_seg.dl.coco_metric import validate_coco_backend
 from dfine_seg.dl.utils import (
     auto_batch_size,
     calculate_remaining_time,
@@ -104,6 +105,9 @@ class ModelEMA:
 class Trainer:
     def __init__(self, cfg: DictConfig) -> None:
         self.cfg = cfg
+        self.coco_backend = getattr(cfg.train, "coco_backend", "faster_coco_eval")
+        if cfg.task != "sem_seg":
+            validate_coco_backend(self.coco_backend)
 
         # Only consider distributed if config says DDP enabled AND process group was initialized
         self.distributed = (
@@ -627,6 +631,7 @@ class Trainer:
                     iou_thresh=iou_thresh,
                     label_to_name=self.label_to_name,
                     mask_batch_size=self.mask_batch_size,
+                    coco_backend=self.coco_backend,
                 )
                 metrics = validator.compute_metrics(extended=extended)
             if path_to_save:  # val and test

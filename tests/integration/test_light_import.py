@@ -30,6 +30,7 @@ FORBIDDEN = [
     "sklearn",
     "torchmetrics",
     "faster_coco_eval",
+    "ultrafast_pycocotools",
 ]
 
 

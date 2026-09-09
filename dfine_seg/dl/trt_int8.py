@@ -183,6 +183,7 @@ def validate_engine(
     label_to_name: dict,
     enable_mask_head: bool,
     input_size: tuple,  # (H, W)
+    coco_backend: str = "faster_coco_eval",
 ) -> float:
     """
     Load an engine, run the val set through it, return the F1 score.
@@ -303,6 +304,7 @@ def validate_engine(
         label_to_name=label_to_name,
         conf_thresh=conf_thresh,
         iou_thresh=iou_thresh,
+        coco_backend=coco_backend,
     )
     metrics = validator.compute_metrics(extended=False)
     f1 = metrics["f1"]
@@ -390,6 +392,7 @@ def main(cfg: DictConfig):
             label_to_name=label_to_name,
             enable_mask_head=enable_mask_head,
             input_size=tuple(cfg.train.img_size),
+            coco_backend=getattr(cfg.train, "coco_backend", "faster_coco_eval"),
         )
         logger.info(f"Final INT8 F1: {f1:.4f}")
 
