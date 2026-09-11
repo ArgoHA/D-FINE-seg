@@ -2,7 +2,6 @@ import logging
 import math
 import os
 import random
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -56,21 +55,6 @@ def wandb_logger(loss, metrics: Dict[str, float], epoch, mode: str) -> None:
             log_data[f"{mode}/metrics/{metric_name}"] = metric_value
 
     wandb.log(log_data)
-
-
-def rename_metric_keys(d, label_to_name):
-    """precision_1 -> precision_class_name"""
-    out = {}
-    if not isinstance(d, dict):
-        return out
-    for k, v in d.items():
-        if "_" in k:
-            base, tail = k.rsplit("_", 1)
-            if tail.isdigit():
-                name = label_to_name.get(int(tail), tail)
-                k = f"{base}_{name}"
-        out[k] = v
-    return out
 
 
 def log_metrics_locally(
@@ -145,33 +129,10 @@ def calculate_remaining_time(
 
 
 def get_vram_usage():
-    try:
-        output = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.used,memory.total",
-                "--format=csv,nounits,noheader",
-            ],
-            encoding="utf-8",
-        )
-
-        # Split lines to handle multiple GPUs correctly
-        lines = output.strip().split("\n")
-        total_usage = []
-
-        for line in lines:
-            try:
-                used, total = map(float, line.split(", "))
-                total_usage.append((used / total) * 100)
-            except ValueError:
-                print(f"Skipping malformed line: {line}")
-
-        # If there are multiple GPUs, return the max usage percentage
-        return round(max(total_usage)) if total_usage else 0
-
-    except Exception as e:
-        print(f"Error running nvidia-smi: {e}")
+    if not torch.cuda.is_available():
         return 0
+    free, total = torch.cuda.mem_get_info()
+    return round(100 * (total - free) / total)
 
 
 def norm_xywh_to_abs_xyxy(boxes: np.ndarray, height: int, width: int, to_round=True) -> np.ndarray:
@@ -220,17 +181,6 @@ def get_aug_params(value, center=0):
             "Affine params should be either a sequence containing two values\
                           or single float values. Got {}".format(value)
         )
-
-
-def resample_segments(segments, n=1000):
-    # Up-sample an (n,2) segment
-    for i, s in enumerate(segments):
-        x = np.linspace(0, len(s) - 1, n)
-        xp = np.arange(len(s))
-        segments[i] = (
-            np.concatenate([np.interp(x, xp, s[:, i]) for i in range(2)]).reshape(2, -1).T
-        )  # segment xy
-    return segments
 
 
 def clip_polygon_to_rect(poly: np.ndarray, width: float, height: float) -> np.ndarray:
@@ -289,15 +239,6 @@ def clip_polygon_to_rect(poly: np.ndarray, width: float, height: float) -> np.nd
     if len(output) < 3:
         return np.empty((0, 2), dtype=np.float32)
     return output.astype(np.float32)
-
-
-def segment2box(segment, width=640, height=640):
-    # Convert 1 segment label to 1 box label, applying inside-image constraint,
-    # i.e. (xy1, xy2, ...) to (xyxy)
-    x, y = segment.T  # segment xy
-    inside = (x >= 0) & (y >= 0) & (x <= width) & (y <= height)
-    (x, y) = (x[inside], y[inside])
-    return np.array([x.min(), y.min(), x.max(), y.max()]) if any(x) else np.zeros((1, 4))  # xyxy
 
 
 def box_candidates(
@@ -464,25 +405,6 @@ def filter_preds(preds, conf_thresh, mask_source="mask_probs"):
             and getattr(pred["masks"], "numel", lambda: 0)() > 0
         ):
             pred["masks"] = pred["masks"][keep].to(torch.uint8)
-
-    return preds
-
-
-def filter_masks(preds, conf_thresh, mask_source="mask_probs"):
-    for pred in preds:
-        keep = pred["scores"] >= conf_thresh
-
-        # Keep mask tensors aligned with kept queries
-        if (
-            mask_source in pred
-            and pred[mask_source] is not None
-            and getattr(pred[mask_source], "numel", lambda: 0)() > 0
-        ):
-            m = pred[mask_source][keep]
-            pred[mask_source] = m
-            # Ensure binary mask view exists (uint8)
-            if mask_source == "mask_probs":
-                pred["masks"] = (m > conf_thresh).to(torch.uint8)
 
     return preds
 
@@ -1240,54 +1162,6 @@ def encode_sample_masks_to_rle(sample: Dict) -> Dict:
     del sample["masks"]
 
     return sample
-
-
-def decode_sample_rle_to_masks(sample: Dict, device: str = "cpu") -> Dict:
-    """
-    Decode RLE masks back to dense tensor format in a sample dict.
-
-    Args:
-        sample: Dict with 'masks_rle' key
-        device: Target device for output tensor
-
-    Returns:
-        Same dict with 'masks' restored from 'masks_rle'
-    """
-    if "masks_rle" not in sample:
-        return sample
-
-    rles = sample["masks_rle"]
-    if not rles:
-        size = sample.get("masks_size", (1, 1))
-        sample["masks"] = torch.zeros((0, size[0], size[1]), dtype=torch.uint8)
-    else:
-        sample["masks"] = rle_to_masks(rles, device=device)
-
-    return sample
-
-
-def get_rle_memory_size(rles: List[Dict]) -> int:
-    """
-    Estimate memory usage of RLE-encoded masks in bytes.
-    Useful for debugging/monitoring memory savings.
-    """
-    if not rles:
-        return 0
-
-    total = 0
-    for rle in rles:
-        # Size list + counts string
-        total += 16  # overhead for dict
-        total += len(str(rle.get("counts", "")))
-        total += 16  # size tuple overhead
-    return total
-
-
-def get_dense_mask_memory_size(n_masks: int, h: int, w: int) -> int:
-    """
-    Calculate memory usage of dense masks in bytes.
-    """
-    return n_masks * h * w  # uint8 = 1 byte per pixel
 
 
 def auto_batch_size(

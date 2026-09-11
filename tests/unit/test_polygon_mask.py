@@ -11,8 +11,6 @@ from dfine_seg.dl.utils import (
     clip_polygon_to_rect,
     norm_poly_to_abs,
     poly_abs_to_mask,
-    resample_segments,
-    segment2box,
 )
 from dfine_seg.etl.polys2bbox import polygon_to_bbox
 
@@ -84,18 +82,6 @@ def test_clip_polygon_to_rect_fully_outside_returns_empty():
     poly = np.array([[100.0, 100.0], [110.0, 100.0], [110.0, 110.0], [100.0, 110.0]])
     out = clip_polygon_to_rect(poly, width=50.0, height=50.0)
     assert out.shape == (0, 2)
-
-
-def test_segment2box_bounds_polygon():
-    poly = np.array([[10.0, 15.0], [80.0, 15.0], [80.0, 90.0], [10.0, 90.0]])
-    box = segment2box(poly, width=640, height=640)
-    np.testing.assert_array_equal(box, [10.0, 15.0, 80.0, 90.0])
-
-
-def test_resample_segments_to_fixed_length():
-    seg = [np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])]
-    out = resample_segments(seg, n=128)
-    assert out[0].shape == (128, 2)
 
 
 def test_polygon_to_bbox_matches_min_max():

@@ -231,7 +231,6 @@ class CustomDataset(Dataset):
         cfg: DictConfig,
         coco_annotations: Optional[List[Dict]] = None,
     ) -> None:
-        self.project_path = Path(cfg.train.root)
         self.root_path = root_path
         self.split = split
         self.target_h, self.target_w = img_size
