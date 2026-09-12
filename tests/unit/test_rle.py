@@ -8,7 +8,6 @@ import numpy as np
 import torch
 
 from dfine_seg.dl.utils import (
-    decode_sample_rle_to_masks,
     encode_sample_masks_to_rle,
     masks_to_rle,
     rle_to_masks,
@@ -46,19 +45,18 @@ def test_rle_counts_are_strings_after_encode():
         assert isinstance(rle["counts"], str)
 
 
-def test_sample_encode_decode_round_trip():
+def test_sample_encode_round_trip():
     masks = _random_masks(3, 24, 32, seed=1)
     sample = {"boxes": torch.zeros((3, 4)), "masks": masks}
     encoded = encode_sample_masks_to_rle(dict(sample))
     assert "masks" not in encoded
     assert "masks_rle" in encoded and encoded["masks_size"] == (24, 32)
-    decoded = decode_sample_rle_to_masks(encoded)
-    assert torch.equal(decoded["masks"], masks)
+    assert torch.equal(rle_to_masks(encoded["masks_rle"]), masks)
 
 
 def test_sample_encode_with_empty_masks():
     sample = {"masks": torch.empty(0, 10, 10, dtype=torch.uint8)}
     encoded = encode_sample_masks_to_rle(dict(sample))
     assert encoded["masks_rle"] == []
-    decoded = decode_sample_rle_to_masks(encoded)
-    assert decoded["masks"].shape[0] == 0
+    assert encoded["masks_size"] == (0, 0)
+    assert "masks" not in encoded

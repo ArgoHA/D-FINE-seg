@@ -19,37 +19,54 @@ from dfine_seg.infer.byte_track import ByteTrack, Detection
 from dfine_seg.infer.torch_model import TorchModel
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".npy"}
+
+
+def _files(folder_path, extensions):
+    return sorted(
+        path
+        for path in folder_path.iterdir()
+        if path.is_file() and not path.name.startswith(".") and path.suffix.lower() in extensions
+    )
 
 
 def figure_input_type(folder_path: Path):
-    video_types = ["mp4", "avi", "mov", "mkv"]
-    # .tif/.tiff intentionally excluded: cv2.imread mangles 4-channel TIFFs
-    # (alpha pre-multiplication + photometric-tag swap). Convert to .npy first
-    # (see dfine_seg/etl/preprocess.py for a PIL-based TIFF->JPG path for 3-channel).
-    img_types = ["jpg", "png", "jpeg", "npy"]
-
-    for f in folder_path.iterdir():
-        if f.suffix[1:].lower() in video_types:
-            data_type = "video"
-            break
-        elif f.suffix[1:].lower() in img_types:
-            data_type = "image"
-            break
-    logger.info(
-        f"Inferencing on data type: {data_type}, path: {folder_path}",
-    )
+    kinds = {"image" for _ in _files(folder_path, IMAGE_EXTS)} | {
+        "video" for _ in _files(folder_path, VIDEO_EXTS)
+    }
+    if len(kinds) != 1:
+        found = "mixed image and video files" if kinds else "no supported files"
+        raise ValueError(f"Expected one input type in {folder_path}, found {found}")
+    data_type = kinds.pop()
+    logger.info(f"Inferencing on data type: {data_type}, path: {folder_path}")
     return data_type
 
 
-def visualize(img, boxes, labels, scores, output_path, img_path, label_to_name, masks=None):
+def _host_result(torch_model, raw_result, image_shape):
+    result = {key: raw_result[key].cpu().numpy() for key in ("boxes", "labels", "scores")}
+    if "masks" in raw_result:
+        result["masks"] = raw_result["masks"].cpu()
+        result["polys"] = torch_model.mask2poly(result["masks"], image_shape)
+    return result
+
+
+def _display_image(image, is_npy=False):
+    image = image[..., :3]
+    return np.ascontiguousarray(image[..., ::-1]) if is_npy else image
+
+
+def visualize(visualizer, img, result, output_path, stem):
+    if not len(result["boxes"]):
+        return
     output_path.mkdir(parents=True, exist_ok=True)
-    results = {"boxes": boxes, "labels": labels, "scores": scores}
-    if masks is not None:
-        results["masks"] = masks
-    vis = Visualizer(n_classes=max(label_to_name.keys()) + 1, class_names=label_to_name)
-    img = vis.draw(img, results)
-    if len(boxes):
-        cv2.imwrite((str(f"{output_path / Path(img_path).stem}.jpg")), img)
+    cv2.imwrite(str(output_path / f"{stem}.jpg"), visualizer.draw(img, result))
+
+
+def _write_class_names(output_path, labels, label_to_name):
+    output_path.mkdir(parents=True, exist_ok=True)
+    with open(output_path / "labels.txt", "w") as f:
+        for class_id in sorted(labels):
+            f.write(f"{label_to_name[int(class_id)]}\n")
 
 
 def save_yolo_annotations(res, output_path, img_path, img_shape):
@@ -60,7 +77,7 @@ def save_yolo_annotations(res, output_path, img_path, img_shape):
 
     has_polys = "polys" in res and res["polys"] is not None and len(res["polys"]) > 0
 
-    with open(output_path / f"{Path(img_path).stem}.txt", "a") as f:
+    with open(output_path / f"{Path(img_path).stem}.txt", "w") as f:
         for idx, (class_id, box) in enumerate(zip(res["labels"], res["boxes"])):
             if has_polys:
                 # YOLO segmentation format: class_id x1 y1 x2 y2 x3 y3 ...
@@ -80,79 +97,46 @@ def save_yolo_annotations(res, output_path, img_path, img_shape):
 
 
 def crops(or_img, res, paddings, output_path, output_stem):
-    if isinstance(paddings["w"], float):
-        paddings["w"] = int(or_img.shape[1] * paddings["w"])
-    if isinstance(paddings["h"], float):
-        paddings["h"] = int(or_img.shape[0] * paddings["h"])
+    pad_w = (
+        int(or_img.shape[1] * paddings["w"]) if isinstance(paddings["w"], float) else paddings["w"]
+    )
+    pad_h = (
+        int(or_img.shape[0] * paddings["h"]) if isinstance(paddings["h"], float) else paddings["h"]
+    )
 
     for crop_id, box in enumerate(res["boxes"]):
         x1, y1, x2, y2 = map(int, box.tolist())
         crop = or_img[
-            max(y1 - paddings["h"], 0) : min(y2 + paddings["h"], or_img.shape[0]),
-            max(x1 - paddings["w"], 0) : min(x2 + paddings["w"], or_img.shape[1]),
+            max(y1 - pad_h, 0) : min(y2 + pad_h, or_img.shape[0]),
+            max(x1 - pad_w, 0) : min(x2 + pad_w, or_img.shape[1]),
         ]
 
         (output_path / "crops").mkdir(parents=True, exist_ok=True)
         cv2.imwrite((str(output_path / "crops" / f"{output_stem}_{crop_id}.jpg")), crop)
 
 
-def run_images(
-    torch_model, folder_path, output_path, label_to_name, to_crop, paddings, conf_thresh
-):
-    batch = 0
-    imag_paths = [img.name for img in folder_path.iterdir() if not str(img).startswith(".")]
+def run_images(torch_model, folder_path, output_path, label_to_name, to_crop, paddings):
+    visualizer = Visualizer(n_classes=max(label_to_name) + 1, class_names=label_to_name)
     labels = set()
-    for img_path in tqdm(imag_paths):
-        img = read_image_hwc(folder_path / img_path)
+    for img_path in tqdm(_files(folder_path, IMAGE_EXTS)):
+        img = read_image_hwc(img_path)
         if img is None:
-            logger.warning(f"Skipping unreadable image: {img_path}")
+            logger.warning(f"Skipping unreadable image: {img_path.name}")
             continue
-        or_img = img.copy()
-        is_npy = Path(img_path).suffix.lower() == ".npy"
-        raw_res = torch_model(img, bgr=not is_npy)
-
-        # Convert torch tensors to numpy for saving/visualization
-        res = {
-            "boxes": raw_res[batch]["boxes"].cpu().numpy(),
-            "labels": raw_res[batch]["labels"].cpu().numpy(),
-            "scores": raw_res[batch]["scores"].cpu().numpy(),
-        }
-        if "masks" in raw_res[0]:
-            res["masks"] = raw_res[batch]["masks"].cpu()
-            res["polys"] = torch_model.mask2poly(res["masks"], img.shape)
-
-        # visualization / crops only support 3-channel; slice for N>3.
-        # cv2 saves in BGR; .npy stacks are RGB(+extras) by convention.
-        vis_img = img[:, :, :3] if img.shape[2] > 3 else img
-        crop_img = or_img[:, :, :3] if or_img.shape[2] > 3 else or_img
-        if is_npy:
-            vis_img = np.ascontiguousarray(vis_img[..., ::-1])
-            crop_img = np.ascontiguousarray(crop_img[..., ::-1])
-
-        visualize(
-            img=vis_img,
-            boxes=res["boxes"],
-            labels=res["labels"],
-            scores=res["scores"],
-            output_path=output_path / "images",
-            img_path=img_path,
-            label_to_name=label_to_name,
-            masks=res.get("masks", None),
-        )
-
-        for class_id in res["labels"]:
-            labels.add(class_id)
+        is_npy = img_path.suffix.lower() == ".npy"
+        res = _host_result(torch_model, torch_model(img, bgr=not is_npy)[0], img.shape)
+        display_img = _display_image(img, is_npy)
+        visualize(visualizer, display_img, res, output_path / "images", img_path.stem)
+        labels.update(res["labels"].tolist())
 
         save_yolo_annotations(
             res=res, output_path=output_path / "labels", img_path=img_path, img_shape=img.shape
         )
 
         if to_crop:
-            crops(crop_img, res, paddings, output_path, Path(img_path).stem)
+            crops(display_img, res, paddings, output_path, img_path.stem)
 
-    with open(output_path / "labels.txt", "w") as f:
-        for class_id in labels:
-            f.write(f"{label_to_name[int(class_id)]}\n")
+    _write_class_names(output_path, labels, label_to_name)
 
 
 def run_images_sem_seg(torch_model, folder_path, output_path, label_to_name):
@@ -161,41 +145,30 @@ def run_images_sem_seg(torch_model, folder_path, output_path, label_to_name):
     (output_path / "images").mkdir(parents=True, exist_ok=True)
     (output_path / "labels").mkdir(parents=True, exist_ok=True)
     labels = set()
-    img_paths = [img.name for img in folder_path.iterdir() if not img.name.startswith(".")]
-    for img_path in tqdm(img_paths):
-        img = read_image_hwc(folder_path / img_path)
+    for img_path in tqdm(_files(folder_path, IMAGE_EXTS)):
+        img = read_image_hwc(img_path)
         if img is None:
-            logger.warning(f"Skipping unreadable image: {img_path}")
+            logger.warning(f"Skipping unreadable image: {img_path.name}")
             continue
-        is_npy = Path(img_path).suffix.lower() == ".npy"
+        is_npy = img_path.suffix.lower() == ".npy"
         label_map = torch_model(img, bgr=not is_npy)[0]["sem_seg"].cpu().numpy()
 
-        vis_img = img[:, :, :3] if img.shape[2] > 3 else img
-        if is_npy:
-            vis_img = np.ascontiguousarray(vis_img[..., ::-1])
+        vis_img = _display_image(img, is_npy)
         cv2.imwrite(
-            str(output_path / "images" / f"{Path(img_path).stem}.jpg"),
+            str(output_path / "images" / f"{img_path.stem}.jpg"),
             overlay_sem_seg(vis_img, label_map, palette),
         )
-        # GT-style output: grayscale PNG, pixel value = class id
-        cv2.imwrite(str(output_path / "labels" / f"{Path(img_path).stem}.png"), label_map)
+        cv2.imwrite(str(output_path / "labels" / f"{img_path.stem}.png"), label_map)
         labels.update(np.unique(label_map).tolist())
 
-    with open(output_path / "labels.txt", "w") as f:
-        for class_id in sorted(labels):
-            f.write(f"{label_to_name[int(class_id)]}\n")
+    _write_class_names(output_path, labels, label_to_name)
 
 
 def run_videos_sem_seg(torch_model, folder_path, output_path, label_to_name):
     """Per-frame overlay written to <stem>_sem_seg.mp4; tracking is box-based -> skipped."""
     palette = sem_seg_palette(len(label_to_name))
     output_path.mkdir(parents=True, exist_ok=True)
-    video_files = sorted(
-        f
-        for f in folder_path.iterdir()
-        if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith(".")
-    )
-    for video_path in video_files:
+    for video_path in _files(folder_path, VIDEO_EXTS):
         vid = cv2.VideoCapture(str(video_path))
         if not vid.isOpened():
             logger.warning(f"Could not open {video_path}, skipping")
@@ -222,46 +195,24 @@ def run_videos_sem_seg(torch_model, folder_path, output_path, label_to_name):
         logger.info(f"Output video saved: {out_path}")
 
 
-def run_videos(
-    torch_model, folder_path, output_path, label_to_name, to_crop, paddings, conf_thresh
-):
-    batch = 0
-    vid_paths = [vid.name for vid in folder_path.iterdir() if not str(vid.name).startswith(".")]
+def run_videos(torch_model, folder_path, output_path, label_to_name, to_crop, paddings):
+    visualizer = Visualizer(n_classes=max(label_to_name) + 1, class_names=label_to_name)
     labels = set()
-    for vid_path in vid_paths:
-        vid = cv2.VideoCapture(str(folder_path / vid_path))
+    for video_path in _files(folder_path, VIDEO_EXTS):
+        vid = cv2.VideoCapture(str(video_path))
+        if not vid.isOpened():
+            logger.warning(f"Could not open {video_path}, skipping")
+            continue
         total_frames = int(vid.get(cv2.CAP_PROP_FRAME_COUNT)) or None
-        pbar = tqdm(total=total_frames, desc=vid_path, unit="frame")
+        pbar = tqdm(total=total_frames, desc=video_path.name, unit="frame")
         success, img = vid.read()
         idx = 0
         while success:
             idx += 1
-            raw_res = torch_model(img)
-
-            # Convert torch tensors to numpy for saving/visualization
-            res = {
-                "boxes": raw_res[batch]["boxes"].cpu().numpy(),
-                "labels": raw_res[batch]["labels"].cpu().numpy(),
-                "scores": raw_res[batch]["scores"].cpu().numpy(),
-            }
-            if "masks" in raw_res[0]:
-                res["masks"] = raw_res[batch]["masks"].cpu()
-                res["polys"] = torch_model.mask2poly(res["masks"], img.shape)
-
-            frame_name = f"{Path(vid_path).stem}_frame_{idx}"
-            visualize(
-                img=img,
-                boxes=res["boxes"],
-                labels=res["labels"],
-                scores=res["scores"],
-                output_path=output_path / "images",
-                img_path=frame_name,
-                label_to_name=label_to_name,
-                masks=res.get("masks", None),
-            )
-
-            for class_id in res["labels"]:
-                labels.add(class_id)
+            res = _host_result(torch_model, torch_model(img)[0], img.shape)
+            frame_name = f"{video_path.stem}_frame_{idx}"
+            visualize(visualizer, img, res, output_path / "images", frame_name)
+            labels.update(res["labels"].tolist())
 
             save_yolo_annotations(
                 res=res,
@@ -278,9 +229,7 @@ def run_videos(
         pbar.close()
         vid.release()
 
-    with open(output_path / "labels.txt", "w") as f:
-        for class_id in labels:
-            f.write(f"{label_to_name[int(class_id)]}\n")
+    _write_class_names(output_path, labels, label_to_name)
 
 
 def _run_video_tracked(torch_model, tracker, visualizer, video_path, output_path):
@@ -347,11 +296,7 @@ def _run_video_tracked(torch_model, tracker, visualizer, video_path, output_path
 
 
 def run_videos_tracked(torch_model, folder_path, output_path, label_to_name, tracker_cfg):
-    video_files = sorted(
-        f
-        for f in folder_path.iterdir()
-        if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith(".")
-    )
+    video_files = _files(folder_path, VIDEO_EXTS)
     if not video_files:
         logger.error(f"No video files found in {folder_path}")
         return
@@ -447,7 +392,6 @@ def main(cfg: DictConfig):
                 label_to_name=cfg.train.label_to_name,
                 to_crop=to_crop,
                 paddings=paddings,
-                conf_thresh=cfg.train.conf_thresh,
             )
     elif data_type == "video":
         if cfg.task == "sem_seg":
@@ -470,7 +414,6 @@ def main(cfg: DictConfig):
                 label_to_name=cfg.train.label_to_name,
                 to_crop=to_crop,
                 paddings=paddings,
-                conf_thresh=cfg.train.conf_thresh,
             )
 
 

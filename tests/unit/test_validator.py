@@ -11,7 +11,7 @@ import copy
 import pytest
 import torch
 
-from dfine_seg.dl.validator import Validator
+from dfine_seg.dl.validator import Validator, match_instances
 
 LABEL_TO_NAME = {0: "cat", 1: "dog"}
 
@@ -116,3 +116,38 @@ def test_validator_compute_maps_false_skips_torchmetrics(synthetic_preds_gt):
     # mAP keys are skipped, but the simple metrics still come back.
     assert "mAP_50" not in metrics
     assert {"f1", "precision", "recall", "iou", "TPs", "FPs", "FNs"} <= metrics.keys()
+
+
+def test_match_instances_prefers_highest_iou():
+    ious = torch.tensor([[0.7, 0.9], [0.8, 0.0]])
+    matches, unmatched_preds, unmatched_gts = match_instances(
+        ious, torch.tensor([0, 0]), torch.tensor([0, 0]), 0.5
+    )
+    assert [(pred, gt) for pred, gt, _ in matches] == [(0, 1), (1, 0)]
+    assert unmatched_preds == []
+    assert unmatched_gts == []
+
+
+def test_validator_counts_wrong_class_as_fp_and_fn():
+    boxes = torch.tensor([[10.0, 10.0, 50.0, 50.0]])
+    gt = [{"labels": torch.tensor([0]), "boxes": boxes}]
+    preds = [{"labels": torch.tensor([1]), "boxes": boxes, "scores": torch.tensor([0.9])}]
+    metrics = Validator(gt, preds, LABEL_TO_NAME, compute_maps=False).compute_metrics()
+    assert (metrics["TPs"], metrics["FPs"], metrics["FNs"]) == (0, 1, 1)
+
+
+def test_validator_resizes_prediction_masks():
+    gt_mask = torch.ones((1, 10, 10), dtype=torch.uint8)
+    pred_mask = torch.ones((1, 5, 5), dtype=torch.uint8)
+    boxes = torch.tensor([[0.0, 0.0, 10.0, 10.0]])
+    gt = [{"labels": torch.tensor([0]), "boxes": boxes, "masks": gt_mask}]
+    preds = [
+        {
+            "labels": torch.tensor([0]),
+            "boxes": boxes,
+            "scores": torch.tensor([0.9]),
+            "masks": pred_mask,
+        }
+    ]
+    metrics = Validator(gt, preds, LABEL_TO_NAME, compute_maps=False).compute_metrics()
+    assert metrics["iou"] == pytest.approx(1.0)

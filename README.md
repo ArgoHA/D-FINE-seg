@@ -65,7 +65,7 @@ pip install dfine-seg           # inference + training
 pip install 'dfine-seg[all]'    # + every export backend, SAM3, Gradio demo
 ```
 
-COCO-pretrained weights (detection **and** instance segmentation) auto-download from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use - no manual download needed.
+COCO-pretrained weights (detection **and** instance segmentation) auto-download from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use.
 
 <details>
 <summary>Extras, if you need them (backends are large and platform-specific)</summary>
@@ -97,7 +97,7 @@ print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
 drawn = Visualizer(model)(img, out)                  # annotated BGR copy - boxes, masks or a sem_seg overlay
 ```
 
-`load_model` returns the very same wrapper you would construct by hand ([dfine_seg/infer/](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/infer/)) - it resolves the weights and picks the backend, then gets out of the way. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app. `Visualizer` reads the class count and names off the model it is given, then draws whatever that model returned - boxes, instance masks or a dense label map - so one call covers every task (BGR uint8 in, BGR uint8 out).
+`load_model` returns the same wrapper you would construct by hand ([dfine_seg/infer/](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/infer/)) - it resolves the weights and picks the backend. Extra keyword arguments pass straight through (`load_model("s", conf_thresh=0.3)`), output tensors stay on the device the model ran on, and those wrapper files remain self-contained enough to copy into your own app. `Visualizer` reads the class count and names off the model it is given, then draws whatever that model returned - boxes, instance masks or a dense label map - so one call covers every task (BGR uint8 in, BGR uint8 out).
 
 To train from a pip install, materialize a config and go:
 
@@ -115,9 +115,6 @@ cd D-FINE-seg
 uv sync
 ```
 
-This creates a `.venv/` with the package installed editable and every extra present, pinned by `uv.lock`. Activate it with `source .venv/bin/activate`, or run anything via `uv run ...` (the Makefile already does this).
-
-Pretrained weights are auto-downloaded from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use, so no manual setup is needed - into `pretrained/` for the config-driven commands, and into the shared Hugging Face cache for `load_model("s")` when there is no `pretrained/` copy to reuse. To download manually instead, grab `dfine_<size>_<dataset>.pt` (size ∈ {n, s, m, l, x}, dataset ∈ {coco, obj2coco}) and place it in `pretrained/`. Segmentation weights are also available in the Hugging Face model card.
 
 ### Prepare Your Data
 

@@ -93,11 +93,16 @@ def _tables(log: str):
         if not m:
             continue
         epoch = int(m.group(1)) if m.group(1) else 0
-        cells = [
-            [c.strip() for c in row.strip().strip("|").split("|")]
-            for row in lines[i + 1 : i + 12]
-            if row.startswith("|")
-        ]
+        # Collect only this table's rows - stop at the blank line that separates tables.
+        # A fixed window bleeds into the next epoch's table when two are adjacent (no
+        # "Saving new best" between), overwriting this epoch's val row with the next one's.
+        cells = []
+        for row in lines[i + 1 :]:
+            s = row.strip()
+            if not (s.startswith("|") or s.startswith("+")):
+                break
+            if s.startswith("|"):
+                cells.append([c.strip() for c in s.strip("|").split("|")])
         if not cells:
             continue
         cols, rows = cells[0][1:], {}
@@ -388,7 +393,7 @@ def main() -> int:
         "--tol-bench", type=float, default=0.01, help="how far bench may sit below train"
     )
     ap.add_argument("--tol-trt", type=float, default=0.01, help="max |TensorRT - PyTorch|")
-    ap.add_argument("--tol-traj", type=float, default=0.05, help="max drift vs the reference epoch")
+    ap.add_argument("--tol-traj", type=float, default=0.01, help="max drift vs the reference epoch")
     ap.add_argument("--tol-lat", type=float, default=1.05, help="max TensorRT latency ratio vs ref")
     ap.add_argument(
         "--tol-prod", type=float, default=0.02, help="max |bench trt headline - reference|"

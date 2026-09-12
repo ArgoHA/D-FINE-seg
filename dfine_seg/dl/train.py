@@ -45,7 +45,6 @@ from dfine_seg.dl.utils import (
     calculate_remaining_time,
     cleanup_masks,
     encode_sample_masks_to_rle,
-    get_latest_experiment_name,
     get_vram_usage,
     log_metrics_locally,
     poly_abs_to_mask,
@@ -651,34 +650,30 @@ class Trainer:
         return metrics
 
     def save_model(self, metrics, best_metric):
-        model_to_save = self.model
-        if self.ema_model:
-            model_to_save = self.ema_model.model
+        self.save_weights("last.pt")
 
-        if isinstance(model_to_save, DDP):
-            model_to_save = model_to_save.module
-
-        self.path_to_save.mkdir(parents=True, exist_ok=True)
-        meta = ckpt_meta(self.cfg)
-        save_checkpoint(self.path_to_save / "last.pt", model_to_save.state_dict(), meta)
-
-        # mean from chosen metrics
         decision_metric = np.mean(
-            [
-                metrics[metric_name]
-                for metric_name in self.decision_metrics
-                if metric_name in metrics
-            ]
+            [metrics[name] for name in self.decision_metrics if name in metrics]
         )
-
         if decision_metric > best_metric:
             best_metric = decision_metric
             logger.info("Saving new best model🔥")
-            save_checkpoint(self.path_to_save / "model.pt", model_to_save.state_dict(), meta)
+            self.save_weights("model.pt")
             self.early_stopping_steps = 0
         else:
             self.early_stopping_steps += 1
         return best_metric
+
+    def save_weights(self, filename):
+        model_to_save = self.model
+        if self.ema_model:
+            model_to_save = self.ema_model.model
+        if isinstance(model_to_save, DDP):
+            model_to_save = model_to_save.module
+        self.path_to_save.mkdir(parents=True, exist_ok=True)
+        save_checkpoint(
+            self.path_to_save / filename, model_to_save.state_dict(), ckpt_meta(self.cfg)
+        )
 
     def train(self) -> None:
         self.t_start = time.time()
@@ -877,105 +872,95 @@ class Trainer:
                 break
 
 
+def _run_training(trainer):
+    try:
+        trainer.train()
+    except KeyboardInterrupt:
+        if trainer.is_main:
+            logger.warning("Training interrupted; saving last.pt, then validating best model.pt")
+            trainer.save_weights("last.pt")
+
+
+def _evaluate_checkpoint(cfg, trainer, ddp_enabled, started_at):
+    logger.info("Evaluating model.pt...")
+    model = build_model(
+        cfg.model_name,
+        len(cfg.train.label_to_name),
+        cfg.task == "segment",
+        cfg.train.device,
+        img_size=cfg.train.img_size,
+        in_channels=cfg.train.in_channels,
+        task=cfg.task,
+    )
+    state = torch.load(trainer.path_to_save / "model.pt", weights_only=True)
+    model.load_state_dict(unwrap_checkpoint(state)[0])
+    if trainer.ema_model:
+        trainer.ema_model.model = model
+    else:
+        trainer.model = model
+
+    if ddp_enabled:
+        base_loader = Loader(
+            root_path=Path(cfg.train.data_path),
+            img_size=tuple(cfg.train.img_size),
+            batch_size=cfg.train.batch_size,
+            num_workers=cfg.train.num_workers,
+            cfg=cfg,
+            debug_img_processing=cfg.train.debug_img_processing,
+        )
+        _, trainer.val_loader, trainer.test_loader = base_loader.build_dataloaders(
+            distributed=False
+        )
+        trainer.distributed = False
+
+    val_metrics = trainer.evaluate(
+        val_loader=trainer.val_loader,
+        conf_thresh=trainer.conf_thresh,
+        iou_thresh=trainer.iou_thresh,
+        path_to_save=trainer.path_to_save,
+        extended=True,
+        mode="val",
+    )
+    if trainer.use_wandb:
+        wandb_logger(None, val_metrics, epoch=cfg.train.epochs + 1, mode="val")
+
+    test_metrics = {}
+    if trainer.test_loader:
+        test_metrics = trainer.evaluate(
+            val_loader=trainer.test_loader,
+            conf_thresh=trainer.conf_thresh,
+            iou_thresh=trainer.iou_thresh,
+            path_to_save=trainer.path_to_save,
+            extended=True,
+            mode="test",
+        )
+        if trainer.use_wandb:
+            wandb_logger(None, test_metrics, epoch=-1, mode="test")
+
+    log_metrics_locally(
+        all_metrics={"val": val_metrics, "test": test_metrics},
+        path_to_save=trainer.path_to_save,
+        epoch=0,
+        extended=True,
+    )
+    logger.info(f"Full training time: {(time.time() - started_at) / 3600:.2f} hours")
+
+
 @hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig) -> None:
     ddp_enabled = hasattr(cfg.train, "ddp") and cfg.train.ddp.enabled
     if ddp_enabled:
         init_distributed_mode()
 
-    trainer = Trainer(cfg)
-
-    oom_error = None
     try:
-        t_start = time.time()
-        trainer.train()
-    except KeyboardInterrupt:
+        trainer = Trainer(cfg)
+        started_at = time.time()
+        _run_training(trainer)
         if is_main_process():
-            logger.warning("Interrupted by user")
-    except Exception as e:
-        # A mid-train CUDA OOM must fail loudly, not silently export a half-trained
-        # model as a "result" - that would corrupt the research ledger.
-        if isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower():
-            oom_error = e
-        if is_main_process():
-            logger.error(e)
+            _evaluate_checkpoint(cfg, trainer, ddp_enabled, started_at)
     finally:
-        if oom_error is None and is_main_process():
-            logger.info("Evaluating best model...")
-            cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
-
-            model = build_model(
-                cfg.model_name,
-                len(cfg.train.label_to_name),
-                cfg.task == "segment",
-                cfg.train.device,
-                img_size=cfg.train.img_size,
-                in_channels=cfg.train.in_channels,
-                task=cfg.task,
-            )
-            state = torch.load(Path(cfg.train.path_to_save) / "model.pt", weights_only=True)
-            model.load_state_dict(unwrap_checkpoint(state)[0])
-            if trainer.ema_model:
-                trainer.ema_model.model = model
-            else:
-                trainer.model = model
-
-            # rebuild val and test loaders without DDP for evaluation
-            if ddp_enabled:
-                base_loader = Loader(
-                    root_path=Path(cfg.train.data_path),
-                    img_size=tuple(cfg.train.img_size),
-                    batch_size=cfg.train.batch_size,
-                    num_workers=cfg.train.num_workers,
-                    cfg=cfg,
-                    debug_img_processing=cfg.train.debug_img_processing,
-                )
-                _, val_loader_eval, test_loader_eval = base_loader.build_dataloaders(
-                    distributed=False
-                )
-                trainer.val_loader = val_loader_eval
-                trainer.test_loader = test_loader_eval
-                trainer.distributed = False  # turn off DDP inside evaluate
-
-            val_metrics = trainer.evaluate(
-                val_loader=trainer.val_loader,
-                conf_thresh=trainer.conf_thresh,
-                iou_thresh=trainer.iou_thresh,
-                path_to_save=Path(cfg.train.path_to_save),
-                extended=True,
-                mode="val",
-            )
-            if trainer.use_wandb:
-                wandb_logger(None, val_metrics, epoch=cfg.train.epochs + 1, mode="val")
-
-            test_metrics = {}
-            if trainer.test_loader:
-                test_metrics = trainer.evaluate(
-                    val_loader=trainer.test_loader,
-                    conf_thresh=trainer.conf_thresh,
-                    iou_thresh=trainer.iou_thresh,
-                    path_to_save=Path(cfg.train.path_to_save),
-                    extended=True,
-                    mode="test",
-                )
-                if trainer.use_wandb:
-                    wandb_logger(None, test_metrics, epoch=-1, mode="test")
-
-            log_metrics_locally(
-                all_metrics={"val": val_metrics, "test": test_metrics},
-                path_to_save=Path(cfg.train.path_to_save),
-                epoch=0,
-                extended=True,
-            )
-            logger.info(f"Full training time: {(time.time() - t_start) / 60 / 60:.2f} hours")
-
         if ddp_enabled:
             cleanup_distributed()
-
-    # Surface a swallowed training OOM as a non-zero exit so the harness records a
-    # real failure instead of a bogus low-accuracy run.
-    if oom_error is not None:
-        raise oom_error
 
 
 if __name__ == "__main__":
