@@ -89,3 +89,11 @@ D-FINE-seg is now pip-installable, has a public Python API and CLI. Repo folders
 ## 2026-08-24 - Visualizer in the public API
 
 Python api now supports model output visualization
+
+## 2026-09-16 - v0.4.2
+
+- Add a standalone C++ TensorRT inference library for detection, instance segmentation, and semantic segmentation, plus an end-to-end NVDEC -> inference -> GPU overlay -> NVENC video pipeline.
+- Add box-only SAM3 inference with `task="detect"`, avoiding full-resolution mask materialization when masks are not needed.
+- Add box attention heatmap visualization tooling.
+- Increase the distributed-training timeout and simplify training, inference, validation, and error-analysis internals with expanded regression coverage.
+- Add machine-readable citation metadata and PyPI links for the paper, model weights, documentation, and changelog.

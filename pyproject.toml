@@ -1,6 +1,6 @@
 [project]
 name = "dfine-seg"
-version = "0.4.1"
+version = "0.4.2"
 description = "D-FINE-seg: detection + instance + semantic segmentation framework"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -98,6 +98,10 @@ dfine = "dfine_seg.app.cli:main"
 [project.urls]
 Homepage = "https://github.com/ArgoHA/D-FINE-seg"
 Repository = "https://github.com/ArgoHA/D-FINE-seg"
+Documentation = "https://github.com/ArgoHA/D-FINE-seg#quick-start"
+Paper = "https://arxiv.org/abs/2602.23043"
+"Model weights" = "https://huggingface.co/ArgoSA/D-FINE-seg"
+Changelog = "https://github.com/ArgoHA/D-FINE-seg/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ArgoHA/D-FINE-seg/issues"
 
 [build-system]
@@ -111,7 +115,7 @@ packages = ["dfine_seg"]
 [tool.hatch.build.targets.sdist]
 # No root config.yaml: it is the dev machine's live config (absolute paths, private class
 # map). The sanitized twin ships inside the package as dfine_seg/config/default.yaml.
-include = ["dfine_seg", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
+include = ["dfine_seg", "tests", "README.md", "LICENSE", "CHANGELOG.md", "CITATION.cff"]
 
 [dependency-groups]
 dev = [
