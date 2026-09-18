@@ -15,11 +15,13 @@ import torch
 def classes_from_model(model) -> Tuple[int, Dict[int, str]]:
     """(class count, names) read off an inference wrapper; count is 0 when neither is known.
 
-    Fused-postprocess graphs (.onnx/.engine/.mlpackage) carry no class count at all, so
-    names may be the only source.
+    Fused-postprocess graphs (.onnx/.engine/.mlpackage) carry no class count at all, and
+    sem_seg wrappers set n_outputs to their tensor count, so names may be the only source.
     """
     names = getattr(model, "names", None) or {}
-    n_outputs = getattr(model, "n_outputs", 0) or 0
+    # sem_seg wrappers report n_outputs=1 for their single fused-argmax tensor; that is a
+    # tensor count, not a class count, so fall back to names / the Visualizer default.
+    n_outputs = 0 if getattr(model, "sem_seg", False) else (getattr(model, "n_outputs", 0) or 0)
     return max(n_outputs, max(names) + 1 if names else 0), names
 
 

@@ -296,6 +296,7 @@ static long process_clip(Shared& sh, Worker& w, const fs::path& clip) {
   const bool do_copy = a.stage != "parse";
   const bool do_infer = do_copy && a.stage != "decode", do_draw = do_infer && a.stage != "infer";
   const bool do_encode = a.stage == "full";
+  const bool consumes_outv = do_draw || do_encode;  // decode/infer stages never read the resize
   NvDecoder dec(clip.string(), sh.ctx, sh.cv, w.dec, a.display_delay, 8, !do_copy);  // copies on w.dec
   Geo g = geometry(a, e, dec.width, dec.height);
   if (e.has_masks) ensure_owner(w, g);
@@ -356,10 +357,10 @@ static long process_clip(Shared& sh, Worker& w, const fs::path& clip) {
     if (!do_copy) { ++n; continue; }
     Nv12View outv = do_encode ? enc->slot(s) : sc.frames[s];
     if (do_infer) nv12_to_input(src, w.tctx->input, e.in_h, e.in_w, dec.bt709, w.main);
-    nv12_resize(src, outv, w.main);
+    if (consumes_outv) nv12_resize(src, outv, w.main);
     if (i == a.dump_input_i && !a.dump_input.empty())
       dump_dev(a.dump_input, w.tctx->input, (size_t)3 * e.in_h * e.in_w * 4);
-    dec.release(slot, w.main);  // decoder may overwrite `src` once these two kernels are done
+    dec.release(slot, w.main);  // decoder may overwrite `src` once the kernels above are done
     if (do_infer) {
       w.tctx->run(w.main);
       annotate(sh, w, g, outv, do_draw);
