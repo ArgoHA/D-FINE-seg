@@ -80,7 +80,7 @@ demo = [
 # Niche single-script ETL helpers: remove_dups.py, preprocess.py.
 extra = [
     "difPy>=4.2.1",
-    "pillow-heif>=1.4.0",
+    "pillow-heif>=1.7.0",
 ]
 all = [
     "dfine-seg[export]",
