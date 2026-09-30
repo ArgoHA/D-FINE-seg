@@ -100,4 +100,10 @@ Python api now supports model output visualization
 
 ## 2026-09-30 - Fix position embedding for non-square input
 
-The HybridEncoder (AIFI) sin-cos position embedding built its grid in (w, h) order while tokens are flattened row-major, so with a non-square `img_size` most tokens got the wrong position (the bug is inherited from RT-DETR/D-FINE). The embedding is now built in (h, w) order. Square inputs are bit-identical to before, so existing weights, exported models and 640×640 results are unaffected; models trained at a non-square `img_size` should be retrained.
+The HybridEncoder sin-cos position embedding built its grid in (w, h) order while tokens are flattened row-major, so with a non-square img_size most tokens got the wrong position (the bug is inherited from RT-DETR/D-FINE). The embedding is now built in (h, w) order. Square inputs are identical to before, so existing weights, exported models and 640×640 results are unaffected; trained models even with non-square img_size were able to adapt in my experiments, the only time I saw accuracy degradation (2%) was when I took a trained model on square and inferenced on non-sqaure:
+
+640x640 (as trained) ->  0.595
+448x896 (with bug) -> 0.513
+448x896 (with fix) -> 0.520
+
+Note: Checkpoints trained at a non-square `img_size` before this fix learned the old layout and lose some accuracy under the new code; retrain them, or keep them on the previous version.
