@@ -425,9 +425,14 @@ class HybridEncoder(nn.Module):
     @staticmethod
     def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.0):
         """ """
-        grid_w = torch.arange(int(w), dtype=torch.float32)
-        grid_h = torch.arange(int(h), dtype=torch.float32)
-        grid_w, grid_h = torch.meshgrid(grid_w, grid_h, indexing="ij")
+        # Tokens are flattened row-major (y * w + x), so the grid must be (h, w) "ij". Upstream
+        # meshgrids (w, h), which is a pure transpose when square but scrambles positions when
+        # h != w. The first half encodes the row to stay bit-identical to upstream when square.
+        grid_h, grid_w = torch.meshgrid(
+            torch.arange(int(h), dtype=torch.float32),
+            torch.arange(int(w), dtype=torch.float32),
+            indexing="ij",
+        )
         assert embed_dim % 4 == 0, (
             "Embed dimension must be divisible by 4 for 2D sin-cos position embedding"
         )
@@ -438,7 +443,7 @@ class HybridEncoder(nn.Module):
         out_w = grid_w.flatten()[..., None] @ omega[None]
         out_h = grid_h.flatten()[..., None] @ omega[None]
 
-        return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
+        return torch.concat([out_h.sin(), out_h.cos(), out_w.sin(), out_w.cos()], dim=1)[None, :, :]
 
     def forward(self, feats):
         assert len(feats) == len(self.in_channels)

@@ -97,3 +97,7 @@ Python api now supports model output visualization
 - Add box attention heatmap visualization tooling.
 - Increase the distributed-training timeout and simplify training, inference, validation, and error-analysis internals with expanded regression coverage.
 - Add machine-readable citation metadata and PyPI links for the paper, model weights, documentation, and changelog.
+
+## 2026-09-30 - Fix position embedding for non-square input
+
+The HybridEncoder (AIFI) sin-cos position embedding built its grid in (w, h) order while tokens are flattened row-major, so with a non-square `img_size` most tokens got the wrong position (the bug is inherited from RT-DETR/D-FINE). The embedding is now built in (h, w) order. Square inputs are bit-identical to before, so existing weights, exported models and 640×640 results are unaffected; models trained at a non-square `img_size` should be retrained.
