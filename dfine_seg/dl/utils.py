@@ -135,7 +135,7 @@ def get_vram_usage():
     return round(100 * (total - free) / total)
 
 
-def norm_xywh_to_abs_xyxy(boxes: np.ndarray, height: int, width: int, to_round=True) -> np.ndarray:
+def norm_xywh_to_abs_xyxy(boxes: np.ndarray, height: int, width: int) -> np.ndarray:
     # Convert normalized centers to absolute pixel coordinates
     x_center = boxes[:, 0] * width
     y_center = boxes[:, 1] * height
@@ -148,19 +148,11 @@ def norm_xywh_to_abs_xyxy(boxes: np.ndarray, height: int, width: int, to_round=T
     x_max = x_center + (box_width / 2)
     y_max = y_center + (box_height / 2)
 
-    # Convert coordinates to integers
-    if to_round:
-        x_min = np.clip(np.floor(x_min), 0, width - 1)
-        y_min = np.clip(np.floor(y_min), 0, height - 1)
-        x_max = np.clip(np.ceil(x_max), 0, width - 1)
-        y_max = np.clip(np.ceil(y_max), 0, height - 1)
-        return np.stack([x_min, y_min, x_max, y_max], axis=1)
-    else:
-        x_min = np.clip(x_min, 0, width)
-        y_min = np.clip(y_min, 0, height)
-        x_max = np.clip(x_max, 0, width)
-        y_max = np.clip(y_max, 0, height)
-        return np.stack([x_min, y_min, x_max, y_max], axis=1)
+    x_min = np.clip(x_min, 0, width)
+    y_min = np.clip(y_min, 0, height)
+    x_max = np.clip(x_max, 0, width)
+    y_max = np.clip(y_max, 0, height)
+    return np.stack([x_min, y_min, x_max, y_max], axis=1)
 
 
 def abs_xyxy_to_norm_xywh(boxes: np.ndarray, height: int, width: int) -> np.ndarray:

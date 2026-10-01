@@ -17,31 +17,28 @@ from dfine_seg.dl.utils import (
 )
 
 
-def test_norm_xywh_to_abs_xyxy_centered_box_no_round():
-    # A centered box covering 50% of a 100x200 image (h, w).
-    boxes = np.array([[0.5, 0.5, 0.5, 0.5]])
-    out = norm_xywh_to_abs_xyxy(boxes, height=100, width=200, to_round=False)
-    np.testing.assert_allclose(out, [[50.0, 25.0, 150.0, 75.0]])
+def test_norm_xywh_to_abs_xyxy_keeps_subpixel_coords():
+    # A centered box covering 50% of a 100x200 image (h, w), plus one with sub-pixel edges:
+    # no floor/ceil, which snapped every edge outward and cost mAP on small objects.
+    boxes = np.array([[0.5, 0.5, 0.5, 0.5], [0.1, 0.1, 0.0125, 0.013]])
+    out = norm_xywh_to_abs_xyxy(boxes, height=100, width=200)
+    np.testing.assert_allclose(out, [[50.0, 25.0, 150.0, 75.0], [18.75, 9.35, 21.25, 10.65]])
 
 
-def test_norm_xywh_to_abs_xyxy_rounds_and_clamps():
-    boxes = np.array([[0.5, 0.5, 1.5, 1.5]])  # blown-out box should clamp
-    out = norm_xywh_to_abs_xyxy(boxes, height=100, width=200, to_round=True)
-    # to_round=True clamps to width-1 / height-1 (REPO_AUDIT B5 — exclusive vs inclusive)
-    assert out[0, 0] == 0
-    assert out[0, 1] == 0
-    assert out[0, 2] == 199
-    assert out[0, 3] == 99
+def test_norm_xywh_to_abs_xyxy_clamps_to_image_size():
+    boxes = np.array([[0.5, 0.5, 1.5, 1.5]])  # blown-out box clamps to the image edges
+    out = norm_xywh_to_abs_xyxy(boxes, height=100, width=200)
+    np.testing.assert_allclose(out, [[0, 0, 200, 100]])
 
 
-def test_abs_xyxy_to_norm_xywh_inverts_no_round_path():
+def test_abs_xyxy_to_norm_xywh_inverts():
     H, W = 480, 640
     rng = np.random.default_rng(0)
     # build random normalized xywh, fully inside the image
     xy = rng.uniform(0.2, 0.8, size=(8, 2))
     wh = rng.uniform(0.05, 0.3, size=(8, 2))
     boxes_norm = np.concatenate([xy, wh], axis=1)
-    abs_xyxy = norm_xywh_to_abs_xyxy(boxes_norm, height=H, width=W, to_round=False)
+    abs_xyxy = norm_xywh_to_abs_xyxy(boxes_norm, height=H, width=W)
     boxes_back = abs_xyxy_to_norm_xywh(abs_xyxy, height=H, width=W)
     np.testing.assert_allclose(boxes_back, boxes_norm, atol=1e-6)
 

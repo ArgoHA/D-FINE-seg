@@ -481,9 +481,7 @@ def scale_boxes(boxes, orig_shape, resized_shape):
     return boxes
 
 
-def norm_xywh_to_abs_xyxy(
-    boxes: torch.Tensor, height: int, width: int, to_round=True
-) -> torch.Tensor:
+def norm_xywh_to_abs_xyxy(boxes: torch.Tensor, height: int, width: int) -> torch.Tensor:
     """Converts boxes: [N, 4] normalized xywh -> [N, 4] absolute xyxy"""
     x_center = boxes[:, 0] * width
     y_center = boxes[:, 1] * height
@@ -495,16 +493,10 @@ def norm_xywh_to_abs_xyxy(
     x_max = x_center + (box_width / 2)
     y_max = y_center + (box_height / 2)
 
-    if to_round:
-        x_min = torch.clamp(torch.floor(x_min), min=0, max=width - 1)
-        y_min = torch.clamp(torch.floor(y_min), min=0, max=height - 1)
-        x_max = torch.clamp(torch.ceil(x_max), min=0, max=width - 1)
-        y_max = torch.clamp(torch.ceil(y_max), min=0, max=height - 1)
-    else:
-        x_min = torch.clamp(x_min, min=0, max=width)
-        y_min = torch.clamp(y_min, min=0, max=height)
-        x_max = torch.clamp(x_max, min=0, max=width)
-        y_max = torch.clamp(y_max, min=0, max=height)
+    x_min = torch.clamp(x_min, min=0, max=width)
+    y_min = torch.clamp(y_min, min=0, max=height)
+    x_max = torch.clamp(x_max, min=0, max=width)
+    y_max = torch.clamp(y_max, min=0, max=height)
     return torch.stack([x_min, y_min, x_max, y_max], dim=1)
 
 

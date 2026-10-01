@@ -66,6 +66,8 @@ def _downscale_to_jpg(src: Path, max_long_side: int, jpeg_quality: int) -> Path 
         return None
     h, w = img.shape[:2]
     long_side = max(h, w)
+    if src.suffix.lower() == ".jpg" and long_side <= max_long_side:
+        return src  # already final: re-encoding a JPEG is lossy and churns the asset in git
     if long_side > max_long_side:
         scale = max_long_side / long_side
         img = cv2.resize(

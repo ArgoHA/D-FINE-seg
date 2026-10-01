@@ -54,7 +54,7 @@ def _load_yolo_labels(
     if not rows:
         return torch.empty(0, dtype=torch.long), torch.empty((0, 4))
     norm = np.array(rows, dtype=np.float32)
-    xyxy = norm_xywh_to_abs_xyxy(norm, height=img_h, width=img_w, to_round=False)
+    xyxy = norm_xywh_to_abs_xyxy(norm, height=img_h, width=img_w)
     return torch.tensor(classes, dtype=torch.long), torch.from_numpy(xyxy).float()
 
 
