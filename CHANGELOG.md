@@ -111,6 +111,13 @@ Note: Checkpoints trained at a non-square `img_size` before this fix learned the
 ## 2026-10-01 - Remove box rounding
 
 Minor difference, previously box conversion floored x1/y1 and ceiled x2/y2 at the model input resolution before scaling to the original image, which snapped every box edge outward.
-On Cityscapes (S, 640×640, 3 seeds) removing it gave +0.004–0.008 mAP50 and +0.009–0.015 mAP50-95, mostly on small objects; rounding the training labels made no difference. 
+On Cityscapes (S, 640×640, 3 seeds) removing it gave +0.004–0.008 mAP50 and +0.009–0.015 mAP50-95, mostly on small objects; rounding the training labels made no difference.
 Validation used to round the GT the same way, which inflated it, so reported val mAP is now about 0.005–0.010 lower for the same model; this is a measurement change, not a regression.
 Re-export models to get the unrounded boxes from ONNX/TensorRT/OpenVINO/CoreML.
+
+## 2026-10-02 - Autoresearch loop 2.0
+
+Semantic segmentation improvemetns:
+1. Pass stride 4 features from the backbone to sem_seg decoder (S/M/L/X)
+2. rare-class sampling, on by default
+3. Cityscapes and off-road numbers: about +0.0135 Cityscapes mIoU from native aspect + stride-4, and +0.0225 off-road from all three, at about the same TRT latency
