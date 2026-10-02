@@ -158,17 +158,21 @@ def _check_pretrained_classes(ckpt: str, n_config: int) -> None:
 
 
 def prepare_model(cfg, device):
-    model = build_model(
-        cfg.model_name,
-        len(cfg.train.label_to_name),
-        enable_mask_head=cfg.task == "segment",
-        device=device,
-        img_size=cfg.train.img_size,
-        in_channels=cfg.train.in_channels,
-        task=cfg.task,
-    )
+    def build(str4_feat=True):
+        return build_model(
+            cfg.model_name,
+            len(cfg.train.label_to_name),
+            enable_mask_head=cfg.task == "segment",
+            device=device,
+            img_size=cfg.train.img_size,
+            in_channels=cfg.train.in_channels,
+            task=cfg.task,
+            str4_feat=str4_feat,
+        )
+
     if cfg.export.from_pretrained:
         # Export the COCO/obj2coco pretrained weights directly (no trained model.pt).
+        model = build()
         ckpt = ensure_pretrained(cfg.train.pretrained_model_path)
         _check_pretrained_classes(ckpt, len(cfg.train.label_to_name))
         load_tuning_state(model, ckpt)
@@ -179,7 +183,8 @@ def prepare_model(cfg, device):
                 f"{ckpt} not found. Train first, or set export.from_pretrained=True "
                 "to export pretrained weights directly."
             )
-        state = unwrap_checkpoint(torch.load(ckpt, weights_only=True))[0]
+        state, meta = unwrap_checkpoint(torch.load(ckpt, weights_only=True))
+        model = build(str4_feat=describe(state, meta)["str4_feat"])
         # decoder regenerates these from img_size; drop so re-export at another resolution works
         for k in ("decoder.anchors", "decoder.valid_mask"):
             state.pop(k, None)

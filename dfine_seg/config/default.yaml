@@ -40,6 +40,7 @@ train:
   sem_seg:
     ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
     class_weights: null # optional per-class CE weights for imbalance
+    rare_class_sampling: true # DAFormer RCS: oversample train images with rare classes (T=0.01)
 
   ### Distributed Training (DDP) ###
   ddp:

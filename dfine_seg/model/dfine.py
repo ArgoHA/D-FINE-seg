@@ -41,7 +41,8 @@ class DFINE(nn.Module):
         feats = self.backbone(x)
 
         # When backbone returns more features than encoder expects (e.g. nano + seg),
-        # the extra leading feature is the low-level 1/8 map for MaskDecoder.
+        # the extra leading feature is the low-level 1/8 map for MaskDecoder
+        # (1/4 str4_feat for sem_seg S/M/L/X).
         low_level_feat = None
         if len(feats) > len(self.encoder.in_channels):
             low_level_feat = feats[0]
@@ -69,6 +70,7 @@ def build_model(
     pretrained_model_path=None,
     pretrained_backbone=False,
     task=None,  # "sem_seg" swaps DFINETransformer for SemSegDecoder; else by enable_mask_head
+    str4_feat=True,  # sem_seg S/M/L/X: stride-4 lateral; False for checkpoints trained without
 ):
     if int(in_channels) not in (3, 4):
         raise ValueError(
@@ -94,6 +96,11 @@ def build_model(
         backbone_name = model_cfg["HGNetv2"]["name"]
         stage2_ch = HGNetv2.arch_configs[backbone_name]["stage_config"]["stage2"][2]
         model_cfg["DFINETransformer"]["mask_low_level_ch"] = stage2_ch
+    str4_ch = None
+    if sem_seg and str4_feat and 8 in enc_strides:
+        model_cfg["HGNetv2"]["return_idx"] = [0] + model_cfg["HGNetv2"]["return_idx"]
+        backbone_name = model_cfg["HGNetv2"]["name"]
+        str4_ch = HGNetv2.arch_configs[backbone_name]["stage_config"]["stage1"][2]
 
     backbone = HGNetv2(in_channels=in_channels, **model_cfg["HGNetv2"])
     encoder = HybridEncoder(**model_cfg["HybridEncoder"])
@@ -104,6 +111,7 @@ def build_model(
             feat_channels=dec_cfg["feat_channels"],
             mask_dim=dec_cfg["mask_dim"],
             mask_low_level_ch=dec_cfg.get("mask_low_level_ch"),
+            str4_ch=str4_ch,
         )
     else:
         decoder = DFINETransformer(num_classes=num_classes, **model_cfg["DFINETransformer"])

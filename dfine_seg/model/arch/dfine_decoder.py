@@ -383,8 +383,11 @@ class MaskDecoder(nn.Module):
     def _reset_parameters(self) -> None:
         init.kaiming_normal_(self.up_conv.weight, mode="fan_out", nonlinearity="relu")
 
-    def forward(self, feats: List[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self, feats: List[torch.Tensor], str4_feat: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         # feats: PAN features [F_s8, F_s16, F_s32] from HybridEncoder's outs
+        # str4_feat: optional projected stride-4 backbone feature (B, out_ch, H/4, W/4), added before up_conv
         # Take the biggest resolution feature as the base
         f0 = self.bn[0](self.lateral[0](feats[0]))  # (B, out_ch, H/8, W/8)
         x = f0
@@ -399,6 +402,8 @@ class MaskDecoder(nn.Module):
 
         # Upsample: 1/8 -> 1/4 using bilinear interpolation + conv (smoother than ConvTranspose)
         x = F.interpolate(x, scale_factor=2.0, mode="bilinear", align_corners=False)
+        if str4_feat is not None:
+            x = x + str4_feat
         x = self.act(self.bn1(self.up_conv(x)))
         return x  # (B, out_ch, H/4, W/4)
 
@@ -426,6 +431,7 @@ class SemSegDecoder(nn.Module):
         feat_channels: List[int],
         mask_dim: int = 256,
         mask_low_level_ch: Optional[int] = None,
+        str4_ch: Optional[int] = None,
         neck_dim: int = 128,
         dropout: float = 0.1,
         aux: bool = True,
@@ -435,6 +441,13 @@ class SemSegDecoder(nn.Module):
         if mask_low_level_ch is not None:  # nano: prepend backbone 1/8 feat
             in_chs = [mask_low_level_ch] + in_chs
         self.mask_decoder = MaskDecoder(in_chs=in_chs, out_ch=mask_dim)
+        # S/M/L/X: backbone 1/4 feat added after the fuser's x2 upsample (fusing at 1/4 costs
+        # ~15 GMAC). Zero weight -> no-op at init, so pretrained fuser output is unchanged.
+        # No norm: GroupNorm here cost +0.06 ms TRT; up_conv's bn1 normalizes the sum anyway.
+        self.str4_proj = None
+        if str4_ch is not None:
+            self.str4_proj = nn.Conv2d(str4_ch, mask_dim, 1, bias=False)
+            init.zeros_(self.str4_proj.weight)
         self.neck = nn.Sequential(conv_gn_act(mask_dim, neck_dim), conv_gn_act(neck_dim, neck_dim))
         self.dropout = nn.Dropout2d(dropout)
         self.classifier = nn.Conv2d(neck_dim, num_classes, 1)
@@ -455,8 +468,11 @@ class SemSegDecoder(nn.Module):
         targets: Optional[List[Dict[str, torch.Tensor]]] = None,
         low_level_feat: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
-        x = self.mask_decoder(mask_feats)  # (B, mask_dim, H/4, W/4)
+        if self.str4_proj is not None:
+            x = self.mask_decoder(list(feats), str4_feat=self.str4_proj(low_level_feat))
+        else:
+            mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
+            x = self.mask_decoder(mask_feats)  # (B, mask_dim, H/4, W/4)
         logits = self.classifier(self.dropout(self.neck(x)))  # (B, C, H/4, W/4)
         logits = F.interpolate(logits, scale_factor=4.0, mode="bilinear", align_corners=False)
         out = {"sem_seg_logits": logits}  # (B, C, H, W)

@@ -240,7 +240,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **WandB integration** | Automatic experiment tracking |
 | **Optimal threshold search** | Auto-finds best confidence threshold after training |
 | **Background warm-up** | Ignore background-only images for N initial epochs |
-| **Autoresearch harness** | Tooling to run agent in autoresearch format,  leaves under `experiments/`
+| **Autoresearch loop** | Research/execute loop for agents (semantic segmentation on Cityscapes), see `experiments/program.md` |
 
 ## Export
 

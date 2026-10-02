@@ -44,6 +44,43 @@ def test_decoder_nano_low_level():
     assert out["sem_seg_logits"].shape == (1, N_CLASSES, 64, 64)
 
 
+def test_str4_feat_zero_init():
+    # S/M/L/X sem_seg: backbone 1/4 feat added after MaskDecoder's x2 upsample
+    from dfine_seg.api.ckpt import describe
+    from dfine_seg.model.dfine import build_model
+
+    torch.manual_seed(0)
+    str4 = build_model("s", N_CLASSES, False, "cpu", img_size=[448, 896], task="sem_seg").eval()
+    base = build_model(
+        "s", N_CLASSES, False, "cpu", img_size=[448, 896], task="sem_seg", str4_feat=False
+    ).eval()
+    assert str4.decoder.str4_proj.in_channels == 64 and base.decoder.str4_proj is None
+    missing, unexpected = str4.load_state_dict(base.state_dict(), strict=False)
+    assert not unexpected and missing == ["decoder.str4_proj.weight"]
+
+    x = torch.randn(1, 3, 448, 896)
+    with torch.no_grad():
+        feats = str4.backbone(x)
+        assert feats[0].shape == (1, 64, 112, 224) and len(feats) == 4  # 1/4 + encoder's 3
+        out = str4(x)["sem_seg_logits"]
+        assert out.shape == (1, N_CLASSES, 448, 896)
+        assert torch.equal(out, base(x)["sem_seg_logits"])  # zero weight -> no-op at init
+
+    # old (no-str4) and new checkpoints are told apart by weights alone
+    assert describe(str4.state_dict())["str4_feat"]
+    assert not describe(base.state_dict())["str4_feat"]
+
+
+def test_mask_decoder_skip_none_unchanged():
+    from dfine_seg.model.arch.dfine_decoder import MaskDecoder
+
+    dec = MaskDecoder(in_chs=[256, 256, 256]).eval()
+    feats = [torch.randn(1, 256, 8, 16), torch.randn(1, 256, 4, 8), torch.randn(1, 256, 2, 4)]
+    with torch.no_grad():
+        assert torch.equal(dec(feats), dec(feats, str4_feat=None))
+        assert dec(feats, str4_feat=torch.zeros(1, 256, 16, 32)).shape == (1, 256, 16, 32)
+
+
 # ── criterion ────────────────────────────────────────────────────────────
 
 
@@ -126,18 +163,22 @@ def test_validator_absent_class_excluded_from_miou():
 # ── dataset augs ─────────────────────────────────────────────────────────
 
 
-def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
-    from dfine_seg.dl.dataset import SemSegDataset
-
-    cfg = OmegaConf.create(
+def _cfg(tmp_path, rotation_p=0.0, keep_ratio=False, rare_class_sampling=False):
+    return OmegaConf.create(
         {
             "task": "sem_seg",
             "train": {
+                "seed": 42,
+                "use_one_class": False,
                 "in_channels": 3,
                 "keep_ratio": keep_ratio,
                 "debug_img_path": str(tmp_path / "debug"),
                 "label_to_name": {i: str(i) for i in range(N_CLASSES)},
-                "sem_seg": {"ignore_index": 255, "class_weights": None},
+                "sem_seg": {
+                    "ignore_index": 255,
+                    "class_weights": None,
+                    "rare_class_sampling": rare_class_sampling,
+                },
                 "mosaic_augs": {
                     "mosaic_prob": 0.0,
                     "mosaic_scale": [0.5, 1.5],
@@ -158,10 +199,17 @@ def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
                     "brightness": 0.0,
                     "noise": 0.0,
                     "coarse_dropout": 0.0,
+                    "multiscale_prob": 0.0,
                 },
             },
         }
     )
+
+
+def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
+    from dfine_seg.dl.dataset import SemSegDataset
+
+    cfg = _cfg(tmp_path, rotation_p, keep_ratio)
     return SemSegDataset((64, 64), tmp_path, pd.DataFrame(["x.jpg"]), False, mode, cfg)
 
 
@@ -223,6 +271,44 @@ def test_load_mosaic_target_size_and_ignore_fill(tmp_path):
     assert ids <= {0, 6, 255} and ids & {0, 6}
 
 
+def test_rcs_weights_favor_rare_class_and_stay_finite():
+    from dfine_seg.dl.dataset import rcs_weights
+
+    # (images, classes) pixel counts: class 0 dominant, 1 common, 2 rare (one image), 3 never
+    pixels = np.array(
+        [[900, 100, 0, 0]] * 4 + [[1000, 0, 0, 0]] * 4 + [[880, 100, 20, 0], [0, 0, 0, 0]]
+    )
+    w, p = rcs_weights(pixels, temperature=0.01)
+    assert np.isfinite(w).all() and np.isfinite(p).all()  # raw exp((1-f)/0.01) would overflow
+    assert p[3] == 0 and np.isclose(p.sum(), 1) and p[2] > p[1] > p[0]
+    assert w[8] > 10 * w[0] and w[-1] == 0  # rare-class image dominates; empty image never drawn
+
+
+def test_rare_class_sampling_flag(tmp_path):
+    from torch.utils.data import RandomSampler, WeightedRandomSampler
+
+    from dfine_seg.dl.dataset import Loader
+
+    for i, cls in enumerate([0, 0, 0, 5]):
+        _write_sample(tmp_path, np.full((16, 16), cls, dtype=np.uint8), stem=f"s{i}")
+    pd.DataFrame([f"s{i}.jpg" for i in range(4)]).to_csv(
+        tmp_path / "train.csv", header=False, index=False
+    )
+    pd.DataFrame(["s0.jpg"]).to_csv(tmp_path / "val.csv", header=False, index=False)
+
+    def train_loader(flag):
+        loader = Loader(tmp_path, (64, 64), 2, 0, _cfg(tmp_path, rare_class_sampling=flag))
+        return loader._build_dataloader_impl(loader._make_dataset("train"), shuffle=True)
+
+    off = train_loader(False)
+    assert isinstance(off.sampler, RandomSampler)  # today's plain shuffle
+    on = train_loader(True)
+    assert isinstance(on.sampler, WeightedRandomSampler)
+    assert (tmp_path / "class_presence.json").exists()
+    assert np.mean(list(on.sampler)) > 2.5  # rare-class image s3 drawn nearly always
+    assert list(train_loader(True).sampler) == list(train_loader(True).sampler)  # seeded
+
+
 def test_sem_seg_collate_filters_none():
     from dfine_seg.dl.dataset import sem_seg_collate_fn
 
@@ -264,3 +350,19 @@ def test_torch_model_process_sem_seg():
     )
     m = out[0]["sem_seg"]
     assert (m[:16] == 2).all() and (m[16:] == 255).all()  # class 0 pixels become void, not 0
+
+
+# ── non-square input ─────────────────────────────────────────────────────
+
+
+def test_sem_seg_forward_non_square():
+    from dfine_seg.dl.export import SemSegExportWrapper
+    from dfine_seg.model.dfine import build_model
+
+    model = build_model("n", N_CLASSES, False, "cpu", img_size=[448, 896], task="sem_seg").eval()
+    x = torch.randn(1, 3, 448, 896)
+    with torch.no_grad():
+        logits = model(x)["sem_seg_logits"]
+        label_map = SemSegExportWrapper(model)(x)
+    assert logits.shape == (1, N_CLASSES, 448, 896)
+    assert label_map.shape == (1, 448, 896)

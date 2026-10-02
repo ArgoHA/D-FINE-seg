@@ -1,6 +1,8 @@
 import json
 import random
+import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -12,7 +14,7 @@ import torch
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
 from omegaconf import DictConfig
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from dfine_seg.model.dist_utils import is_main_process
@@ -1000,6 +1002,47 @@ def sem_seg_collate_fn(batch):
     return images, targets, img_paths
 
 
+def load_class_pixels(root_path: Path, split: pd.DataFrame, ignore_index: int) -> Dict:
+    """{label filename: {class id: pixel count}} for the split (ignore_index excluded), cached at
+    <root>/class_presence.json and rebuilt when its key set differs from the split."""
+    names = [f"{Path(p).stem}.png" for p in split.iloc[:, 0]]
+    cache = root_path / "class_presence.json"
+    if cache.exists():
+        counts = json.loads(cache.read_text())
+        if set(counts) == set(names):
+            return counts
+
+    def scan(name):
+        mask = cv2.imread(str(root_path / "labels" / name), cv2.IMREAD_UNCHANGED)
+        if mask is None:
+            raise FileNotFoundError(f"can't read mask {root_path / 'labels' / name}")
+        ids, n = np.unique(mask, return_counts=True)
+        return {str(c): int(k) for c, k in zip(ids, n) if c != ignore_index}
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        counts = dict(zip(names, pool.map(scan, names)))
+    cache.write_text(json.dumps(counts))
+    logger.info(f"Scanned class pixels of {len(names)} masks in {time.time() - t0:.1f}s")
+    return counts
+
+
+def rcs_weights(pixels: np.ndarray, temperature: float = 0.01) -> Tuple[np.ndarray, np.ndarray]:
+    """DAFormer rare-class sampling from an (images, classes) pixel-count matrix.
+    f_c = class pixel frequency (DAFormer's definition; image share would put ~all mass on the
+    single rarest class at T=0.01), P(c) ∝ exp((1 - f_c) / T) over classes present in the split,
+    image weight w_i = Σ_{c∈i} P(c) / n_c. Returns (w per image, P per class)."""
+    has = pixels > 0
+    n_c = has.sum(0)
+    present = n_c > 0
+    logits = (1.0 - pixels.sum(0) / pixels.sum()) / temperature
+    p = np.zeros(pixels.shape[1])
+    p[present] = np.exp(logits[present] - logits[present].max())  # stable softmax
+    p /= p.sum()
+    w = has @ np.divide(p, n_c, out=np.zeros_like(p), where=present)
+    return w, p
+
+
 class Loader:
     def __init__(
         self,
@@ -1148,6 +1191,14 @@ class Loader:
                 dataset, shuffle=(shuffle and dataset.mode == "train"), drop_last=False
             )
             shuffle_flag = False  # cannot use shuffle=True when sampler is set
+        elif (
+            self.task == "sem_seg"
+            and dataset.mode == "train"
+            and shuffle
+            and self.cfg.train.sem_seg.rare_class_sampling
+        ):
+            sampler = self._rcs_sampler(dataset)
+            shuffle_flag = False
 
         dl_kwargs = dict(
             batch_size=self.batch_size,
@@ -1171,6 +1222,26 @@ class Loader:
             self.train_sampler = sampler
 
         return dataloader
+
+    def _rcs_sampler(self, dataset: "SemSegDataset") -> WeightedRandomSampler:
+        counts = load_class_pixels(self.root_path, dataset.split, dataset.ignore_index)
+        pixels = np.zeros((len(dataset.split), len(self.class_names)))
+        for i, p in enumerate(dataset.split.iloc[:, 0]):
+            for c, n in counts[f"{Path(p).stem}.png"].items():
+                pixels[i, int(c)] = n
+        w, p = rcs_weights(pixels)
+        if is_main_process():
+            has = pixels > 0
+            share = (w / w.sum()) @ has  # expected share of sampled images containing each class
+            info = ", ".join(
+                f"{self.class_names[c]} P={p[c]:.2f} imgs {has[:, c].mean():.0%}->{share[c]:.0%}"
+                for c in np.argsort(-p)[:5]
+            )
+            logger.info(f"Rare-class sampling on (T=0.01): {info}")
+        gen = torch.Generator().manual_seed(int(self.cfg.train.seed))
+        return WeightedRandomSampler(
+            torch.as_tensor(w, dtype=torch.double), len(w), replacement=True, generator=gen
+        )
 
     def _make_dataset(self, split: str, mode: Optional[str] = None) -> Dataset:
         """`split` picks the data; `mode` overrides the dataset mode (bench reuses val/test)."""

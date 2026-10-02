@@ -49,6 +49,7 @@ class TorchModel:
         self.task = task or ("segment" if enable_mask_head else info["task"])
         self.enable_mask_head = self.task == "segment"
         self.channels = channels if channels is not None else info["in_channels"]
+        self.str4_feat = info["str4_feat"]
         self.debug_mode = False
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
@@ -81,6 +82,7 @@ class TorchModel:
             img_size=None,
             in_channels=self.channels,
             task=self.task,
+            str4_feat=self.str4_feat,
         )
         self.model.load_state_dict(self._state_dict, strict=False)
         del self._state_dict  # loaded once in __init__; don't keep a second copy alive
