@@ -1229,8 +1229,7 @@ class Loader:
 
     def _rare_class_sampler(self, dataset: Dataset) -> WeightedRandomSampler:
         """Repeat-factor sampling on per-image class presence: label PNGs (sem_seg) or instance
-        labels (detect/segment). DAFormer RCS was tried for sem_seg and dropped: too aggressive
-        (never drew 14% of GOOSE images) for no better result."""
+        labels (detect/segment)"""
         counts = np.zeros((len(dataset.split), len(self.class_names)))
         if self.task == "sem_seg":
             pixels = load_class_pixels(self.root_path, dataset.split, dataset.ignore_index)

@@ -39,8 +39,7 @@ train:
     7: bicycle
 
   use_one_class: False
-  # LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP).
-  # Dataset-dependent: +0.004 mIoU on GOOSE, flat on Cityscapes sem_seg
+  # LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP)
   rare_class_sampling: false
 
   # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id

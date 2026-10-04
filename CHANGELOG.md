@@ -115,9 +115,6 @@ On Cityscapes (S, 640×640, 3 seeds) removing it gave +0.004–0.008 mAP50 and +
 Validation used to round the GT the same way, which inflated it, so reported val mAP is now about 0.005–0.010 lower for the same model; this is a measurement change, not a regression.
 Re-export models to get the unrounded boxes from ONNX/TensorRT/OpenVINO/CoreML.
 
-## 2026-10-02 - Autoresearch loop 2.0
+## 2026-10-04 - Rare class sampling
 
-Semantic segmentation improvemetns:
-1. Pass stride 4 features from the backbone to sem_seg decoder (S/M/L/X)
-2. rare-class sampling, on by default
-3. Cityscapes and off-road numbers: about +0.0135 Cityscapes mIoU from native aspect + stride-4, and +0.0225 off-road from all three, at about the same TRT latency
+LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP). Turned off by default. Dataset-dependent: +0.004 mIoU on GOOSE, flat on Cityscapes sem_seg.
