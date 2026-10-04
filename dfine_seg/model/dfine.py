@@ -40,15 +40,15 @@ class DFINE(nn.Module):
     def forward(self, x, targets=None):
         feats = self.backbone(x)
 
-        # Nano with a mask head: its encoder starts at stride 16, so the backbone also returns the
-        # 1/8 map, which MaskDecoder fuses as its finest level.
-        str8_feat = None
+        # When backbone returns more features than encoder expects (e.g. nano + seg),
+        # the extra leading feature is the low-level 1/8 map for MaskDecoder.
+        low_level_feat = None
         if len(feats) > len(self.encoder.in_channels):
-            str8_feat = feats[0]
+            low_level_feat = feats[0]
             feats = feats[1:]
 
         x = self.encoder(feats)
-        x = self.decoder(x, targets, str8_feat=str8_feat)
+        x = self.decoder(x, targets, low_level_feat=low_level_feat)
         return x
 
     def deploy(self):
@@ -84,7 +84,7 @@ def build_model(
     model_cfg["DFINETransformer"]["enable_mask_head"] = enable_mask_head
 
     # For models without 1/8 stride (nano), when a mask-producing head is enabled,
-    # pass the backbone 1/8 feature to MaskDecoder as its finest level
+    # pass the backbone 1/8 feature as a low-level input for MaskDecoder
     sem_seg = task == "sem_seg"
     enc_strides = model_cfg["HybridEncoder"]["feat_strides"]
     if (enable_mask_head or sem_seg) and 8 not in enc_strides:
@@ -93,7 +93,7 @@ def build_model(
             model_cfg["HGNetv2"]["return_idx"] = [1] + return_idx
         backbone_name = model_cfg["HGNetv2"]["name"]
         stage2_ch = HGNetv2.arch_configs[backbone_name]["stage_config"]["stage2"][2]
-        model_cfg["DFINETransformer"]["mask_str8_ch"] = stage2_ch
+        model_cfg["DFINETransformer"]["mask_low_level_ch"] = stage2_ch
 
     backbone = HGNetv2(in_channels=in_channels, **model_cfg["HGNetv2"])
     encoder = HybridEncoder(**model_cfg["HybridEncoder"])
@@ -103,7 +103,7 @@ def build_model(
             num_classes=num_classes,
             feat_channels=dec_cfg["feat_channels"],
             mask_dim=dec_cfg["mask_dim"],
-            mask_str8_ch=dec_cfg.get("mask_str8_ch"),
+            mask_low_level_ch=dec_cfg.get("mask_low_level_ch"),
         )
     else:
         decoder = DFINETransformer(num_classes=num_classes, **model_cfg["DFINETransformer"])

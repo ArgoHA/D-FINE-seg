@@ -357,23 +357,14 @@ class MaskDecoder(nn.Module):
     Input:
         feats: List of PAN features [F_s8, F_s16, F_s32] from HybridEncoder's outs.
                Shape: [(B, C, H/8, W/8), (B, C, H/16, W/16), (B, C, H/32, W/32)]
-        str8_feat: nano only (its encoder has no stride 8): backbone 1/8 feature, fused as the
-               finest level. Needs str8_ch.
 
     Output:
         Fused mask features at 1/4 resolution. Shape: (B, out_ch, H/4, W/4)
     """
 
-    def __init__(
-        self,
-        in_chs: List[int],
-        out_ch: int = 256,
-        str8_ch: Optional[int] = None,
-    ) -> None:
+    def __init__(self, in_chs: List[int], out_ch: int = 256) -> None:
         super().__init__()
         n_groups = 32
-        if str8_ch is not None:
-            in_chs = [str8_ch] + list(in_chs)
         # 1x1 proj for each backbone level
         self.lateral = nn.ModuleList([nn.Conv2d(c, out_ch, 1, bias=False) for c in in_chs])
         self.bn = nn.ModuleList([nn.GroupNorm(n_groups, out_ch) for _ in in_chs])
@@ -392,13 +383,8 @@ class MaskDecoder(nn.Module):
     def _reset_parameters(self) -> None:
         init.kaiming_normal_(self.up_conv.weight, mode="fan_out", nonlinearity="relu")
 
-    def forward(
-        self,
-        feats: List[torch.Tensor],
-        str8_feat: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if str8_feat is not None:
-            feats = [str8_feat] + list(feats)
+    def forward(self, feats: List[torch.Tensor]) -> torch.Tensor:
+        # feats: PAN features [F_s8, F_s16, F_s32] from HybridEncoder's outs
         # Take the biggest resolution feature as the base
         f0 = self.bn[0](self.lateral[0](feats[0]))  # (B, out_ch, H/8, W/8)
         x = f0
@@ -439,13 +425,16 @@ class SemSegDecoder(nn.Module):
         num_classes: int,
         feat_channels: List[int],
         mask_dim: int = 256,
-        mask_str8_ch: Optional[int] = None,
+        mask_low_level_ch: Optional[int] = None,
         neck_dim: int = 128,
         dropout: float = 0.1,
         aux: bool = True,
     ) -> None:
         super().__init__()
-        self.mask_decoder = MaskDecoder(list(feat_channels), mask_dim, str8_ch=mask_str8_ch)
+        in_chs = list(feat_channels)
+        if mask_low_level_ch is not None:  # nano: prepend backbone 1/8 feat
+            in_chs = [mask_low_level_ch] + in_chs
+        self.mask_decoder = MaskDecoder(in_chs=in_chs, out_ch=mask_dim)
         self.neck = nn.Sequential(conv_gn_act(mask_dim, neck_dim), conv_gn_act(neck_dim, neck_dim))
         self.dropout = nn.Dropout2d(dropout)
         self.classifier = nn.Conv2d(neck_dim, num_classes, 1)
@@ -464,9 +453,10 @@ class SemSegDecoder(nn.Module):
         self,
         feats: List[torch.Tensor],
         targets: Optional[List[Dict[str, torch.Tensor]]] = None,
-        str8_feat: Optional[torch.Tensor] = None,
+        low_level_feat: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        x = self.mask_decoder(feats, str8_feat)  # (B, mask_dim, H/4, W/4)
+        mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
+        x = self.mask_decoder(mask_feats)  # (B, mask_dim, H/4, W/4)
         logits = self.classifier(self.dropout(self.neck(x)))  # (B, C, H/4, W/4)
         logits = F.interpolate(logits, scale_factor=4.0, mode="bilinear", align_corners=False)
         out = {"sem_seg_logits": logits}  # (B, C, H, W)
@@ -682,7 +672,7 @@ class DFINETransformer(nn.Module):
         layer_scale: int = 1,
         enable_mask_head: bool = False,
         mask_dim: int = 256,
-        mask_str8_ch: Optional[int] = None,
+        mask_low_level_ch: Optional[int] = None,
     ) -> None:
         super().__init__()
         assert len(feat_channels) <= num_levels
@@ -762,9 +752,12 @@ class DFINETransformer(nn.Module):
 
         # segmentation head
         if self.enable_mask_head:
-            self.mask_decoder = MaskDecoder(
-                list(feat_channels), self.mask_dim, str8_ch=mask_str8_ch
-            )
+            # When a low-level backbone feature is available (e.g. nano + seg),
+            # prepend its channel dim so MaskDecoder builds an extra lateral conv.
+            mask_in_chs = list(feat_channels)
+            if mask_low_level_ch is not None:
+                mask_in_chs = [mask_low_level_ch] + mask_in_chs
+            self.mask_decoder = MaskDecoder(in_chs=mask_in_chs, out_ch=self.mask_dim)
             self.mask_head = MLP(self.hidden_dim, self.hidden_dim, self.mask_dim, num_layers=3)
 
         # decoder embedding
@@ -1077,7 +1070,7 @@ class DFINETransformer(nn.Module):
         self,
         feats: List[torch.Tensor],
         targets: Optional[List[Dict[str, torch.Tensor]]] = None,
-        str8_feat: Optional[torch.Tensor] = None,
+        low_level_feat: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         enable_mask_head = self._should_do_masks(targets)
         # input projection and embedding
@@ -1138,7 +1131,8 @@ class DFINETransformer(nn.Module):
             aux_masks = None
             dn_pred_masks = None
             dn_aux_masks = None
-            mask_feat = self.mask_decoder(feats, str8_feat)
+            mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
+            mask_feat = self.mask_decoder(mask_feats)
 
             # Compute masks for regular queries
             pred_masks = self._mask_logits_from_h(hs[-1], mask_feat)  # logits
