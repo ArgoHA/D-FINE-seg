@@ -33,14 +33,14 @@ def test_decoder_shapes_and_aux():
     assert "sem_seg_logits_aux" not in out  # aux is train-only (dropped at export)
 
 
-def test_decoder_nano_str8_feat():
-    # nano: encoder feats at 1/16+1/32, backbone 1/8 fused as the finest level
+def test_decoder_nano_low_level():
+    # nano: encoder feats at 1/16+1/32, backbone 1/8 passed as low_level_feat
     dec = SemSegDecoder(
-        num_classes=N_CLASSES, feat_channels=[128, 128], mask_dim=128, mask_str8_ch=64
+        num_classes=N_CLASSES, feat_channels=[128, 128], mask_dim=128, mask_low_level_ch=64
     )
     feats = [torch.randn(1, 128, 4, 4), torch.randn(1, 128, 2, 2)]
     low = torch.randn(1, 64, 8, 8)
-    out = dec.eval()(feats, str8_feat=low)
+    out = dec.eval()(feats, low_level_feat=low)
     assert out["sem_seg_logits"].shape == (1, N_CLASSES, 64, 64)
 
 
