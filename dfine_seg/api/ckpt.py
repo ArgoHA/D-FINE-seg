@@ -29,7 +29,6 @@ _ENC_PROJ = "encoder.input_proj.0"
 _DET_HEAD = "decoder.enc_score_head.weight"
 _SEM_HEAD = "decoder.classifier.weight"
 _MASK_PREFIX = "decoder.mask_decoder."
-_STR4_FEAT = "decoder.str4_proj.weight"  # sem_seg stride-4 lateral (S/M/L/X)
 
 
 def _size_from(sd: Dict[str, torch.Tensor], meta: Dict[str, Any]) -> str:
@@ -83,7 +82,6 @@ def describe(sd: Dict[str, torch.Tensor], meta: Optional[Dict[str, Any]] = None)
         "num_classes": num_classes,
         "names": None,
         "in_channels": _in_channels(sd),
-        "str4_feat": _STR4_FEAT in sd,
         "img_size": None,
         "keep_ratio": None,
     }
@@ -106,7 +104,7 @@ def load_and_describe(path: str | Path) -> Tuple[Dict[str, torch.Tensor], Dict[s
 
 
 def inspect(path: str | Path) -> Dict[str, Any]:
-    """-> {model_name, task, num_classes, names, in_channels, str4_feat, img_size, keep_ratio}."""
+    """-> {model_name, task, num_classes, names, in_channels, img_size, keep_ratio}."""
     return load_and_describe(path)[1]
 
 

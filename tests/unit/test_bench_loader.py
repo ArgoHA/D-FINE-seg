@@ -81,3 +81,22 @@ def test_bbox_only_coco_raises_for_segment(tmp_path):
         BenchLoader(
             root_path=tmp_path, img_size=(64, 64), batch_size=1, num_workers=0, cfg=_cfg(tmp_path)
         ).build_dataloaders()
+
+
+@pytest.mark.parametrize("coco_dataset", [True, False])
+def test_label_classes_for_rare_class_sampling(tmp_path, coco_dataset):
+    import pandas as pd
+
+    from dfine_seg.dl.dataset import CustomDataset, load_coco_split
+
+    _dataset(tmp_path)
+    (tmp_path / "labels").mkdir()
+    (tmp_path / "labels" / "a.txt").write_text("0 0.5 0.5 0.2 0.2\n0 0.3 0.3 0.1 0.1\n")
+    cv2.imwrite(str(tmp_path / "images" / "b.jpg"), np.zeros((H, W, 3), np.uint8))  # background
+    entries = load_coco_split(tmp_path / "train.json")[0] if coco_dataset else None
+    split = pd.DataFrame(["a.jpg"] if coco_dataset else ["a.jpg", "b.jpg"])
+    cfg = _cfg(tmp_path, coco_dataset)
+    cfg.task = "detect"  # the YOLO labels above are bbox-only
+    ds = CustomDataset((64, 64), tmp_path, split, False, "val", cfg, coco_annotations=entries)
+    got = [c.tolist() for c in ds.label_classes()]
+    assert got == ([[0]] if coco_dataset else [[0, 0], []])

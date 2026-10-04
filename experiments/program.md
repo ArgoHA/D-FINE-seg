@@ -9,7 +9,7 @@ Read `AGENTS.md`, `experiments/HISTORY.md`, `experiments/ideas.md` and `experime
 ## Setup (fixed for the whole campaign)
 - Presets are local and not in git (`configs/`, gitignored): the Cityscapes screen preset and the
   off-road preset. `run.py`'s docstring describes the format.
-- `experiments/run.py --name <slug> --preset <preset>` trains 2 seeds (42, 123)
+- `experiments/run.py --name <slug> --preset <preset>` trains 3 seeds (42, 123, 7)
   with a fixed epoch count, then exports and benches TensorRT for each seed and appends one row per
   seed to `results.tsv`. Presets pin everything else. Never edit a preset, `run.py`,
   `dfine_seg/dl/validator.py` or `dfine_seg/dl/bench.py` to change a result.
@@ -19,14 +19,15 @@ Read `AGENTS.md`, `experiments/HISTORY.md`, `experiments/ideas.md` and `experime
   `exp/<slug>`, branched from `exp_base`, and gets one commit. A winner is fast-forwarded into
   `exp_base`. A loser's branch is kept for reference.
 
-## Decision (per experiment, mean of 2 seeds, TRT row)
+## Decision (per experiment, mean of 3 seeds, TRT row)
+The same config and seed rerun differs by about 0.005 mIoU (GPU nondeterminism), so single runs prove nothing.
 Keep the candidate if all of these hold:
-- ΔmIoU ≥ 0.005
+- ΔmIoU ≥ 0.006
 - latency ≤ 1.03× the baseline
 - the extra complexity is justified: a big change for a small win is a reject
 
 A candidate that is at least 5% faster with ΔmIoU ≥ −0.001 is also a win. If one seed is clearly
-worse (both metrics past the threshold), skip the second seed and reject.
+worse (both metrics past the threshold), skip the remaining seeds and reject.
 
 ## Research
 Read the code (`dfine_seg/model/`, `dfine_seg/dl/train.py`, the sem_seg dataset and loss), the
@@ -41,7 +42,7 @@ Take the top `pending` idea and repeat:
 1. `git checkout -b exp/<slug> exp_base`. A **subagent** implements the change, runs
    `uv run ruff format . && uv run ruff check . && make test-fast`, and commits. Keep your own context
    for orchestration.
-2. Run `uv run python experiments/run.py --name <slug>` in the background and wait for its completion
+2. Run `uv run python experiments/run.py --name <slug> --preset <Cityscapes preset>` in the background and wait for its completion
    notification instead of polling.
 3. Decide. Update the idea in `ideas.md` with its status (✅ / ❌ / 💥 failed), numbers and a
    one-line reason. On a win, run `git checkout exp_base && git merge --ff-only exp/<slug>`.

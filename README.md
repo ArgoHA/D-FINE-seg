@@ -51,6 +51,7 @@ One frame, three tasks, one config flag:
 - **Instance segmentation head** (`task: segment`) - lightweight mask head on top of D-FINE's HybridEncoder PAN outputs: stride 8/16/32 features fused to 1/4 resolution, then a dot-product between per-query mask embeddings (3-layer MLP) and the shared mask features yields per-instance masks
 - **Semantic segmentation head** (`task: sem_seg`) - reuses the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier: no queries, no NMS
 - **Mask-aware training** - box-cropped BCE + Dice mask losses (instance seg) and CE + multi-class soft Dice with `ignore_index` (semantic seg), mask supervision inside contrastive denoising, and Dice + sigmoid-focal mask costs in the Hungarian matcher - all train-time only, zero inference cost
+- **Rare-class sampling** (optional, off by default) - LVIS repeat-factor sampling draws train images that contain rare classes more often, for all three tasks; helps on some datasets, not all
 - **COCO-pretrained weights for detection *and* instance segmentation**, auto-downloaded on first use - fine-tuning starts from a trained mask decoder, not from scratch
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
 - **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, OneCycle, early stopping, WandB

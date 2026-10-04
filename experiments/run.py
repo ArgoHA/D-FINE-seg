@@ -62,7 +62,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
     ap.add_argument("--preset", required=True, help="local preset YAML, see the module docstring")
-    ap.add_argument("--seeds", type=int, nargs="+", default=[42, 123])
+    ap.add_argument("--seeds", type=int, nargs="+", default=[42, 123, 7])
     ap.add_argument(
         "--abort-below", type=float, help="stop after a seed whose TRT mIoU is below this"
     )

@@ -135,8 +135,6 @@ class TorchCompileModel:
         self._test_pred()
 
     def _load_model(self):
-        state = torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))
-        state = unwrap_checkpoint(state)[0]
         self.model = build_model(
             self.model_name,
             self.n_outputs,
@@ -145,9 +143,9 @@ class TorchCompileModel:
             img_size=None,
             in_channels=self.channels,
             task=self.task,
-            str4_feat="decoder.str4_proj.weight" in state,  # sem_seg stride-4 lateral
         )
-        self.model.load_state_dict(state, strict=False)
+        state = torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))
+        self.model.load_state_dict(unwrap_checkpoint(state)[0], strict=False)
         self.model.eval()
         self.model.to(self.device)
 

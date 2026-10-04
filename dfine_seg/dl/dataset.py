@@ -270,6 +270,20 @@ class CustomDataset(Dataset):
 
         self.debug_img_path = Path(cfg.train.debug_img_path)
 
+    def label_classes(self) -> List[np.ndarray]:
+        """Class id of every instance, per image of the split (for rare-class sampling)."""
+        if self.coco_mode:
+            return [e["targets"][:, 0].astype(int) for e in self._coco_entries]
+        out = []
+        for img_path in self.split.iloc[:, 0]:
+            labels_path = self.root_path / "labels" / f"{Path(img_path).stem}.txt"
+            if labels_path.exists() and labels_path.stat().st_size > 1:
+                boxes = parse_yolo_label_file(labels_path)[0].reshape(-1, 5)
+                out.append(boxes[:, 0].astype(int))
+            else:
+                out.append(np.zeros(0, dtype=int))
+        return [np.zeros_like(c) for c in out] if self.use_one_class else out
+
     def _assert_has_polygons(self) -> None:
         """bbox-only labels parse to empty polygons, so masks would silently be all-zero."""
         if self.coco_mode:
@@ -1027,20 +1041,15 @@ def load_class_pixels(root_path: Path, split: pd.DataFrame, ignore_index: int) -
     return counts
 
 
-def rcs_weights(pixels: np.ndarray, temperature: float = 0.01) -> Tuple[np.ndarray, np.ndarray]:
-    """DAFormer rare-class sampling from an (images, classes) pixel-count matrix.
-    f_c = class pixel frequency (DAFormer's definition; image share would put ~all mass on the
-    single rarest class at T=0.01), P(c) ∝ exp((1 - f_c) / T) over classes present in the split,
-    image weight w_i = Σ_{c∈i} P(c) / n_c. Returns (w per image, P per class)."""
-    has = pixels > 0
-    n_c = has.sum(0)
-    present = n_c > 0
-    logits = (1.0 - pixels.sum(0) / pixels.sum()) / temperature
-    p = np.zeros(pixels.shape[1])
-    p[present] = np.exp(logits[present] - logits[present].max())  # stable softmax
-    p /= p.sum()
-    w = has @ np.divide(p, n_c, out=np.zeros_like(p), where=present)
-    return w, p
+def rfs_weights(counts: np.ndarray, threshold: float = 1.0) -> np.ndarray:
+    """LVIS repeat-factor sampling (arXiv:1908.03195) from an (images, classes) count matrix.
+    f_c = share of images containing c, r_c = max(1, sqrt(t / f_c)), image weight = max r_c over
+    its classes, 1 for background-only images. LVIS's t = 0.001 suits its 1203 classes; with few
+    classes it would never fire, so t = 1 (r_c = 1 / sqrt(f_c)). No image drops out."""
+    has = counts > 0
+    f = has.mean(0)
+    r = np.maximum(1.0, np.sqrt(threshold / np.maximum(f, 1e-12)))
+    return (has * r).max(1, initial=1.0)
 
 
 class Loader:
@@ -1191,13 +1200,8 @@ class Loader:
                 dataset, shuffle=(shuffle and dataset.mode == "train"), drop_last=False
             )
             shuffle_flag = False  # cannot use shuffle=True when sampler is set
-        elif (
-            self.task == "sem_seg"
-            and dataset.mode == "train"
-            and shuffle
-            and self.cfg.train.sem_seg.rare_class_sampling
-        ):
-            sampler = self._rcs_sampler(dataset)
+        elif dataset.mode == "train" and shuffle and self.cfg.train.rare_class_sampling:
+            sampler = self._rare_class_sampler(dataset)
             shuffle_flag = False
 
         dl_kwargs = dict(
@@ -1223,21 +1227,28 @@ class Loader:
 
         return dataloader
 
-    def _rcs_sampler(self, dataset: "SemSegDataset") -> WeightedRandomSampler:
-        counts = load_class_pixels(self.root_path, dataset.split, dataset.ignore_index)
-        pixels = np.zeros((len(dataset.split), len(self.class_names)))
-        for i, p in enumerate(dataset.split.iloc[:, 0]):
-            for c, n in counts[f"{Path(p).stem}.png"].items():
-                pixels[i, int(c)] = n
-        w, p = rcs_weights(pixels)
+    def _rare_class_sampler(self, dataset: Dataset) -> WeightedRandomSampler:
+        """Repeat-factor sampling on per-image class presence: label PNGs (sem_seg) or instance
+        labels (detect/segment). DAFormer RCS was tried for sem_seg and dropped: too aggressive
+        (never drew 14% of GOOSE images) for no better result."""
+        counts = np.zeros((len(dataset.split), len(self.class_names)))
+        if self.task == "sem_seg":
+            pixels = load_class_pixels(self.root_path, dataset.split, dataset.ignore_index)
+            for i, p in enumerate(dataset.split.iloc[:, 0]):
+                for c, n in pixels[f"{Path(p).stem}.png"].items():
+                    counts[i, int(c)] = n
+        else:
+            for i, labels in enumerate(dataset.label_classes()):
+                np.add.at(counts[i], labels, 1)
+        w = rfs_weights(counts)
         if is_main_process():
-            has = pixels > 0
-            share = (w / w.sum()) @ has  # expected share of sampled images containing each class
+            has = counts > 0
+            before, after = has.mean(0), (w / w.sum()) @ has  # share of drawn images with c
             info = ", ".join(
-                f"{self.class_names[c]} P={p[c]:.2f} imgs {has[:, c].mean():.0%}->{share[c]:.0%}"
-                for c in np.argsort(-p)[:5]
+                f"{self.class_names[c]} {before[c]:.0%}->{after[c]:.0%}"
+                for c in np.argsort(before)[:5]
             )
-            logger.info(f"Rare-class sampling on (T=0.01): {info}")
+            logger.info(f"Rare-class sampling on (repeat-factor, t=1), rarest classes: {info}")
         gen = torch.Generator().manual_seed(int(self.cfg.train.seed))
         return WeightedRandomSampler(
             torch.as_tensor(w, dtype=torch.double), len(w), replacement=True, generator=gen

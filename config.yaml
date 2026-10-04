@@ -39,12 +39,14 @@ train:
     7: bicycle
 
   use_one_class: False
+  # LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP).
+  # Dataset-dependent: +0.004 mIoU on GOOSE, flat on Cityscapes sem_seg
+  rare_class_sampling: false
 
   # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id
   sem_seg:
     ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
     class_weights: null # optional per-class CE weights for imbalance
-    rare_class_sampling: true # DAFormer RCS: oversample train images with rare classes (T=0.01)
 
   ### Distributed Training (DDP) ###
   ddp:
@@ -114,7 +116,7 @@ train:
     rotation_p: 0.05 # probability of the rotation (with above degree)
     multiscale_prob: 0.0 # ignored for sem_seg (box-collate multiscale)
     scale_jitter: null # only for sem_seg:, e.g. [0.75, 1.5]
-    rotate_90: 0.05
+    rotate_90: 0.0 # 90° rotation; for top-down data (aerial, documents), not street scenes
     left_right_flip: 0.3
     up_down_flip: 0.0
     to_gray: 0.01
