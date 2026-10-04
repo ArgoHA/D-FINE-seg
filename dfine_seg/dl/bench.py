@@ -107,7 +107,7 @@ def test_model_sem_seg(
                 n_vis += 1
 
     metrics = validator.compute_metrics()
-    metrics["latency"] = round(np.mean(latency[1:]), 1)
+    metrics["latency"] = round(np.mean(latency[1:]), 2)
     return metrics
 
 

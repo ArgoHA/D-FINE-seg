@@ -451,9 +451,9 @@ def main() -> int:
     print(f"\n{'=' * 72}\n{summary}\n")
 
     if args.notify:  # notify.py only warns when TG creds are absent
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        sys.path.insert(0, str(REPO))
         try:
-            from notify import send
+            from experiments.notify import send
 
             send(notification(results, run_dirs, failed))
         except Exception as e:

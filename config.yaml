@@ -39,6 +39,8 @@ train:
     7: bicycle
 
   use_one_class: False
+  # LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP)
+  rare_class_sampling: false # not supported in DDP setup
 
   # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id
   sem_seg:
@@ -113,7 +115,7 @@ train:
     rotation_p: 0.05 # probability of the rotation (with above degree)
     multiscale_prob: 0.0 # ignored for sem_seg (box-collate multiscale)
     scale_jitter: null # only for sem_seg:, e.g. [0.75, 1.5]
-    rotate_90: 0.05
+    rotate_90: 0.0 # 90° rotation; for top-down data (aerial, documents), not street scenes
     left_right_flip: 0.3
     up_down_flip: 0.0
     to_gray: 0.01

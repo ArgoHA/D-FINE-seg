@@ -126,17 +126,18 @@ def test_validator_absent_class_excluded_from_miou():
 # ── dataset augs ─────────────────────────────────────────────────────────
 
 
-def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
-    from dfine_seg.dl.dataset import SemSegDataset
-
-    cfg = OmegaConf.create(
+def _cfg(tmp_path, rotation_p=0.0, keep_ratio=False, rare_class_sampling=False):
+    return OmegaConf.create(
         {
             "task": "sem_seg",
             "train": {
+                "seed": 42,
+                "use_one_class": False,
                 "in_channels": 3,
                 "keep_ratio": keep_ratio,
                 "debug_img_path": str(tmp_path / "debug"),
                 "label_to_name": {i: str(i) for i in range(N_CLASSES)},
+                "rare_class_sampling": rare_class_sampling,
                 "sem_seg": {"ignore_index": 255, "class_weights": None},
                 "mosaic_augs": {
                     "mosaic_prob": 0.0,
@@ -158,10 +159,17 @@ def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
                     "brightness": 0.0,
                     "noise": 0.0,
                     "coarse_dropout": 0.0,
+                    "multiscale_prob": 0.0,
                 },
             },
         }
     )
+
+
+def _make_dataset(tmp_path, rotation_p=0.0, keep_ratio=False, mode="train"):
+    from dfine_seg.dl.dataset import SemSegDataset
+
+    cfg = _cfg(tmp_path, rotation_p, keep_ratio)
     return SemSegDataset((64, 64), tmp_path, pd.DataFrame(["x.jpg"]), False, mode, cfg)
 
 
@@ -223,6 +231,98 @@ def test_load_mosaic_target_size_and_ignore_fill(tmp_path):
     assert ids <= {0, 6, 255} and ids & {0, 6}
 
 
+def test_rfs_weights_floor_and_order():
+    from dfine_seg.dl.dataset import rfs_weights
+
+    # (images, classes) instance counts: class 0 everywhere, 1 in half, 2 in one image
+    counts = np.array([[3, 0, 0], [2, 1, 0], [1, 1, 1], [4, 0, 0], [0, 0, 0]])
+    w = rfs_weights(counts)
+    assert w[4] == 1 and w.min() >= 1  # background-only image keeps weight 1, none drop out
+    assert w[2] == pytest.approx(np.sqrt(5)) and w[1] == pytest.approx(np.sqrt(5 / 2))
+
+
+@pytest.fixture
+def sampling_data(tmp_path):
+    for i, cls in enumerate([0, 0, 0, 5]):
+        _write_sample(tmp_path, np.full((16, 16), cls, dtype=np.uint8), stem=f"s{i}")
+    pd.DataFrame([f"s{i}.jpg" for i in range(4)]).to_csv(
+        tmp_path / "train.csv", header=False, index=False
+    )
+    pd.DataFrame(["s0.jpg"]).to_csv(tmp_path / "val.csv", header=False, index=False)
+    return tmp_path
+
+
+def test_rare_class_sampling_flag(sampling_data):
+    from torch.utils.data import RandomSampler, WeightedRandomSampler
+
+    from dfine_seg.dl.dataset import Loader
+
+    tmp_path = sampling_data
+
+    def train_loader(flag):
+        cfg = _cfg(tmp_path, rare_class_sampling=flag)
+        if flag is None:
+            del cfg.train.rare_class_sampling
+        loader = Loader(tmp_path, (64, 64), 2, 0, cfg)
+        return loader._build_dataloader_impl(loader._make_dataset("train"), shuffle=True)
+
+    off = train_loader(False)
+    assert isinstance(off.sampler, RandomSampler)  # today's plain shuffle
+    assert isinstance(train_loader(None).sampler, RandomSampler)  # configs predating the flag
+    on = train_loader(True)
+    assert isinstance(on.sampler, WeightedRandomSampler)
+    assert (tmp_path / "class_presence.json").exists()
+    w = on.sampler.weights  # class 5 is in 1 of 4 images: r = sqrt(4) vs sqrt(4/3) for class 0
+    assert w[3] == pytest.approx(2.0) and w[0] == pytest.approx((4 / 3) ** 0.5)
+    assert list(train_loader(True).sampler) == list(train_loader(True).sampler)  # seeded
+
+
+def test_sampling_cache_tracks_config_and_label_changes(sampling_data):
+    from dfine_seg.dl.dataset import Loader
+
+    cfg = _cfg(sampling_data, rare_class_sampling=True)
+
+    def weights():
+        return Loader(sampling_data, (64, 64), 2, 0, cfg).build_dataloaders()[0].sampler.weights
+
+    cfg.train.sem_seg.ignore_index = 0
+    assert weights().tolist() == [1.0, 1.0, 1.0, 2.0]
+    cfg.train.sem_seg.ignore_index = 255
+    assert weights().tolist() == pytest.approx([(4 / 3) ** 0.5] * 3 + [2.0])
+
+    cfg.train.label_to_name = {0: "merged"}
+    with pytest.raises(ValueError, match="s3.png: class id 5.*label_to_name"):
+        weights()
+    cv2.imwrite(str(sampling_data / "labels/s3.png"), np.zeros((16, 16), dtype=np.uint8))
+    assert weights().tolist() == [1.0] * 4
+
+
+def test_sampling_cache_recovers_from_corruption_and_interrupted_write(tmp_path, monkeypatch):
+    import json
+
+    from dfine_seg.dl.dataset import load_class_pixels
+
+    _write_sample(tmp_path, np.array([[0, 1, 255]], dtype=np.uint8))
+    split = pd.DataFrame(["x.jpg"])
+    cache = tmp_path / "class_presence.json"
+    cache.write_text("{")
+    assert load_class_pixels(tmp_path, split, 255) == {"x.png": {"0": 1, "1": 1}}
+    previous = cache.read_text()
+    cv2.imwrite(str(tmp_path / "labels/x.png"), np.array([[1, 1, 255]], dtype=np.uint8))
+
+    def interrupt_write(value, stream):
+        stream.write("{")
+        stream.flush()
+        raise OSError("Interrupted cache write")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(json, "dump", interrupt_write)
+        with pytest.raises(OSError, match="Interrupted cache write"):
+            load_class_pixels(tmp_path, split, 255)
+    assert cache.read_text() == previous
+    assert load_class_pixels(tmp_path, split, 255) == {"x.png": {"1": 2}}
+
+
 def test_sem_seg_collate_filters_none():
     from dfine_seg.dl.dataset import sem_seg_collate_fn
 
@@ -264,3 +364,19 @@ def test_torch_model_process_sem_seg():
     )
     m = out[0]["sem_seg"]
     assert (m[:16] == 2).all() and (m[16:] == 255).all()  # class 0 pixels become void, not 0
+
+
+# ── non-square input ─────────────────────────────────────────────────────
+
+
+def test_sem_seg_forward_non_square():
+    from dfine_seg.dl.export import SemSegExportWrapper
+    from dfine_seg.model.dfine import build_model
+
+    model = build_model("n", N_CLASSES, False, "cpu", img_size=[448, 896], task="sem_seg").eval()
+    x = torch.randn(1, 3, 448, 896)
+    with torch.no_grad():
+        logits = model(x)["sem_seg_logits"]
+        label_map = SemSegExportWrapper(model)(x)
+    assert logits.shape == (1, N_CLASSES, 448, 896)
+    assert label_map.shape == (1, 448, 896)

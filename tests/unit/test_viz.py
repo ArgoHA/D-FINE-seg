@@ -16,10 +16,11 @@ from dfine_seg.viz import classes_from_model
 class _Wrapper:
     """Stand-in for a wrapper from `load_model`; graph artifacts have no `n_outputs`."""
 
-    def __init__(self, names=None, n_outputs=None):
+    def __init__(self, names=None, n_outputs=None, sem_seg=False):
         self.names = names
         if n_outputs is not None:
             self.n_outputs = n_outputs
+        self.sem_seg = sem_seg
 
 
 def _img(h=64, w=64):
@@ -49,6 +50,22 @@ def test_init_reads_the_model():
 
 def test_init_falls_back_to_coco_when_nothing_is_knowable():
     assert Visualizer(_Wrapper()).n_classes == 80
+
+
+def test_sem_seg_tensor_count_is_not_a_class_count():
+    # sem_seg wrappers set n_outputs=1 for their single fused-argmax tensor; the palette must
+    # not collapse to one colour, so the count falls back to names / the Visualizer default.
+    assert classes_from_model(_Wrapper(n_outputs=1, sem_seg=True)) == (0, {})
+    assert Visualizer(_Wrapper(n_outputs=1, sem_seg=True)).n_classes == 80
+    assert classes_from_model(_Wrapper({0: "road"}, n_outputs=1, sem_seg=True)) == (1, {0: "road"})
+
+
+def test_sem_seg_wrapper_does_not_collapse_the_palette():
+    img, vis = _img(), Visualizer(_Wrapper(n_outputs=1, sem_seg=True))
+    label_map = np.zeros((64, 64), dtype=np.uint8)
+    label_map[:, 32:] = 1  # class 1 would render black on a one-colour palette
+    out = vis(img, {"sem_seg": torch.from_numpy(label_map)})
+    assert not np.array_equal(out[:, :32], out[:, 32:])
 
 
 def test_init_accepts_an_int_and_the_legacy_keywords():

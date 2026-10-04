@@ -111,6 +111,10 @@ Note: Checkpoints trained at a non-square `img_size` before this fix learned the
 ## 2026-10-01 - Remove box rounding
 
 Minor difference, previously box conversion floored x1/y1 and ceiled x2/y2 at the model input resolution before scaling to the original image, which snapped every box edge outward.
-On Cityscapes (S, 640×640, 3 seeds) removing it gave +0.004–0.008 mAP50 and +0.009–0.015 mAP50-95, mostly on small objects; rounding the training labels made no difference. 
+On Cityscapes (S, 640×640, 3 seeds) removing it gave +0.004–0.008 mAP50 and +0.009–0.015 mAP50-95, mostly on small objects; rounding the training labels made no difference.
 Validation used to round the GT the same way, which inflated it, so reported val mAP is now about 0.005–0.010 lower for the same model; this is a measurement change, not a regression.
 Re-export models to get the unrounded boxes from ONNX/TensorRT/OpenVINO/CoreML.
+
+## 2026-10-04 - Rare class sampling
+
+LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP). Turned off by default. Dataset-dependent: +0.004 mIoU on GOOSE, flat on Cityscapes sem_seg.

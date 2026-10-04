@@ -1,6 +1,10 @@
 import json
+import os
 import random
+import tempfile
+import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -12,7 +16,7 @@ import torch
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
 from omegaconf import DictConfig
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from dfine_seg.model.dist_utils import is_main_process
@@ -267,6 +271,20 @@ class CustomDataset(Dataset):
         self._init_augs(cfg)
 
         self.debug_img_path = Path(cfg.train.debug_img_path)
+
+    def label_classes(self) -> List[np.ndarray]:
+        """Class id of every instance, per image of the split (for rare-class sampling)."""
+        if self.coco_mode:
+            return [e["targets"][:, 0].astype(int) for e in self._coco_entries]
+        out = []
+        for img_path in self.split.iloc[:, 0]:
+            labels_path = self.root_path / "labels" / f"{Path(img_path).stem}.txt"
+            if labels_path.exists() and labels_path.stat().st_size > 1:
+                boxes = parse_yolo_label_file(labels_path)[0].reshape(-1, 5)
+                out.append(boxes[:, 0].astype(int))
+            else:
+                out.append(np.zeros(0, dtype=int))
+        return [np.zeros_like(c) for c in out] if self.use_one_class else out
 
     def _assert_has_polygons(self) -> None:
         """bbox-only labels parse to empty polygons, so masks would silently be all-zero."""
@@ -1000,6 +1018,68 @@ def sem_seg_collate_fn(batch):
     return images, targets, img_paths
 
 
+def load_class_pixels(root_path: Path, split: pd.DataFrame, ignore_index: int) -> Dict:
+    """Cache raw pixel counts; filter ignore_index on each call so configs can share the cache."""
+    names = [f"{Path(p).stem}.png" for p in split.iloc[:, 0]]
+    cache = root_path / "class_presence.json"
+    files = {}
+    for name in names:
+        stat = (root_path / "labels" / name).stat()
+        files[name] = [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+    counts = None
+    try:
+        cached = json.loads(cache.read_text())
+        if isinstance(cached, dict) and cached.get("version") == 1 and cached.get("files") == files:
+            candidate = cached.get("counts")
+            if (
+                isinstance(candidate, dict)
+                and set(candidate) == set(names)
+                and all(
+                    isinstance(pixels, dict)
+                    and all(c.isdecimal() and type(n) is int and n > 0 for c, n in pixels.items())
+                    for pixels in candidate.values()
+                )
+            ):
+                counts = candidate
+    except (OSError, ValueError):
+        pass  # Missing, interrupted, or malformed caches can be rebuilt from the masks.
+
+    def scan(name):
+        mask = cv2.imread(str(root_path / "labels" / name), cv2.IMREAD_UNCHANGED)
+        if mask is None:
+            raise FileNotFoundError(f"can't read mask {root_path / 'labels' / name}")
+        ids, n = np.unique(mask, return_counts=True)
+        return {str(c): int(k) for c, k in zip(ids, n)}
+
+    if counts is None:
+        t0 = time.time()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            counts = dict(zip(names, pool.map(scan, names)))
+        fd, temporary = tempfile.mkstemp(dir=cache.parent, prefix=f".{cache.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump({"version": 1, "files": files, "counts": counts}, stream)
+            os.replace(temporary, cache)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        logger.info(f"Scanned class pixels of {len(names)} masks in {time.time() - t0:.1f}s")
+    return {
+        name: {c: n for c, n in pixels.items() if int(c) != ignore_index}
+        for name, pixels in counts.items()
+    }
+
+
+def rfs_weights(counts: np.ndarray, threshold: float = 1.0) -> np.ndarray:
+    """LVIS repeat-factor sampling (arXiv:1908.03195) from an (images, classes) count matrix.
+    f_c = share of images containing c, r_c = max(1, sqrt(t / f_c)), image weight = max r_c over
+    its classes, 1 for background-only images. LVIS's t = 0.001 suits its 1203 classes; with few
+    classes it would never fire, so t = 1 (r_c = 1 / sqrt(f_c)). No image drops out."""
+    has = counts > 0
+    f = has.mean(0)
+    r = np.maximum(1.0, np.sqrt(threshold / np.maximum(f, 1e-12)))
+    return (has * r).max(1, initial=1.0)
+
+
 class Loader:
     def __init__(
         self,
@@ -1140,6 +1220,7 @@ class Loader:
 
         sampler = None
         shuffle_flag = shuffle
+        rare_class_sampling = self.cfg.train.get("rare_class_sampling", False)
 
         if distributed:
             # Use DistributedSampler for both train and val/test in DDP mode
@@ -1148,6 +1229,9 @@ class Loader:
                 dataset, shuffle=(shuffle and dataset.mode == "train"), drop_last=False
             )
             shuffle_flag = False  # cannot use shuffle=True when sampler is set
+        elif dataset.mode == "train" and shuffle and rare_class_sampling:
+            sampler = self._rare_class_sampler(dataset)
+            shuffle_flag = False
 
         dl_kwargs = dict(
             batch_size=self.batch_size,
@@ -1171,6 +1255,39 @@ class Loader:
             self.train_sampler = sampler
 
         return dataloader
+
+    def _rare_class_sampler(self, dataset: Dataset) -> WeightedRandomSampler:
+        """Repeat-factor sampling on per-image class presence: label PNGs (sem_seg) or instance
+        labels (detect/segment)"""
+        counts = np.zeros((len(dataset.split), len(self.class_names)))
+        if self.task == "sem_seg":
+            pixels = load_class_pixels(self.root_path, dataset.split, dataset.ignore_index)
+            for i, p in enumerate(dataset.split.iloc[:, 0]):
+                for c, n in pixels[f"{Path(p).stem}.png"].items():
+                    class_id = int(c)
+                    if not 0 <= class_id < len(self.class_names):
+                        raise ValueError(
+                            f"{self.root_path / 'labels' / f'{Path(p).stem}.png'}: class id "
+                            f"{class_id} outside label_to_name ids 0..{len(self.class_names) - 1} "
+                            f"(ignore_index={dataset.ignore_index})"
+                        )
+                    counts[i, class_id] = n
+        else:
+            for i, labels in enumerate(dataset.label_classes()):
+                np.add.at(counts[i], labels, 1)
+        w = rfs_weights(counts)
+        if is_main_process():
+            has = counts > 0
+            before, after = has.mean(0), (w / w.sum()) @ has  # share of drawn images with c
+            info = ", ".join(
+                f"{self.class_names[c]} {before[c]:.0%}->{after[c]:.0%}"
+                for c in np.argsort(before)[:5]
+            )
+            logger.info(f"Rare-class sampling on (repeat-factor, t=1), rarest classes: {info}")
+        gen = torch.Generator().manual_seed(int(self.cfg.train.seed))
+        return WeightedRandomSampler(
+            torch.as_tensor(w, dtype=torch.double), len(w), replacement=True, generator=gen
+        )
 
     def _make_dataset(self, split: str, mode: Optional[str] = None) -> Dataset:
         """`split` picks the data; `mode` overrides the dataset mode (bench reuses val/test)."""

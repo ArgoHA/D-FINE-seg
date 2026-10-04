@@ -110,6 +110,8 @@ class Trainer:
             and cfg.train.ddp.enabled
             and is_dist_available_and_initialized()
         )
+        if self.distributed and cfg.train.get("rare_class_sampling", False):
+            raise ValueError("train.rare_class_sampling is not supported with DDP")
         self.rank = get_rank()
         self.world_size = get_world_size()
         self.is_main = self.rank == 0
@@ -754,7 +756,8 @@ class Trainer:
                     for t in targets
                 ]
 
-                lr = self.optimizer.param_groups[-1]["lr"]
+                # Group 3 = the non-backbone params at base_lr; with Muon the last group is Muon's.
+                lr = self.optimizer.param_groups[3]["lr"]
 
                 if self.amp_enabled:
                     with autocast(str(self.device), dtype=self.amp_dtype, cache_enabled=True):

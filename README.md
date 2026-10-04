@@ -53,7 +53,7 @@ One frame, three tasks, one config flag:
 - **Mask-aware training** - box-cropped BCE + Dice mask losses (instance seg) and CE + multi-class soft Dice with `ignore_index` (semantic seg), mask supervision inside contrastive denoising, and Dice + sigmoid-focal mask costs in the Hungarian matcher - all train-time only, zero inference cost
 - **COCO-pretrained weights for detection *and* instance segmentation**, auto-downloaded on first use - fine-tuning starts from a trained mask decoder, not from scratch
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
-- **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, OneCycle, early stopping, WandB
+- **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB
 - **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML / LiteRT)
 
 ## Quick Start
@@ -240,7 +240,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **WandB integration** | Automatic experiment tracking |
 | **Optimal threshold search** | Auto-finds best confidence threshold after training |
 | **Background warm-up** | Ignore background-only images for N initial epochs |
-| **Autoresearch harness** | Tooling to run agent in autoresearch format,  leaves under `experiments/`
+| **Autoresearch loop** | Research/execute loop for agents (semantic segmentation on Cityscapes), see `experiments/program.md` |
 
 ## Export
 
