@@ -36,7 +36,7 @@ train:
 
   use_one_class: False
   # LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP)
-  rare_class_sampling: false
+  rare_class_sampling: false # not supported in DDP setup
 
   # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id
   sem_seg:

@@ -1,5 +1,7 @@
 import json
+import os
 import random
+import tempfile
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -1017,28 +1019,54 @@ def sem_seg_collate_fn(batch):
 
 
 def load_class_pixels(root_path: Path, split: pd.DataFrame, ignore_index: int) -> Dict:
-    """{label filename: {class id: pixel count}} for the split (ignore_index excluded), cached at
-    <root>/class_presence.json and rebuilt when its key set differs from the split."""
+    """Cache raw pixel counts; filter ignore_index on each call so configs can share the cache."""
     names = [f"{Path(p).stem}.png" for p in split.iloc[:, 0]]
     cache = root_path / "class_presence.json"
-    if cache.exists():
-        counts = json.loads(cache.read_text())
-        if set(counts) == set(names):
-            return counts
+    files = {}
+    for name in names:
+        stat = (root_path / "labels" / name).stat()
+        files[name] = [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+    counts = None
+    try:
+        cached = json.loads(cache.read_text())
+        if isinstance(cached, dict) and cached.get("version") == 1 and cached.get("files") == files:
+            candidate = cached.get("counts")
+            if (
+                isinstance(candidate, dict)
+                and set(candidate) == set(names)
+                and all(
+                    isinstance(pixels, dict)
+                    and all(c.isdecimal() and type(n) is int and n > 0 for c, n in pixels.items())
+                    for pixels in candidate.values()
+                )
+            ):
+                counts = candidate
+    except (OSError, ValueError):
+        pass  # Missing, interrupted, or malformed caches can be rebuilt from the masks.
 
     def scan(name):
         mask = cv2.imread(str(root_path / "labels" / name), cv2.IMREAD_UNCHANGED)
         if mask is None:
             raise FileNotFoundError(f"can't read mask {root_path / 'labels' / name}")
         ids, n = np.unique(mask, return_counts=True)
-        return {str(c): int(k) for c, k in zip(ids, n) if c != ignore_index}
+        return {str(c): int(k) for c, k in zip(ids, n)}
 
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        counts = dict(zip(names, pool.map(scan, names)))
-    cache.write_text(json.dumps(counts))
-    logger.info(f"Scanned class pixels of {len(names)} masks in {time.time() - t0:.1f}s")
-    return counts
+    if counts is None:
+        t0 = time.time()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            counts = dict(zip(names, pool.map(scan, names)))
+        fd, temporary = tempfile.mkstemp(dir=cache.parent, prefix=f".{cache.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump({"version": 1, "files": files, "counts": counts}, stream)
+            os.replace(temporary, cache)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        logger.info(f"Scanned class pixels of {len(names)} masks in {time.time() - t0:.1f}s")
+    return {
+        name: {c: n for c, n in pixels.items() if int(c) != ignore_index}
+        for name, pixels in counts.items()
+    }
 
 
 def rfs_weights(counts: np.ndarray, threshold: float = 1.0) -> np.ndarray:
@@ -1192,6 +1220,7 @@ class Loader:
 
         sampler = None
         shuffle_flag = shuffle
+        rare_class_sampling = self.cfg.train.get("rare_class_sampling", False)
 
         if distributed:
             # Use DistributedSampler for both train and val/test in DDP mode
@@ -1200,7 +1229,7 @@ class Loader:
                 dataset, shuffle=(shuffle and dataset.mode == "train"), drop_last=False
             )
             shuffle_flag = False  # cannot use shuffle=True when sampler is set
-        elif dataset.mode == "train" and shuffle and self.cfg.train.rare_class_sampling:
+        elif dataset.mode == "train" and shuffle and rare_class_sampling:
             sampler = self._rare_class_sampler(dataset)
             shuffle_flag = False
 
@@ -1235,7 +1264,14 @@ class Loader:
             pixels = load_class_pixels(self.root_path, dataset.split, dataset.ignore_index)
             for i, p in enumerate(dataset.split.iloc[:, 0]):
                 for c, n in pixels[f"{Path(p).stem}.png"].items():
-                    counts[i, int(c)] = n
+                    class_id = int(c)
+                    if not 0 <= class_id < len(self.class_names):
+                        raise ValueError(
+                            f"{self.root_path / 'labels' / f'{Path(p).stem}.png'}: class id "
+                            f"{class_id} outside label_to_name ids 0..{len(self.class_names) - 1} "
+                            f"(ignore_index={dataset.ignore_index})"
+                        )
+                    counts[i, class_id] = n
         else:
             for i, labels in enumerate(dataset.label_classes()):
                 np.add.at(counts[i], labels, 1)

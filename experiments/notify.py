@@ -22,7 +22,7 @@ def creds() -> tuple[str | None, str | None]:
     return env.get("TG_TOKEN"), env.get("TG_CHAT_ID")
 
 
-def main():
+def send(message: str):
     tok, chat = creds()
     if not tok or not chat:
         print("TG_TOKEN/TG_CHAT_ID not set, skipping notification")
@@ -31,7 +31,7 @@ def main():
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{tok}/sendMessage",
-                json={"chat_id": chat, "text": " ".join(sys.argv[1:])},
+                json={"chat_id": chat, "text": message},
                 timeout=20,
             )
             print("sent" if r.ok else f"send failed ({r.status_code})")
@@ -39,6 +39,10 @@ def main():
         except requests.RequestException as e:  # never print e: its URL contains the token
             print(f"send attempt {attempt + 1} failed: {type(e).__name__}")
             time.sleep(30)
+
+
+def main():
+    send(" ".join(sys.argv[1:]))
 
 
 if __name__ == "__main__":

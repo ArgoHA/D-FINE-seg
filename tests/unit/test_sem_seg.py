@@ -241,30 +241,86 @@ def test_rfs_weights_floor_and_order():
     assert w[2] == pytest.approx(np.sqrt(5)) and w[1] == pytest.approx(np.sqrt(5 / 2))
 
 
-def test_rare_class_sampling_flag(tmp_path):
-    from torch.utils.data import RandomSampler, WeightedRandomSampler
-
-    from dfine_seg.dl.dataset import Loader
-
+@pytest.fixture
+def sampling_data(tmp_path):
     for i, cls in enumerate([0, 0, 0, 5]):
         _write_sample(tmp_path, np.full((16, 16), cls, dtype=np.uint8), stem=f"s{i}")
     pd.DataFrame([f"s{i}.jpg" for i in range(4)]).to_csv(
         tmp_path / "train.csv", header=False, index=False
     )
     pd.DataFrame(["s0.jpg"]).to_csv(tmp_path / "val.csv", header=False, index=False)
+    return tmp_path
+
+
+def test_rare_class_sampling_flag(sampling_data):
+    from torch.utils.data import RandomSampler, WeightedRandomSampler
+
+    from dfine_seg.dl.dataset import Loader
+
+    tmp_path = sampling_data
 
     def train_loader(flag):
-        loader = Loader(tmp_path, (64, 64), 2, 0, _cfg(tmp_path, rare_class_sampling=flag))
+        cfg = _cfg(tmp_path, rare_class_sampling=flag)
+        if flag is None:
+            del cfg.train.rare_class_sampling
+        loader = Loader(tmp_path, (64, 64), 2, 0, cfg)
         return loader._build_dataloader_impl(loader._make_dataset("train"), shuffle=True)
 
     off = train_loader(False)
     assert isinstance(off.sampler, RandomSampler)  # today's plain shuffle
+    assert isinstance(train_loader(None).sampler, RandomSampler)  # configs predating the flag
     on = train_loader(True)
     assert isinstance(on.sampler, WeightedRandomSampler)
     assert (tmp_path / "class_presence.json").exists()
     w = on.sampler.weights  # class 5 is in 1 of 4 images: r = sqrt(4) vs sqrt(4/3) for class 0
     assert w[3] == pytest.approx(2.0) and w[0] == pytest.approx((4 / 3) ** 0.5)
     assert list(train_loader(True).sampler) == list(train_loader(True).sampler)  # seeded
+
+
+def test_sampling_cache_tracks_config_and_label_changes(sampling_data):
+    from dfine_seg.dl.dataset import Loader
+
+    cfg = _cfg(sampling_data, rare_class_sampling=True)
+
+    def weights():
+        return Loader(sampling_data, (64, 64), 2, 0, cfg).build_dataloaders()[0].sampler.weights
+
+    cfg.train.sem_seg.ignore_index = 0
+    assert weights().tolist() == [1.0, 1.0, 1.0, 2.0]
+    cfg.train.sem_seg.ignore_index = 255
+    assert weights().tolist() == pytest.approx([(4 / 3) ** 0.5] * 3 + [2.0])
+
+    cfg.train.label_to_name = {0: "merged"}
+    with pytest.raises(ValueError, match="s3.png: class id 5.*label_to_name"):
+        weights()
+    cv2.imwrite(str(sampling_data / "labels/s3.png"), np.zeros((16, 16), dtype=np.uint8))
+    assert weights().tolist() == [1.0] * 4
+
+
+def test_sampling_cache_recovers_from_corruption_and_interrupted_write(tmp_path, monkeypatch):
+    import json
+
+    from dfine_seg.dl.dataset import load_class_pixels
+
+    _write_sample(tmp_path, np.array([[0, 1, 255]], dtype=np.uint8))
+    split = pd.DataFrame(["x.jpg"])
+    cache = tmp_path / "class_presence.json"
+    cache.write_text("{")
+    assert load_class_pixels(tmp_path, split, 255) == {"x.png": {"0": 1, "1": 1}}
+    previous = cache.read_text()
+    cv2.imwrite(str(tmp_path / "labels/x.png"), np.array([[1, 1, 255]], dtype=np.uint8))
+
+    def interrupt_write(value, stream):
+        stream.write("{")
+        stream.flush()
+        raise OSError("Interrupted cache write")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(json, "dump", interrupt_write)
+        with pytest.raises(OSError, match="Interrupted cache write"):
+            load_class_pixels(tmp_path, split, 255)
+    assert cache.read_text() == previous
+    assert load_class_pixels(tmp_path, split, 255) == {"x.png": {"1": 2}}
 
 
 def test_sem_seg_collate_filters_none():

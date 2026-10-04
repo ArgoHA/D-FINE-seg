@@ -110,6 +110,8 @@ class Trainer:
             and cfg.train.ddp.enabled
             and is_dist_available_and_initialized()
         )
+        if self.distributed and cfg.train.get("rare_class_sampling", False):
+            raise ValueError("train.rare_class_sampling is not supported with DDP")
         self.rank = get_rank()
         self.world_size = get_world_size()
         self.is_main = self.rank == 0
