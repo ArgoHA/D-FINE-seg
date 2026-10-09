@@ -126,6 +126,7 @@ def build_loss(
     task=None,
     ignore_index=255,
     class_weights=None,
+    kd=None,  # train.kd: loss weights, used only when a teacher is set
 ):
     # deepcopy so appending "masks" mutates a private copy, not the shared
     # global `models` config - build_loss may be called more than once per run.
@@ -137,6 +138,8 @@ def build_loss(
             ignore_index=ignore_index,
             class_weights=class_weights,
             label_smoothing=label_smoothing,
+            kd_weight=kd.get("sem_seg_weight", 3.0) if kd else 0.0,
+            kd_tau=kd.get("sem_seg_tau", 4.0) if kd else 4.0,
         )
     if enable_mask_head and "masks" not in model_cfg["DFINECriterion"]["losses"]:
         model_cfg["DFINECriterion"]["losses"].append("masks")
@@ -145,6 +148,13 @@ def build_loss(
         matcher,
         num_classes=num_classes,
         label_smoothing=label_smoothing,
+        kd_weights={
+            "loss_kd_cls": kd.get("cls_weight", 1.0),
+            "loss_kd_loc": kd.get("loc_weight", 1.5),
+            "loss_kd_mask": kd.get("mask_weight", 1.0),
+        }
+        if kd
+        else None,
         **model_cfg["DFINECriterion"],
     )
     return loss_fn

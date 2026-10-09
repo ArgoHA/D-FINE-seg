@@ -448,6 +448,7 @@ class SemSegDecoder(nn.Module):
             if aux
             else None
         )
+        self.return_quarter_logits = False  # train-only: KD reads the 1/4 logits
 
     def forward(
         self,
@@ -457,9 +458,11 @@ class SemSegDecoder(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
         x = self.mask_decoder(mask_feats)  # (B, mask_dim, H/4, W/4)
-        logits = self.classifier(self.dropout(self.neck(x)))  # (B, C, H/4, W/4)
-        logits = F.interpolate(logits, scale_factor=4.0, mode="bilinear", align_corners=False)
+        logits_q = self.classifier(self.dropout(self.neck(x)))  # (B, C, H/4, W/4)
+        logits = F.interpolate(logits_q, scale_factor=4.0, mode="bilinear", align_corners=False)
         out = {"sem_seg_logits": logits}  # (B, C, H, W)
+        if self.return_quarter_logits:
+            out["sem_seg_logits_q"] = logits_q
         if self.training and self.aux_head is not None:
             aux = self.aux_head(feats[0])
             out["sem_seg_logits_aux"] = F.interpolate(
@@ -707,6 +710,7 @@ class DFINETransformer(nn.Module):
         # Transformer module
         self.up = nn.Parameter(torch.tensor([0.5]), requires_grad=False)
         self.reg_scale = nn.Parameter(torch.tensor([reg_scale]), requires_grad=False)
+        self.kd_outputs = False  # train-only: eval forward also returns what KD distills
         decoder_layer = TransformerDecoderLayer(
             hidden_dim,
             nhead,
@@ -1163,6 +1167,11 @@ class DFINETransformer(nn.Module):
             }
             if enable_mask_head:
                 out["pred_masks"] = torch.sigmoid(pred_masks)
+            if self.kd_outputs:  # eval mode for KD teacher
+                out |= {"pred_corners": out_corners[-1], "ref_points": out_refs[-1]}
+                out |= {"up": self.up, "reg_scale": self.reg_scale}
+                if enable_mask_head:
+                    out["pred_mask_logits"] = pred_masks
 
         if self.training and self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss2(

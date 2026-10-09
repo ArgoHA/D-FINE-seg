@@ -12,7 +12,6 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-import wandb
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
@@ -23,22 +22,10 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import wandb
 from dfine_seg import __version__
+from dfine_seg.api.ckpt import load_and_describe
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
-from dfine_seg.model.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
-from dfine_seg.model.dist_utils import (
-    broadcast_scalar,
-    cleanup_distributed,
-    gather_predictions,
-    get_local_rank,
-    get_rank,
-    get_world_size,
-    init_distributed_mode,
-    is_dist_available_and_initialized,
-    is_main_process,
-    synchronize,
-)
-from dfine_seg.model.utils import save_checkpoint, unwrap_checkpoint
 from dfine_seg.dl.dataset import Loader
 from dfine_seg.dl.utils import (
     auto_batch_size,
@@ -57,6 +44,20 @@ from dfine_seg.dl.utils import (
     wandb_logger,
 )
 from dfine_seg.dl.validator import SemSegValidator, Validator
+from dfine_seg.model.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
+from dfine_seg.model.dist_utils import (
+    broadcast_scalar,
+    cleanup_distributed,
+    gather_predictions,
+    get_local_rank,
+    get_rank,
+    get_world_size,
+    init_distributed_mode,
+    is_dist_available_and_initialized,
+    is_main_process,
+    synchronize,
+)
+from dfine_seg.model.utils import save_checkpoint, unwrap_checkpoint
 
 
 def ckpt_meta(cfg: DictConfig) -> Dict:
@@ -100,6 +101,139 @@ class ModelEMA:
                     param += (1.0 - momentum) * student[name].detach()
 
 
+def amp_dtype(cfg):
+    return torch.float16 if cfg.train.get("amp_dtype") == "float16" else torch.bfloat16
+
+
+class KDTeacher:
+    """Frozen teacher, outside the student's optimizer, EMA and checkpoint."""
+
+    def __init__(self, cfg, device):
+        kd = cfg.train.kd
+        self.task = cfg.task
+        self.device = device
+        self.dtype = amp_dtype(cfg)
+        self.amp_enabled = cfg.train.amp_enabled
+        self.batch_size = kd.get("teacher_batch")
+        if self.batch_size is not None and (
+            isinstance(self.batch_size, bool)
+            or not isinstance(self.batch_size, int)
+            or self.batch_size < 1
+        ):
+            raise ValueError("train.kd.teacher_batch must be a positive integer or null")
+        sd, info = load_and_describe(kd.teacher)
+        allowed = {
+            "detect": ("detect", "segment"),
+            "segment": ("segment",),
+            "sem_seg": ("sem_seg",),
+        }
+        if info["task"] not in allowed[self.task]:
+            raise ValueError(
+                f"kd.teacher {kd.teacher}: task={info['task']} can't teach {self.task}"
+            )
+        if info["num_classes"] != len(cfg.train.label_to_name):
+            raise ValueError(
+                f"kd.teacher {kd.teacher}: {info['num_classes']} classes, student has "
+                f"{len(cfg.train.label_to_name)}"
+            )
+        if info["in_channels"] != cfg.train.in_channels:
+            raise ValueError("KD teacher and student must have the same input channel count")
+        img_size = kd.get("img_size") or info["img_size"]
+        if img_size is None:
+            raise ValueError(f"kd.teacher {kd.teacher}: img_size not in meta or sidecar config")
+        self.img_size = tuple(int(v) for v in img_size)
+        with torch.random.fork_rng(devices=[]):
+            self.model = build_model(
+                info["model_name"],
+                info["num_classes"],
+                info["task"] == "segment",
+                str(device),
+                img_size=list(self.img_size),
+                in_channels=info["in_channels"],
+                task=info["task"],
+            )
+        for key in ("decoder.anchors", "decoder.valid_mask"):
+            sd.pop(key, None)
+        missing, unexpected = self.model.load_state_dict(sd, strict=False)
+        if unexpected or not set(missing) <= {"decoder.anchors", "decoder.valid_mask"}:
+            raise ValueError(f"kd.teacher {kd.teacher}: missing {missing}, unexpected {unexpected}")
+        if self.task == "sem_seg":
+            self.model.decoder.return_quarter_logits = True
+        else:
+            self.model.decoder.kd_outputs = True
+        self.model.eval().requires_grad_(False)
+        logger.info(
+            f"KD teacher: {info['model_name']} {info['task']} @ {self.img_size} from {kd.teacher}"
+        )
+
+    @torch.no_grad()
+    def __call__(self, inputs, targets):
+        chunk_size = self.batch_size or len(inputs)
+        result = {}
+        # Eval targets only gate the mask head. Preserve whole-batch gating even when
+        # one chunk contains only background images, so every chunk has the same keys.
+        mask_targets = targets
+        if self.task == "segment" and any(
+            torch.is_tensor(t.get("masks")) and t["masks"].numel() > 0 for t in targets
+        ):
+            mask_targets = None
+        with autocast(self.device.type, dtype=self.dtype, enabled=self.amp_enabled):
+            for start in range(0, len(inputs), chunk_size):
+                x = inputs[start : start + chunk_size]
+                if tuple(x.shape[-2:]) != self.img_size:
+                    x = F.interpolate(x, size=self.img_size, mode="bilinear", align_corners=False)
+                if self.task == "sem_seg":
+                    logits = self.model(x)["sem_seg_logits_q"]
+                    # MaskDecoder upsamples the stride-8 feature by two, including nano.
+                    size = tuple(2 * ((v + 7) // 8) for v in inputs.shape[-2:])
+                    out = {
+                        "sem_seg_logits_teacher": F.interpolate(
+                            logits,
+                            size=size,
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                    }
+                    del logits
+                else:
+                    out = self.model(x, targets=mask_targets)
+                for key, value in out.items():
+                    if key in ("up", "reg_scale"):
+                        result[key] = value
+                    else:
+                        if key not in result:
+                            result[key] = value.new_empty((len(inputs), *value.shape[1:]))
+                        result[key][start : start + len(x)].copy_(value)
+                del x, out, value
+        return result if self.task == "sem_seg" else {"kd_teacher": result}
+
+
+def training_optimizer(model, cfg):
+    return build_optimizer(
+        model,
+        lr=cfg.train.base_lr,
+        backbone_lr=cfg.train.backbone_lr,
+        betas=cfg.train.betas,
+        weight_decay=cfg.train.weight_decay,
+        base_lr=cfg.train.base_lr,
+        use_muon=cfg.train.get("use_muon", False),
+        muon_lr=cfg.train.base_lr * 10,
+        aux_optimizer=cfg.train.get("aux_optimizer", "adamw"),
+        respect_backbone_lr=cfg.model_name in ("l", "x"),
+        adan_betas=tuple(cfg.train.get("adan_betas", (0.98, 0.92, 0.99))),
+    )
+
+
+def training_forward(model, loss_fn, teacher, inputs, targets, enabled, dtype):
+    # Teacher temporaries are released before the student saves activations for backward.
+    teacher_outputs = teacher(inputs, targets) if teacher is not None else {}
+    with autocast(inputs.device.type, dtype=dtype, enabled=enabled):
+        output = model(inputs, targets=targets)
+    output.update(teacher_outputs)
+    with autocast(inputs.device.type, enabled=False):
+        return loss_fn(output, targets)
+
+
 class Trainer:
     def __init__(self, cfg: DictConfig) -> None:
         self.cfg = cfg
@@ -132,9 +266,7 @@ class Trainer:
         self.to_visualize_eval = cfg.train.to_visualize_eval
         self.amp_enabled = cfg.train.amp_enabled
         # bfloat16 has fp32's dynamic range: immune to the fp16 overflow behind issue #64
-        self.amp_dtype = (
-            torch.float16 if cfg.train.get("amp_dtype") == "float16" else torch.bfloat16
-        )
+        self.amp_dtype = amp_dtype(cfg)
         if self.amp_enabled and self.amp_dtype is torch.bfloat16 and self.device.type == "cuda":
             assert torch.cuda.is_bf16_supported(), (
                 "bf16 AMP not supported on this GPU; set train.amp_dtype=float16"
@@ -197,9 +329,9 @@ class Trainer:
         batch_size = cfg.train.batch_size
         if batch_size == -1:
             batch_size = auto_batch_size(cfg, self.device)
-            # In DDP, broadcast the result from rank 0 so all ranks agree
-            if self.distributed:
-                batch_size = int(broadcast_scalar(batch_size, src=0))
+        cfg.train.batch_size = batch_size
+        if self.is_main:
+            OmegaConf.save(cfg, self.path_to_save / "config.yaml")
 
         self.base_loader = Loader(
             root_path=Path(cfg.train.data_path),
@@ -227,6 +359,12 @@ class Trainer:
             pretrained_backbone=cfg.train.get("imagenet_backbone", False),
             task=self.task,
         )
+
+        self.kd_teacher = None
+        if bool(cfg.train.get("kd") and cfg.train.kd.get("teacher")):
+            self.kd_teacher = KDTeacher(cfg, self.device)
+            if self.task == "sem_seg":
+                self.model.decoder.return_quarter_logits = True
 
         # unfreeze only mask head
         self.frozen_modules = []
@@ -270,6 +408,7 @@ class Trainer:
             task=self.task,
             ignore_index=self.ignore_index,
             class_weights=cfg.train.sem_seg.class_weights if self.task == "sem_seg" else None,
+            kd=OmegaConf.to_container(cfg.train.kd) if self.kd_teacher is not None else None,
         )
 
         use_muon = cfg.train.get("use_muon", False)
@@ -278,19 +417,7 @@ class Trainer:
         # to a base_lr-derived peak (~100-500x too high). n/s/m unchanged.
         respect_backbone_lr = cfg.model_name in ("l", "x")
         muon_lr = cfg.train.base_lr * 10  # Muon peak (pre-*2); enc/dec matrices tolerate higher LR
-        self.optimizer = build_optimizer(
-            self.model,
-            lr=cfg.train.base_lr,
-            backbone_lr=cfg.train.backbone_lr,
-            betas=cfg.train.betas,
-            weight_decay=cfg.train.weight_decay,
-            base_lr=cfg.train.base_lr,
-            use_muon=use_muon,
-            muon_lr=muon_lr,
-            aux_optimizer=aux_optimizer,
-            respect_backbone_lr=respect_backbone_lr,
-            adan_betas=tuple(cfg.train.get("adan_betas", (0.98, 0.92, 0.99))),
-        )
+        self.optimizer = training_optimizer(self.model, cfg)
 
         self.scheduler = None
         if cfg.train.use_scheduler:
@@ -759,16 +886,17 @@ class Trainer:
                 # Group 3 = the non-backbone params at base_lr; with Muon the last group is Muon's.
                 lr = self.optimizer.param_groups[3]["lr"]
 
-                if self.amp_enabled:
-                    with autocast(str(self.device), dtype=self.amp_dtype, cache_enabled=True):
-                        output = self.model(inputs, targets=targets)
-                    with autocast(str(self.device), enabled=False):
-                        loss_dict = self.loss_fn(output, targets)
-                    loss = sum(loss_dict.values()) / self.b_accum_steps
-                else:
-                    output = self.model(inputs, targets=targets)
-                    loss_dict = self.loss_fn(output, targets)
-                    loss = sum(loss_dict.values()) / self.b_accum_steps
+                # Forward teacher (if used), then self.model, then calc losses
+                loss_dict = training_forward(
+                    self.model,
+                    self.loss_fn,
+                    self.kd_teacher,
+                    inputs,
+                    targets,
+                    enabled=self.amp_enabled,
+                    dtype=self.amp_dtype,
+                )
+                loss = sum(loss_dict.values()) / self.b_accum_steps
 
                 is_accum_boundary = (batch_idx + 1) % self.b_accum_steps == 0
                 # Suppress DDP's per-backward all-reduce on non-final micro-steps;
@@ -800,6 +928,8 @@ class Trainer:
                         ),
                         vram=f"{get_vram_usage()}%",
                     )
+
+                del loss, loss_dict
 
             # Final update for leftover grads from an incomplete accumulation step.
             # has_grads guards an all-None trailing window (grads None post zero_grad).
