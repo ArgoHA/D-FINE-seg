@@ -154,7 +154,7 @@ Data and recipe facts behind the ranking are in `HISTORY.md` → Standing facts.
 - Latency risk: none.
 - Result: verified before: backbone Adan peak 2.5e-3 → AdamW 1.2e-4 (21× lower); all 8.01 M params grouped once. Seed 42 TRT 0.732 (torch 0.7314) vs base s42 0.742 / 0.7419 → −0.010 @ 1.88 ms; seed 123 skipped. ❌ the high shared Adan LR is right for this dense fine-tune; a lower backbone LR underfits at 40 ep (branch exp/backbone-lr-respect e97e4f7).
 
-## cwd-distill-from-m — ✅ parked (stack at end)
+## cwd-distill-from-m — ✅ shipped as the sem_seg part of #kd-all-tasks
 - Change: channel-wise distillation from a frozen D-FINE-seg M teacher (same 640 squish preprocessing,
   e.g. `cityscapes/output/models/sem_seg_m_1280_simple_2026-07-18` = 0.783 TRT, keep_ratio false):
   KL between channel-wise (per-class, over pixels) softmax of teacher and student 1/4 logits, T = 4,
@@ -412,3 +412,37 @@ LA below baseline on Cityscapes); Lovász (−0.009 on Semantic-Drone, July); le
 Marin et al., ICCV 2019 — the strongest low-res lever in the literature, but it needs a warp in every infer wrapper
 and the C++ path); HGNetv2-B1 backbone swap (same channel plan as B0, +2.5 GMAC, but no COCO weights → COCO-init
 bias); any engine-side or logits-to-original-res change (rejected in July, see HISTORY).
+
+# KD on all 3 tasks — 2026-10-04
+
+## kd-all-tasks — ✅ accepted 2026-10-09
+- Change: `train.kd` block (`teacher: null` = off). sem_seg: CWD on the 1/4 logits (ported from
+  exp/cwd-distill-from-m, w 3, τ 4). detect / segment (`loss_kd` in `dfine_criterion.py`, helpers in
+  `dfine_seg/model/kd.py`), final decoder layer only, on student/teacher queries Hungarian-matched to the
+  same GT: cls = BCE towards the teacher's sigmoid scores (w 1); loc = KL towards the teacher's edge
+  distributions **re-binned into the student's reference-box frame** (w 1.5, weighted by teacher IoU
+  with GT); segment adds mask = cropped BCE towards the teacher's mask probabilities (w 1). Teacher is
+  frozen, kept outside the model (no EMA / ckpt / export change), input resized to its own img_size.
+- Why: CWD gave +0.0055 mIoU on sem_seg (2 seeds). The old VisDrone det KD (lost branch `kd`) took the
+  KL between raw corner distributions, which are offsets from *each model's own* reference box, so the
+  target pointed at the wrong position — consistent with mAP_50_95 falling there; plus little teacher
+  headroom. Here the teacher is M @ 640×1280 (2× the student's pixels), det student learns from an M detect
+  teacher with the same recipe (user: a detect teacher should beat the segment one on boxes), seg from the
+  M segment teacher.
+- Setup: S students at 448×896, presets `research_cityscapes{,_det,_seg}`; det bs 16 / 55 ep / 3 seeds,
+  seg bs 8 / 55 ep / 2 seeds (user: seg budget), sem_seg bs 16 / 40 ep / 3 seeds. Driver
+  `experiments/runs/kd/campaign.sh`; det/seg rows in `results_inst.tsv`.
+- Latency risk: none (train-only, deploy graph unchanged).
+- Result (TRT fp16, Cityscapes, all students S @ 448×896; tables in
+  `D-FINE-seg-kd/experiments/runs/kd/tables/`): KD beat the baseline on every task and teacher.
+  - detect, M detect teacher @ 640×1280 (f1 0.758): f1 0.7113 vs 0.7063 (+0.005, sd 0.0006 / 0.0025), iou
+    0.455 vs 0.450, mAP50 0.623 vs 0.620, mAP50-95 0.394 vs 0.386 (+0.008, the old KD lost here) @ 2.0 ms;
+    train 95 vs 82 min (1.17×).
+  - segment, M segment teacher @ 640×1280 (f1 0.754): f1 0.694 vs 0.690 (+0.004, 2 seeds), iou 0.410 vs 0.408,
+    mask mAP50 0.523 vs 0.517 @ 3.15 ms; train 539 vs 486 min (1.11×).
+  - sem_seg, mIoU (3 seeds) vs baseline 0.7363: M @ 896² (teacher 0.783) 0.7447 (+0.008); M @ 640×1280 (0.785)
+    0.7403 (+0.004); M @ 448×896 (0.760) 0.7403 (+0.004, cheapest, 60 vs 52 min); X @ 448×896 (0.785) 0.7413
+    (+0.005); X @ 1280² (0.823) 0.737 (+0.001, 130 min). The M/X teachers up to 2× the student's pixels are
+    within noise of each other (sd 0.002–0.004); the strongest teacher (X @ 1280²) gives nothing (capacity gap).
+  ✅ Accepted (user, 2026-10-09): every gain is small (+0.004…+0.008, about one seed sd) but all are positive,
+  including mAP50-95 on detect, and the cost is train-time only (1.1–1.3× plus a teacher per dataset).

@@ -51,9 +51,9 @@ One frame, three tasks, one config flag:
 - **Instance segmentation head** (`task: segment`) - lightweight mask head on top of D-FINE's HybridEncoder PAN outputs: stride 8/16/32 features fused to 1/4 resolution, then a dot-product between per-query mask embeddings (3-layer MLP) and the shared mask features yields per-instance masks
 - **Semantic segmentation head** (`task: sem_seg`) - reuses the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier: no queries, no NMS
 - **Mask-aware training** - box-cropped BCE + Dice mask losses (instance seg) and CE + multi-class soft Dice with `ignore_index` (semantic seg), mask supervision inside contrastive denoising, and Dice + sigmoid-focal mask costs in the Hungarian matcher - all train-time only, zero inference cost
-- **COCO-pretrained weights for detection *and* instance segmentation**, auto-downloaded on first use - fine-tuning starts from a trained mask decoder, not from scratch
+- **COCO-pretrained weights for detection and instance segmentation**, auto-downloaded on first use - fine-tuning starts from a trained mask decoder, not from scratch
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
-- **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB
+- **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, knowledge distillation, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB, auto-batch size.
 - **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML / LiteRT)
 
 ## Quick Start
@@ -146,10 +146,7 @@ Every pixel gets a class from `label_to_name` (background included). Pixels with
 
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
 
-Set `train.in_channels: 4` (3 or 4 supported) to train on RGB + one extra modality
-(thermal / depth / NIR). Stacks are `.npy` uint8 HWC arrays in `images/` (RGB in planes
-0-2, extras after) with YOLO labels as usual; a mismatched channel count is skipped with
-a warning. See [dfine_seg/etl/m3fd_to_yolo.py](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/etl/m3fd_to_yolo.py) for a ready-made RGB+thermal converter.
+Set `train.in_channels: 4` (3 or 4 supported) to train on RGB + one extra modality (thermal / depth / NIR). Stacks are `.npy` uint8 HWC arrays in `images/` (RGB in planes 0-2, extras after) with YOLO labels as usual; a mismatched channel count is skipped with a warning. See [dfine_seg/etl/m3fd_to_yolo.py](https://github.com/ArgoHA/D-FINE-seg/blob/main/dfine_seg/etl/m3fd_to_yolo.py) for a ready-made RGB+thermal converter.
 
 #### COCO JSON format
 
@@ -232,6 +229,8 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **AMP** | Automatic mixed precision (~40% less VRAM, ~15% faster) |
 | **EMA** | Exponential moving average of weights |
 | **Gradient accumulation** | Effective batch size = `batch_size x b_accum_steps` |
+| **Knowledge distillation** | Set `train.kd.teacher` to a trained teacher's `model.pt` (same classes and channels). The frozen teacher adds its predictions to the student's loss. Start with a teacher one size up and 40% bigger input size.
+| **Automatic batch size** |  `train.batch_size: -1` probes a full training step (incl. the KD teacher) and targets ~70% of VRAM |
 | **Gradient clipping** | Configurable max norm |
 | **Mosaic augmentation** | 4-image mosaic with affine transforms (recommended for detection) |
 | **Albumentations** | Rotation, flip, blur, noise, gamma, grayscale, coarse dropout, multiscale |

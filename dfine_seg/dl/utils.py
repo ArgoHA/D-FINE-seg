@@ -1,7 +1,12 @@
+import gc
+import json
 import logging
 import math
 import os
 import random
+import subprocess
+import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +20,7 @@ import wandb
 from albumentations.core.transforms_interface import DualTransform
 from faster_coco_eval.core import mask as mask_utils
 from loguru import logger
+from omegaconf import OmegaConf
 from tabulate import tabulate
 
 from dfine_seg.viz import overlay_sem_seg, sem_seg_palette
@@ -1156,191 +1162,248 @@ def encode_sample_masks_to_rle(sample: Dict) -> Dict:
     return sample
 
 
-def auto_batch_size(
-    cfg,
-    device: torch.device,
-    target_fraction: float = 0.7,
-) -> int:
-    """
-    Probe the GPU to find the largest batch size that fits within *target_fraction*
-    of total VRAM. Uses a real forward + backward pass with the actual model and
-    dataset to account for activations, loss, etc.
+def search_batch_size(try_batch, maximum=1024):
+    """Return a tested batch, or zero if even batch 1 exceeds the budget."""
+    best, upper = 0, 1
+    while upper <= maximum and try_batch(upper):
+        best, upper = upper, upper * 2
+    if best == 0:
+        return 0
+    lo, hi = best + 1, min(upper - 1, maximum)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if try_batch(mid):
+            best, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    return best
 
-    Works with both detect and segment tasks.
-    Returns the selected per-device batch size.
-    Runs linearly through powers of 2, then does a binary search.
-    """
-    from torch.amp import GradScaler, autocast
-    from torch.utils.data import DataLoader
 
-    from dfine_seg.model.dfine import build_loss, build_model
-    from dfine_seg.dl.dataset import Loader
-
+# The CUDA probe runs in a child process to isolate weights, RNG and DDP collectives.
+def auto_batch_size(cfg, device, target_fraction=0.7):
+    if not 0 < target_fraction <= 1:
+        raise ValueError("Auto batch target_fraction must be in (0, 1]")
     if device.type != "cuda":
         logger.warning("Auto batch size only works on CUDA devices, defaulting to batch_size=4")
         return 4
-
     logger.info("Searching for the optimal batch size...")
-
-    enable_mask_head = cfg.task == "segment"
-    num_labels = len(cfg.train.label_to_name)
-
-    # Suppress noisy logs from model/dataset init during probing
-    logger.disable("dfine_seg")
-    try:
-        model = build_model(
-            cfg.model_name,
-            num_labels,
-            enable_mask_head,
-            str(device),
-            img_size=cfg.train.img_size,
-            in_channels=cfg.train.in_channels,
-            pretrained_model_path=cfg.train.pretrained_model_path,
-            task=cfg.task,
+    with tempfile.TemporaryDirectory(prefix="dfine-autobatch-") as directory:
+        config = Path(directory) / "config.yaml"
+        result_path = Path(directory) / "result.json"
+        OmegaConf.save(OmegaConf.to_container(cfg, resolve=True), config)
+        env = os.environ.copy()
+        # Use this checkout even when the installed console script belongs to another worktree.
+        root = str(Path(__file__).resolve().parents[2])
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (root, env.get("PYTHONPATH"))))
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "dfine_seg.dl.utils",
+                str(config),
+                str(device),
+                str(target_fraction),
+                str(result_path),
+            ],
+            env=env,
+            check=False,
         )
-        loss_fn = build_loss(
-            cfg.model_name,
-            num_labels,
-            label_smoothing=cfg.train.label_smoothing,
-            enable_mask_head=enable_mask_head,
-            task=cfg.task,
-            ignore_index=int(cfg.train.sem_seg.ignore_index) if cfg.task == "sem_seg" else 255,
-            class_weights=cfg.train.sem_seg.class_weights if cfg.task == "sem_seg" else None,
-        )
+        result = json.loads(result_path.read_text()) if result_path.exists() else {}
+    batch = int(result.get("batch", 0)) if process.returncode == 0 else 0
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        agreed = torch.tensor(batch, device=device, dtype=torch.int64)
+        torch.distributed.all_reduce(agreed, op=torch.distributed.ReduceOp.MIN)
+        batch = int(agreed.item())
+    if not batch:
+        detail = result.get("error", "Batch 1 failed on this or another rank; see probe output")
+        raise RuntimeError(f"Auto batch size failed: {detail}")
+    total_mem = torch.cuda.get_device_properties(device).total_memory
+    logger.info(
+        f"Optimal batch size: {batch} "
+        f"(target {target_fraction:.0%} of {total_mem / 1024**3:.1f} GB VRAM)"
+    )
+    return batch
 
-        # Build a small train loader (num_workers=0 to avoid forking overhead)
-        base_loader = Loader(
-            root_path=Path(cfg.train.data_path),
-            img_size=tuple(cfg.train.img_size),
-            batch_size=1,
-            num_workers=0,
-            cfg=cfg,
-            debug_img_processing=False,
-        )
-        train_ds = base_loader.build_dataloaders(distributed=False)[0].dataset
-    finally:
-        logger.enable("dfine_seg")
-    from dfine_seg.dl.dataset import sem_seg_collate_fn
 
-    probe_loader = DataLoader(
-        train_ds,
+def _probe(cfg, device, target_fraction):
+    from torch.amp import GradScaler
+    from torch.utils.data import DataLoader
+
+    from dfine_seg.dl.dataset import Loader, sem_seg_collate_fn
+    from dfine_seg.dl.train import (
+        KDTeacher,
+        ModelEMA,
+        amp_dtype,
+        training_forward,
+        training_optimizer,
+    )
+    from dfine_seg.dl.utils import set_seeds
+    from dfine_seg.model.dfine import build_loss, build_model, freeze_except_mask
+
+    torch.cuda.set_device(device.index if device.index is not None else 0)
+    set_seeds(cfg.train.seed, cfg.train.cudnn_fixed)
+    dtype = amp_dtype(cfg)
+    if cfg.train.amp_enabled and dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        raise ValueError("bf16 AMP not supported; set train.amp_dtype=float16")
+    model = build_model(
+        cfg.model_name,
+        len(cfg.train.label_to_name),
+        cfg.task == "segment",
+        str(device),
+        img_size=cfg.train.img_size,
+        in_channels=cfg.train.in_channels,
+        pretrained_model_path=cfg.train.pretrained_model_path,
+        pretrained_backbone=cfg.train.get("imagenet_backbone", False),
+        task=cfg.task,
+    ).train()
+    if cfg.train.get("freeze_except_mask", False):
+        if cfg.task != "segment":
+            raise ValueError("train.freeze_except_mask requires task=segment")
+        for module in freeze_except_mask(model):
+            module.eval()
+    kd = cfg.train.get("kd")
+    teacher = KDTeacher(cfg, device) if kd and kd.get("teacher") else None
+    if teacher is not None and cfg.task == "sem_seg":
+        model.decoder.return_quarter_logits = True
+    loss_fn = build_loss(
+        cfg.model_name,
+        len(cfg.train.label_to_name),
+        cfg.train.label_smoothing,
+        cfg.task == "segment",
+        task=cfg.task,
+        ignore_index=int(cfg.train.sem_seg.ignore_index) if cfg.task == "sem_seg" else 255,
+        class_weights=cfg.train.sem_seg.class_weights if cfg.task == "sem_seg" else None,
+        kd=OmegaConf.to_container(kd) if teacher is not None else None,
+    ).train()
+    optimizer = training_optimizer(model, cfg)
+    ema = ModelEMA(model, cfg.train.ema_momentum) if cfg.train.use_ema else None
+    scaler = GradScaler(enabled=cfg.train.amp_enabled and dtype == torch.float16)
+    accum = max(1, cfg.train.b_accum_steps)
+
+    base = Loader(
+        Path(cfg.train.data_path), tuple(cfg.train.img_size), 1, 0, cfg, debug_img_processing=False
+    )
+    dataset = base.build_dataloaders(distributed=False)[0].dataset
+    if cfg.train.ignore_background_epochs and cfg.task != "sem_seg":
+        dataset.ignore_background = True
+    loader = DataLoader(
+        dataset,
         batch_size=1,
         num_workers=0,
         shuffle=False,
-        collate_fn=sem_seg_collate_fn if cfg.task == "sem_seg" else base_loader.train_collate_fn,
-        pin_memory=False,
+        collate_fn=sem_seg_collate_fn if cfg.task == "sem_seg" else base.val_collate_fn,
     )
-
-    # Scan a batch of samples and pick the one with the most objects (worst-case for memory)
-    max_objects = 0
-    sample_img, sample_targets = None, None
-    for i, (img, targets, _) in enumerate(probe_loader):
-        if img is None:
-            continue
-        if cfg.task == "sem_seg":  # dense target: memory is object-count independent
-            sample_img, sample_targets = img, targets
+    sample_img, sample_targets, most = None, None, -1
+    for index, (img, targets, _) in enumerate(loader):
+        if img is not None:
+            count = 0 if cfg.task == "sem_seg" else sum(t["labels"].numel() for t in targets)
+            if count > most:
+                sample_img, sample_targets, most = img, targets, count
+            if cfg.task == "sem_seg":
+                break
+        if index >= 99:
             break
-        n_objects = sum(t["labels"].numel() for t in targets)
-        if n_objects > max_objects:
-            max_objects = n_objects
-            sample_img, sample_targets = img, targets
-        if i >= 99:  # scan up to 100 samples
-            break
-
     if sample_img is None:
-        logger.warning("Could not load a sample for auto batch size, defaulting to 4")
-        del model, loss_fn, probe_loader, train_ds, base_loader
-        torch.cuda.empty_cache()
-        return 4
+        raise ValueError("Could not load a training sample for auto batch size")
+    if cfg.task != "sem_seg" and cfg.train.augs.multiscale_prob:
+        size = tuple(v + 64 for v in cfg.train.img_size)
+        sample_img = torch.nn.functional.interpolate(
+            sample_img, size=size, mode="bilinear", align_corners=False
+        )
+        for target in sample_targets:
+            if target["masks"].numel():
+                target["masks"] = (
+                    torch.nn.functional.interpolate(
+                        target["masks"][:, None].float(),
+                        size=size,
+                        mode="bilinear",
+                        align_corners=False,
+                    )[:, 0]
+                    > 0.5
+                ).to(torch.uint8)
 
-    sample_img = sample_img.to(device)  # [1, C, H, W]
-    sample_targets = [
-        {k: (v.to(device) if hasattr(v, "to") else v) for k, v in t.items()} for t in sample_targets
-    ]
+    # Allocate lazy optimizer states before measuring any candidate, even if fp16 scaling
+    # skips the first real step. Zero LR keeps the disposable pretrained weights intact.
+    rates = [group["lr"] for group in optimizer.param_groups]
+    for group in optimizer.param_groups:
+        group["lr"] = 0.0
+    for parameter in model.parameters():
+        if parameter.requires_grad:
+            parameter.grad = torch.zeros_like(parameter)
+    optimizer.step()
+    for group, rate in zip(optimizer.param_groups, rates):
+        group["lr"] = rate
+    optimizer.zero_grad(set_to_none=accum == 1)
+    torch.cuda.empty_cache()
+    free, total = torch.cuda.mem_get_info(device)
+    budget = int(min(total, free + torch.cuda.memory_reserved(device)) * target_fraction)
+    measurements = {}
 
-    total_mem = torch.cuda.get_device_properties(device).total_memory
-    target_mem = int(total_mem * target_fraction)
+    def run_batch(batch, repeats):
+        images = sample_img.to(device).repeat(batch, 1, 1, 1)
+        # Distinct target storage matches a real batch (list multiplication alone aliases masks).
+        targets = [
+            {
+                key: value.to(device, copy=True) if torch.is_tensor(value) else value
+                for key, value in target.items()
+            }
+            for _ in range(batch)
+            for target in sample_targets
+        ]
+        for step in range(repeats):
+            losses = training_forward(
+                model, loss_fn, teacher, images, targets, enabled=cfg.train.amp_enabled, dtype=dtype
+            )
+            loss = sum(losses.values()) / accum
+            scaler.scale(loss).backward()
+            if cfg.train.clip_max_norm:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.clip_max_norm)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=accum == 1)
+            if ema is not None:
+                ema.update(step + 1, model)
+            del loss, losses
+        torch.cuda.synchronize(device)
 
-    amp_enabled = cfg.train.amp_enabled
-    scaler = GradScaler() if amp_enabled else None
-    model.train()
-    loss_fn.train()
-
-    def _try_batch(
-        bs, model, loss_fn, sample_img, sample_targets, amp_enabled, scaler, device, target_mem
-    ) -> bool:
-        """Run fwd+bwd at batch size *bs*. Return True if it fits within target_mem."""
+    def try_batch(batch, repeats=1):
+        nonlocal scaler
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(device)
-
-        batch_img = sample_img.repeat(bs, 1, 1, 1)
-        batch_targets = sample_targets * bs
-
+        fits = False
         try:
-            if amp_enabled:
-                with autocast(str(device)):
-                    output = model(batch_img, targets=batch_targets)
-                with autocast(str(device), enabled=False):
-                    loss_dict = loss_fn(output, batch_targets)
-                loss = sum(loss_dict.values())
-                scaler.scale(loss).backward()
-            else:
-                output = model(batch_img, targets=batch_targets)
-                loss_dict = loss_fn(output, batch_targets)
-                loss = sum(loss_dict.values())
-                loss.backward()
-
+            run_batch(batch, repeats)
             peak = torch.cuda.max_memory_reserved(device)
-            model.zero_grad(set_to_none=True)
-            return peak <= target_mem
+            measurements[batch] = peak
+            fits = peak <= budget
+        except torch.cuda.OutOfMemoryError:
+            scaler = GradScaler(enabled=cfg.train.amp_enabled and dtype == torch.float16)
+        finally:
+            optimizer.zero_grad(set_to_none=accum == 1)
+            if hasattr(loss_fn, "_clear_cache"):
+                loss_fn._clear_cache()
+        # Release traceback/temporary references before clearing the CUDA allocator.
+        gc.collect()
+        torch.cuda.empty_cache()
+        return fits
 
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower() or "CUDA" in str(e):
-                model.zero_grad(set_to_none=True)
-                torch.cuda.empty_cache()
-                return False
-            raise
+    best = search_batch_size(try_batch)
+    while best and not try_batch(best, repeats=3):
+        best -= 1
+    if not best:
+        raise RuntimeError(
+            "Batch 1 does not fit the VRAM budget; reduce resolution/teacher chunk size"
+        )
+    return {"batch": best, "peak_reserved": measurements[best], "budget": budget}
 
-    probe_args = (
-        model,
-        loss_fn,
-        sample_img,
-        sample_targets,
-        amp_enabled,
-        scaler,
-        device,
-        target_mem,
-    )
 
-    # Phase 1: escalate through powers of 2 to find the rough range
-    best_bs = 1
-    fail_bs = None
-    for bs in (2**i for i in range(1, 11)):  # 2, 4, 8, ... 1024
-        if _try_batch(bs, *probe_args):
-            best_bs = bs
-        else:
-            fail_bs = bs
-            break
-
-    # Phase 2: binary search within [best_bs+1, fail_bs-1] to find exact max
-    if fail_bs is not None and fail_bs - best_bs > 1:
-        lo, hi = best_bs + 1, fail_bs - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if _try_batch(mid, *probe_args):
-                best_bs = mid
-                lo = mid + 1
-            else:
-                hi = mid - 1
-
-    # Clean up everything
-    del model, loss_fn, sample_img, sample_targets, probe_loader, train_ds, base_loader
-    if scaler is not None:
-        del scaler
-    torch.cuda.empty_cache()
-
-    logger.info(
-        f"Optimal batch size: {best_bs} "
-        f"(target {target_fraction:.0%} of {total_mem / 1024**3:.1f} GB VRAM)"
-    )
-    return best_bs
+if __name__ == "__main__":
+    config_path, device_name, fraction, output_path = sys.argv[1:]
+    logger.disable("dfine_seg")
+    try:
+        result = _probe(OmegaConf.load(config_path), torch.device(device_name), float(fraction))
+    except Exception as exc:
+        Path(output_path).write_text(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
+        raise
+    Path(output_path).write_text(json.dumps(result))
