@@ -1,0 +1,18 @@
+name,description,metric
+det_teacher_m_640x1280,"D-FINE M detect teacher at 640×1280, 55 epochs, used by det_kd_m_640x1280.",F1 TRT 0.7580
+det_kd_m_640x1280,"S detect student, 55 epochs, KD from the M detect teacher at 640×1280 (cls + loc).",F1 TRT 0.7113 (3 seeds)
+det_baseline,"S detect, 55 epochs, no KD.",F1 TRT 0.7063 (3 seeds)
+seg_teacher_m_640x1280,"M segment teacher at 640×1280, 55 epochs, used by seg_kd_m_640x1280.",F1 TRT 0.7540
+seg_kd_m_640x1280,"S segment student, 55 epochs, KD from the M segment teacher at 640×1280 (cls + loc + mask).",F1 TRT 0.6940 (2 seeds)
+seg_baseline,"S segment, 55 epochs, no KD.",F1 TRT 0.6900 (2 seeds)
+sem_teacher_m_896x896,"M sem_seg teacher at 896×896 (image squished to square), 75 epochs, July recipe.",mIoU TRT 0.7830
+sem_kd_m_896x896,"S sem_seg student, 40 epochs, CWD KD from the M teacher at 896×896.",mIoU TRT 0.7447 (3 seeds)
+sem_teacher_m_640x1280,"M sem_seg teacher at native-aspect 640×1280, 75 epochs, current recipe.",mIoU TRT 0.7850
+sem_kd_m_640x1280,"S sem_seg student, 40 epochs, CWD KD from the M teacher at 640×1280.",mIoU TRT 0.7403 (3 seeds)
+sem_teacher_m_448x896,"M sem_seg teacher at the student's 448×896, 75 epochs, current recipe.",mIoU TRT 0.7600
+sem_kd_m_448x896,"S sem_seg student, 40 epochs, CWD KD from the M teacher at 448×896 (same input size).",mIoU TRT 0.7403 (3 seeds)
+sem_teacher_x_448x896,"X sem_seg teacher at the student's 448×896, 75 epochs, current recipe.",mIoU TRT 0.7850
+sem_kd_x_448x896,"S sem_seg student, 40 epochs, CWD KD from the X teacher at 448×896 (same input size).",mIoU TRT 0.7413 (3 seeds)
+sem_teacher_x_1280x1280,"X sem_seg teacher at 1280×1280 (image squished to square), 75 epochs, current recipe.",mIoU TRT 0.8230
+sem_kd_x_1280x1280,"S sem_seg student, 40 epochs, CWD KD from the X teacher at 1280×1280.",mIoU TRT 0.7370 (3 seeds)
+sem_baseline,"S sem_seg, 40 epochs, no KD.",mIoU TRT 0.7363 (3 seeds)
