@@ -1165,13 +1165,13 @@ class DFINETransformer(nn.Module):
                 "pred_logits": out_logits[-1],
                 "pred_boxes": out_bboxes[-1],
             }
-            if enable_mask_head:
-                out["pred_masks"] = torch.sigmoid(pred_masks)
-            if self.kd_outputs:  # eval mode for KD teacher
+            if self.kd_outputs:  # eval mode for KD teacher; masks only as logits (VRAM)
                 out |= {"pred_corners": out_corners[-1], "ref_points": out_refs[-1]}
                 out |= {"up": self.up, "reg_scale": self.reg_scale}
                 if enable_mask_head:
                     out["pred_mask_logits"] = pred_masks
+            elif enable_mask_head:
+                out["pred_masks"] = torch.sigmoid(pred_masks)
 
         if self.training and self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss2(

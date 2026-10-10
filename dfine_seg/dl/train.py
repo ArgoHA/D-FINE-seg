@@ -136,6 +136,12 @@ class KDTeacher:
                 f"kd.teacher {kd.teacher}: {info['num_classes']} classes, student has "
                 f"{len(cfg.train.label_to_name)}"
             )
+        # teacher classes must equal student classes
+        names = {int(k): str(v) for k, v in cfg.train.label_to_name.items()}
+        if info["names"] is None:
+            logger.warning(f"kd.teacher {kd.teacher}: no class names, can't verify class order")
+        elif info["names"] != names:
+            raise ValueError(f"kd.teacher {kd.teacher}: classes {info['names']}, student: {names}")
         if info["in_channels"] != cfg.train.in_channels:
             raise ValueError("KD teacher and student must have the same input channel count")
         img_size = kd.get("img_size") or info["img_size"]

@@ -200,3 +200,24 @@ def test_distributed_probe_uses_minimum_local_batch(monkeypatch):
     monkeypatch.setattr(torch.distributed, "all_reduce", reduce)
     monkeypatch.setattr(torch, "tensor", lambda value, **kwargs: real_tensor(value))
     assert utils.auto_batch_size(OmegaConf.create({}), torch.device("cuda")) == 5
+
+
+def test_teacher_with_other_class_order_is_rejected(monkeypatch):
+    from omegaconf import OmegaConf
+
+    import dfine_seg.dl.train as train
+
+    info = {"task": "detect", "num_classes": 2, "names": {0: "car", 1: "person"}}
+    monkeypatch.setattr(train, "load_and_describe", lambda path: ({}, info))
+    cfg = OmegaConf.create(
+        {
+            "task": "detect",
+            "train": {
+                "amp_enabled": False,
+                "label_to_name": {0: "person", 1: "car"},
+                "kd": {"teacher": "teacher.pt"},
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="classes"):
+        KDTeacher(cfg, torch.device("cpu"))
