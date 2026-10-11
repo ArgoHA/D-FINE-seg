@@ -8,6 +8,9 @@ Hydra keys to values, i.e. only what differs from root config.yaml (data paths, 
 img_size, pinned batch size). Its file stem, minus a `research_` prefix, tags the results.tsv rows
 and the experiments/runs/<tag>/ folder.
 
+sem_seg rows go to results.tsv; detect / segment rows (val metrics from training, f1 / iou from
+the TensorRT bench) go to results_inst.tsv.
+
 Whatever is checked out is the candidate. Extra `key=value` args (placed before the flags) are
 appended as Hydra overrides, for smoke tests only. Campaign runs use the preset alone.
 """
@@ -26,6 +29,9 @@ REPO = Path(__file__).resolve().parents[1]
 RESULTS = REPO / "experiments" / "results.tsv"
 COLS = ["date", "preset", "name", "branch", "sha", "dirty", "seed", "epochs", "train_min"]
 COLS += ["miou_torch", "miou_trt", "lat_trt_ms"]
+RESULTS_INST = REPO / "experiments" / "results_inst.tsv"
+COLS_INST = COLS[:9] + ["f1", "iou", "mAP_50", "mAP_50_95", "mAP_50_mask", "f1_trt", "iou_trt"]
+COLS_INST += ["lat_trt_ms"]
 
 
 def hydra_val(v):
@@ -86,7 +92,8 @@ def main():
         step("export", ov)
         step("bench", ov)
 
-        bench = pd.read_csv(out / "bench_metrics.csv", index_col=0)
+        bench = pd.read_csv(out / "bench_metrics.csv", index_col=0).loc["TensorRT"]
+        val = pd.read_csv(out / "metrics.csv", index_col=0).loc["val"]
         row = {
             "date": datetime.now().isoformat(timespec="minutes"),
             "preset": tag,
@@ -95,18 +102,23 @@ def main():
             "seed": seed,
             "epochs": preset.get("train.epochs"),
             "train_min": round(train_min, 1),
-            "miou_torch": pd.read_csv(out / "metrics.csv", index_col=0).loc["val", "mIoU"],
-            "miou_trt": bench.loc["TensorRT", "mIoU"],
-            "lat_trt_ms": bench.loc["TensorRT", "latency"],
+            "lat_trt_ms": bench["latency"],
         }
-        new = not RESULTS.exists()
-        with RESULTS.open("a", newline="") as f:
-            w = csv.DictWriter(f, COLS, delimiter="\t")
+        if preset.get("task") == "sem_seg":
+            row |= {"miou_torch": val["mIoU"], "miou_trt": bench["mIoU"]}
+            path, cols = RESULTS, COLS
+        else:
+            row |= {k: val.get(k) for k in ("f1", "iou", "mAP_50", "mAP_50_95", "mAP_50_mask")}
+            row |= {"f1_trt": bench["f1"], "iou_trt": bench["iou"]}
+            path, cols = RESULTS_INST, COLS_INST
+        new = not path.exists()
+        with path.open("a", newline="") as f:
+            w = csv.DictWriter(f, cols, delimiter="\t")
             if new:
                 w.writeheader()
             w.writerow(row)
         print(f"\nRESULT {row}", flush=True)
-        if args.abort_below is not None and row["miou_trt"] < args.abort_below:
+        if args.abort_below is not None and row.get("miou_trt", 1.0) < args.abort_below:
             print(
                 f"ABORT: TRT mIoU {row['miou_trt']} < {args.abort_below}, skipping remaining seeds"
             )

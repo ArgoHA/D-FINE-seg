@@ -1,8 +1,11 @@
-"""Semantic segmentation loss: CE + multi-class soft Dice + auxiliary CE (deep supervision)."""
+"""Semantic segmentation loss: CE + multi-class soft Dice + auxiliary CE (deep supervision),
+plus optional channel-wise distillation (CWD) from a frozen teacher."""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from .kd import channel_wise_kd
 
 
 class SemSegCriterion(nn.Module):
@@ -13,12 +16,16 @@ class SemSegCriterion(nn.Module):
         ignore_index=255,
         class_weights=None,
         label_smoothing=0.0,
+        kd_weight=0.0,
+        kd_tau=4.0,
     ):
         super().__init__()
         self.weight_dict = weight_dict
         self.num_classes = num_classes
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
+        self.kd_weight = kd_weight
+        self.kd_tau = kd_tau
         self.class_weights = (
             torch.tensor(list(class_weights), dtype=torch.float32) if class_weights else None
         )
@@ -65,4 +72,10 @@ class SemSegCriterion(nn.Module):
                     target,
                     ignore_index=self.ignore_index,
                 )
-        return {k: v * self.weight_dict[k] for k, v in losses.items()}
+        losses = {k: v * self.weight_dict[k] for k, v in losses.items()}
+        if "sem_seg_logits_teacher" in outputs:  # 1/4-res logits, set by Trainer when KD is on
+            kd = channel_wise_kd(
+                outputs["sem_seg_logits_q"], outputs["sem_seg_logits_teacher"], self.kd_tau
+            )
+            losses["loss_kd"] = kd * self.kd_weight
+        return losses

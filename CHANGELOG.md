@@ -118,3 +118,7 @@ Re-export models to get the unrounded boxes from ONNX/TensorRT/OpenVINO/CoreML.
 ## 2026-10-04 - Rare class sampling
 
 LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP). Turned off by default. Dataset-dependent: +0.004 mIoU on GOOSE, flat on Cityscapes sem_seg.
+
+## 2026-10-10 - Knowledge distillation
+
+Train a bigger dfine-seg model and use it as a teacher for a smaller dfine-seg model. Detection, instance semgentation and semantic segmentation are supported. ~15% longer training for ~1% higher metrics. Detailed results in experiments/kd_exps.csv

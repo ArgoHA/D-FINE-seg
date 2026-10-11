@@ -1,7 +1,6 @@
-#!/usr/bin/env python
 """Cityscapes regression test for D-FINE-seg: train -> TRT export -> bench, per task, vs the
-reference in `regression_reference.json` (`--bless --bless-sources TASK=PATH` rewrites it). Needs a GPU box:
-gitignored `configs/` presets, Cityscapes under `train.root`, TensorRT GPU.
+reference in `regression_reference.json` (`--bless --bless-sources TASK=PATH` rewrites it).
+Needs a GPU box: gitignored `configs/` presets, Cityscapes under `train.root`, TensorRT GPU.
 
 Compared per task (margins per check, abs; latency is a ratio):
 
@@ -15,8 +14,11 @@ Compared per task (margins per check, abs; latency is a ratio):
 
 Bench sits slightly above train (training eval has no NMS) - below means the export/infer
 path broke. NMS/postprocess changes show up only in the bench(trt)-vs-reference check, so
-the epoch trajectory can look fine while the number prod serves silently moved. PyTorch latency is INFO-only (host load). seg latency includes mask postprocess,
-so an under-trained seg model reads *faster*.
+the epoch trajectory can look fine while the number prod serves silently moved. PyTorch
+latency is INFO-only (host load). seg latency includes mask postprocess, so an under-trained
+seg model reads *faster*.
+
+uv run python scripts/regression_test.py --notify --tasks det sem seg
 
 Wall clock on a 5070 Ti (train + TRT export + bench):
 

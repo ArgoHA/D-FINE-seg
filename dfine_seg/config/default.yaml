@@ -38,6 +38,19 @@ train:
   # LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP)
   rare_class_sampling: false # not supported in DDP setup
 
+  # Knowledge distillation from a frozen trained teacher with the same classes (train-only).
+  # detect learns from a detect or segment teacher, segment from segment, sem_seg from sem_seg
+  kd:
+    # path to the teacher's model.pt. null = off
+    teacher: null
+    img_size: null # teacher input (h, w); null = the teacher's own
+    teacher_batch: null # teacher forward chunk size for all tasks (VRAM); null = whole batch
+    cls_weight: 1.0 # detect/segment: class scores of queries matched to the same GT
+    loc_weight: 1.5 # detect/segment: edge distributions, re-binned into the student's frame
+    mask_weight: 1.0 # segment: mask probabilities of the matched queries
+    sem_seg_weight: 3.0 # sem_seg: channel-wise distillation of the 1/4 logits
+    sem_seg_tau: 4.0 # sem_seg: softmax temperature
+
   # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id
   sem_seg:
     ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)

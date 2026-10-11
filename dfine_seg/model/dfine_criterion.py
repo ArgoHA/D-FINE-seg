@@ -19,6 +19,7 @@ import torchvision
 
 from .arch.utils import bbox2distance, box_cxcywh_to_xyxy, box_iou, generalized_box_iou
 from .dist_utils import get_world_size, is_dist_available_and_initialized
+from .kd import pair_through_gt, rebin_corners
 
 
 class DFINECriterion(nn.Module):
@@ -43,6 +44,7 @@ class DFINECriterion(nn.Module):
         boxes_weight_format=None,
         share_matched_indices=False,
         label_smoothing: float = 0.0,
+        kd_weights=None,
     ):
         """Create the criterion.
         Parameters:
@@ -67,6 +69,7 @@ class DFINECriterion(nn.Module):
         self.reg_max = reg_max
         self.num_pos, self.num_neg = None, None
         self.label_smoothing = label_smoothing
+        self.kd_weights = kd_weights or {}  # loss_kd_{cls,loc,mask}; used when a teacher is set
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert "pred_logits" in outputs
@@ -558,6 +561,73 @@ class DFINECriterion(nn.Module):
         loss_mask_dice = self._cropped_dice_loss(pred_sel, tgt_sel, tgt_boxes)
         return {"loss_mask_bce": loss_mask_bce, "loss_mask_dice": loss_mask_dice}
 
+    def loss_kd(self, outputs, targets, indices):
+        """Distillation on student/teacher queries matched to the same GT object:
+        - cls: BCE towards the teacher's per-class sigmoid scores (dark knowledge between classes)
+        - loc: KL towards the teacher's edge distributions, re-binned into the student's frame
+          and weighted by the teacher's IoU with the GT (an unreliable teacher box counts less)
+        - mask (segment): cropped BCE towards the teacher's mask probabilities
+        """
+        teacher = outputs["kd_teacher"]
+        t_indices = self.matcher(
+            {"pred_logits": teacher["pred_logits"], "pred_boxes": teacher["pred_boxes"]}, targets
+        )["indices"]
+        b, s_q, t_q, gt = pair_through_gt(indices, t_indices)
+        zero = outputs["pred_logits"].sum() * 0.0
+        if b.numel() == 0:
+            out = {"loss_kd_cls": zero, "loss_kd_loc": zero}
+            return out | ({"loss_kd_mask": zero} if "pred_masks" in outputs else {})
+
+        # pairs come out grouped by image, in image order
+        gt_boxes = torch.cat(
+            [t["boxes"][gt[b == i].to(t["boxes"].device)] for i, t in enumerate(targets)]
+        ).float()
+        dev = outputs["pred_logits"].device
+        b, s_q, t_q = b.to(dev), s_q.to(dev), t_q.to(dev)
+        losses = {}
+
+        s_logits = outputs["pred_logits"][b, s_q].float()
+        t_prob = teacher["pred_logits"][b, t_q].float().sigmoid()
+        bce = F.binary_cross_entropy_with_logits(s_logits, t_prob, reduction="none")
+        losses["loss_kd_cls"] = bce.sum(-1).mean()
+
+        t_boxes = teacher["pred_boxes"][b, t_q].float()
+        t_iou = torch.diag(box_iou(box_cxcywh_to_xyxy(t_boxes), box_cxcywh_to_xyxy(gt_boxes))[0])
+        target = rebin_corners(
+            teacher["pred_corners"][b, t_q],
+            teacher["ref_points"][b, t_q],
+            teacher["up"],
+            teacher["reg_scale"],
+            outputs["ref_points"][b, s_q].detach(),
+            outputs["up"],
+            outputs["reg_scale"],
+            self.reg_max,
+        )
+        log_s = outputs["pred_corners"][b, s_q].float().reshape(-1, self.reg_max + 1)
+        kl = (target * (target.clamp(min=1e-12).log() - log_s.log_softmax(-1))).sum(-1)
+        w = t_iou.repeat_interleave(4)
+        losses["loss_kd_loc"] = (w * kl).sum() / w.sum().clamp(min=1e-6)
+
+        if "pred_masks" in outputs:
+            s_masks = outputs["pred_masks"][b, s_q].float()  # [M, Hm, Wm] logits
+            hm, wm = s_masks.shape[-2:]
+            t_masks = teacher["pred_mask_logits"][b, t_q].float().unsqueeze(1)
+            t_masks = F.interpolate(t_masks, size=(hm, wm), mode="bilinear", align_corners=False)
+            cx, cy, bw, bh = gt_boxes.unbind(-1)
+            boxes = torch.stack(
+                [
+                    ((cx - bw / 2) * wm).clamp(0, wm - 1),
+                    ((cy - bh / 2) * hm).clamp(0, hm - 1),
+                    ((cx + bw / 2) * wm).clamp(1, wm),
+                    ((cy + bh / 2) * hm).clamp(1, hm),
+                ],
+                1,
+            )
+            losses["loss_kd_mask"] = self._cropped_bce_loss(
+                s_masks, t_masks.squeeze(1).sigmoid(), boxes
+            )
+        return losses
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -774,6 +844,10 @@ class DFINECriterion(nn.Module):
                     }
                     l_dict = {k + "_dn_pre": v for k, v in l_dict.items()}
                     losses.update(l_dict)
+
+        if "kd_teacher" in outputs:  # final layer only, set by Trainer when KD is on
+            l_dict = self.loss_kd(outputs, targets, indices)
+            losses.update({k: v * self.kd_weights[k] for k, v in l_dict.items()})
 
         # For debugging Objects365 pre-train.
         losses = {k: torch.nan_to_num(v, nan=0.0) for k, v in losses.items()}
