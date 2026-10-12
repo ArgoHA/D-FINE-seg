@@ -428,9 +428,10 @@ class HybridEncoder(nn.Module):
         # Tokens are flattened row-major (y * w + x), so the grid must be (h, w) "ij". Upstream
         # meshgrids (w, h), which is a pure transpose when square but scrambles positions when
         # h != w. The first half encodes the row to stay bit-identical to upstream when square.
+        # No int() on h/w: it makes dynamo bake the export resolution into dynamic ONNX graphs.
         grid_h, grid_w = torch.meshgrid(
-            torch.arange(int(h), dtype=torch.float32),
-            torch.arange(int(w), dtype=torch.float32),
+            torch.arange(h, dtype=torch.float32),
+            torch.arange(w, dtype=torch.float32),
             indexing="ij",
         )
         assert embed_dim % 4 == 0, (

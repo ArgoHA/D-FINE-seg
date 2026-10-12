@@ -105,16 +105,14 @@ class DFINEPostProcessor(nn.Module):
 class ExportWrapper(nn.Module):
     """Wraps backbone model + postprocessor for ONNX/TRT export."""
 
-    def __init__(self, model: nn.Module, postprocessor: DFINEPostProcessor, input_size):
+    def __init__(self, model: nn.Module, postprocessor: DFINEPostProcessor):
         super().__init__()
         self.model = model
         self.postprocessor = postprocessor
-        self.input_h = input_size[0]
-        self.input_w = input_size[1]
 
     def forward(self, x):
         outputs = self.model(x)
-        return self.postprocessor(outputs, self.input_h, self.input_w)
+        return self.postprocessor(outputs, x.shape[2], x.shape[3])
 
 
 class SemSegExportWrapper(nn.Module):
@@ -157,13 +155,15 @@ def _check_pretrained_classes(ckpt: str, n_config: int) -> None:
         )
 
 
-def prepare_model(cfg, device):
+def prepare_model(cfg, device, dynamic: bool = False):
+    # dynamic H/W graphs need the img_size=None (per-input) anchor / pos-embed path: a fixed
+    # eval_spatial_size bakes its cached constants into the graph and locks it to that size
     model = build_model(
         cfg.model_name,
         len(cfg.train.label_to_name),
         enable_mask_head=cfg.task == "segment",
         device=device,
-        img_size=cfg.train.img_size,
+        img_size=None if dynamic else cfg.train.img_size,
         in_channels=cfg.train.in_channels,
         task=cfg.task,
     )
@@ -189,6 +189,21 @@ def prepare_model(cfg, device):
         )
     model.eval()
     return model
+
+
+def prepare_export_models(cfg, device, dynamic: bool = False) -> tuple[nn.Module, nn.Module]:
+    """(raw model, fused export wrapper), both in eval mode."""
+    raw_model = prepare_model(cfg, device, dynamic=dynamic)
+    if cfg.task == "sem_seg":
+        model = SemSegExportWrapper(raw_model)
+    else:
+        postprocessor = DFINEPostProcessor(
+            num_classes=len(cfg.train.label_to_name),
+            num_top_queries=base_cfg["DFINETransformer"]["num_queries"],
+            use_focal_loss=base_cfg["matcher"]["use_focal_loss"],
+        )
+        model = ExportWrapper(raw_model, postprocessor)
+    return raw_model.eval(), model.eval()
 
 
 def export_to_onnx(
@@ -232,6 +247,11 @@ def export_to_onnx(
     ).save(output_path)
 
     onnx_model = onnx.load(output_path)
+    if dynamic_input:
+        # Embed the preprocessing target: a dynamic-H/W graph has no static size to read,
+        # and ONNXModel resolves it from here (explicit args still win).
+        kv = onnx_model.metadata_props.add()
+        kv.key, kv.value = "img_size", f"{x_test.shape[2]}x{x_test.shape[3]}"
     if half:
         onnx_model = float16.convert_float_to_float16(onnx_model, keep_io_types=True)
 
@@ -260,6 +280,11 @@ def export_to_openvino(onnx_path: Path, x_test, dynamic_input: bool, max_batch_s
         inp = [1, channels, -1, -1]
 
     model = ov.convert_model(input_model=str(onnx_path), input=inp, example_input=x_test)
+
+    if dynamic_input:
+        # ONNX metadata_props don't survive the conversion; carry the preprocessing target
+        # in IR rt_info so OVModel can resolve it (explicit args still win).
+        model.set_rt_info(f"{x_test.shape[2]}x{x_test.shape[3]}", ["model_info", "img_size"])
 
     ov.serialize(model, str(onnx_path.with_suffix(".xml")), str(onnx_path.with_suffix(".bin")))
     logger.info("OpenVINO model exported")
@@ -690,6 +715,64 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
     _parity_report(rows, low, "pixel_agreement", models_path)
 
 
+def run_dynamic_size_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
+    """Regression guard for export.dynamic_input: ONNX must track torch at a second size.
+
+    Standard parity runs at the training resolution, where a graph with baked size
+    constants still produces correct output. Rescaling the parity input by 3/4
+    (stride-aligned) fails on any baked positional embedding, anchor, or box scale.
+    `model` must be the img_size=None export model, so torch itself follows the input size.
+    """
+    if not (cfg.export.dynamic_input and want("onnx")):
+        return
+    import onnxruntime as ort
+    from torchvision.ops import box_iou
+
+    onnx_path = models_path / "model.onnx"
+    if not onnx_path.exists():
+        return
+    h, w = cfg.train.img_size
+    h2, w2 = max(320, round(h * 0.75 / 32) * 32), max(320, round(w * 0.75 / 32) * 32)
+    if (h2, w2) == (h, w):
+        return
+
+    x1, _ = _parity_input(cfg, raw_model, x_test)
+    x_small = F.interpolate(x1, size=(h2, w2), mode="bilinear", align_corners=False)
+    with torch.no_grad():
+        ref = model(x_small)
+    sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    try:
+        outs = sess.run(None, {"input": x_small.detach().cpu().numpy().astype(np.float32)})
+    except Exception as e:
+        raise RuntimeError(
+            f"{onnx_path.name} has dynamic H/W axes but fails at {h2}x{w2}: a size is still "
+            f"baked into the graph. {e}"
+        ) from e
+
+    if cfg.task == "sem_seg":
+        ref_map = ref[0].cpu().numpy()  # sem_seg wrapper returns one [B, H, W] tensor
+        metrics = {"pixel_agreement": float((outs[0][0] == ref_map).mean())}
+    else:
+        ref = [t.cpu() for t in ref]  # (labels, boxes, scores[, masks])
+        ref_scores = torch.sort(ref[2].flatten()).values.numpy()
+        metrics = {"scores_cosine": _cosine(ref_scores, np.sort(outs[2].flatten()))}
+        # Scores alone miss a baked box scale. Match each confident torch box to its best
+        # same-label ONNX box over all queries, which is robust to near-tied rank swaps.
+        keep = ref[2][0] >= cfg.train.conf_thresh
+        if keep.any():
+            iou = box_iou(ref[1][0][keep], torch.from_numpy(outs[1][0]))
+            same = ref[0][0][keep][:, None] == torch.from_numpy(outs[0][0])[None]
+            metrics["box_iou"] = float((iou * same).max(1).values.mean())
+
+    msg = f"Dynamic size parity at {h2}x{w2}: " + ", ".join(
+        f"{k}={v:.4f}" for k, v in metrics.items()
+    )
+    if all(v >= 0.95 if k == "box_iou" else v >= 0.99 for k, v in metrics.items()):
+        logger.info(msg)
+    else:
+        logger.warning(msg + " (below threshold: 0.99, box_iou 0.95)")
+
+
 @hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
 def main(cfg: DictConfig):
     input_name = "input"
@@ -708,20 +791,12 @@ def main(cfg: DictConfig):
     Path(cfg.train.path_to_save).mkdir(parents=True, exist_ok=True)
     model_path = Path(cfg.train.path_to_save) / "model.pt"
 
-    raw_model = prepare_model(cfg, device)
-
-    if sem_seg:
-        model = SemSegExportWrapper(raw_model)
-    else:
-        # Wrap model with fused postprocessor
-        postprocessor = DFINEPostProcessor(
-            num_classes=len(cfg.train.label_to_name),
-            num_top_queries=base_cfg["DFINETransformer"]["num_queries"],
-            use_focal_loss=base_cfg["matcher"]["use_focal_loss"],
-        )
-        model = ExportWrapper(raw_model, postprocessor, input_size=cfg.train.img_size)
-    model.eval()
-    raw_model.eval()
+    # TensorRT, CoreML and LiteRT are always static, fixed size for them.
+    # dynamic_input adds an img_size=None model used only for the ONNX and OpenVINO
+    raw_model, model = prepare_export_models(cfg, device)
+    dyn_raw, dyn_model = raw_model, model
+    if cfg.export.dynamic_input:
+        dyn_raw, dyn_model = prepare_export_models(cfg, device, dynamic=True)
 
     x_test = torch.randn(cfg.export.max_batch_size, cfg.train.in_channels, *cfg.train.img_size).to(
         device
@@ -741,18 +816,20 @@ def main(cfg: DictConfig):
         if enable_mask_head:
             raw_output_names.append("masks")
         raw_onnx_path = export_to_onnx(
-            model if sem_seg else raw_model,
+            dyn_model if sem_seg else dyn_raw,
             model_path,
             x_test,
             cfg.export.max_batch_size,
             half=False,
-            dynamic_input=False,
+            dynamic_input=cfg.export.dynamic_input,
             input_name=input_name,
             output_names=output_names if sem_seg else raw_output_names,
         )
         export_to_openvino(raw_onnx_path, x_test, cfg.export.dynamic_input, max_batch_size=1)
 
-    if want("onnx") or want("tensorrt"):
+    # TensorRT is always static, so it is built from a static model.onnx. With dynamic_input,
+    # model.onnx is then re-exported as the dynamic graph (same path, replaces the static one).
+    if want("tensorrt") or (want("onnx") and not cfg.export.dynamic_input):
         full_onnx_path = export_to_onnx(
             model,
             model_path,
@@ -770,6 +847,17 @@ def main(cfg: DictConfig):
                 cfg.export.max_batch_size,
                 opt_bs=cfg.export.get("opt_batch_size", 1) or 1,
             )
+    if want("onnx") and cfg.export.dynamic_input:
+        export_to_onnx(
+            dyn_model,
+            model_path,
+            x_test,
+            cfg.export.max_batch_size,
+            half=False,
+            dynamic_input=True,
+            input_name=input_name,
+            output_names=output_names,
+        )
 
     if want("coreml"):
         export_to_coreml(
@@ -785,6 +873,7 @@ def main(cfg: DictConfig):
     if cfg.export.get("parity", True):
         parity_fn = run_parity_sem_seg if sem_seg else run_parity
         parity_fn(cfg, raw_model, model, x_test, want, model_path.parent)
+        run_dynamic_size_parity(cfg, dyn_raw, dyn_model, x_test, want, model_path.parent)
 
 
 if __name__ == "__main__":

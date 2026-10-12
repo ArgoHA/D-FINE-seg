@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import cv2
@@ -24,8 +25,12 @@ class OVModel:
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
         labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
+        input_width: int = None,  # for dynamic-H/W graphs; None -> IR rt_info img_size
+        input_height: int = None,
     ):
         self.model_path = model_path
+        self.input_width = input_width
+        self.input_height = input_height
         self.device = device.upper() if device else device
         self.rect = rect
         self.half = half
@@ -60,14 +65,36 @@ class OVModel:
                 self.device = "GPU"
 
         # Read channel count + input_size. partial_shape (not .shape) so a dynamic
-        # batch dim (max_batch_size > 1 exports) doesn't raise; C/H/W stay static.
+        # batch dim (max_batch_size > 1 exports) doesn't raise; C stays static.
         inp_shape = det_ov_model.inputs[0].partial_shape  # [B, C, H, W]
         self.channels = int(inp_shape[1].get_length())
-        self.input_size = (int(inp_shape[2].get_length()), int(inp_shape[3].get_length()))  # (H, W)
+        dynamic_hw = inp_shape[2].is_dynamic or inp_shape[3].is_dynamic
+        explicit = (self.input_height, self.input_width)
+        if (explicit[0] is None) != (explicit[1] is None):
+            raise ValueError("Pass both input_height and input_width, or neither.")
+        if dynamic_hw:
+            # explicit args, else the img_size our export writes into the IR rt_info
+            if explicit[0] is not None:
+                self.input_size = explicit
+            else:
+                h, w = str(det_ov_model.get_rt_info(["model_info", "img_size"]).get()).split("x")
+                self.input_size = (int(h), int(w))
+        else:
+            self.input_size = (int(inp_shape[2].get_length()), int(inp_shape[3].get_length()))
+            if explicit[0] is not None and explicit != self.input_size:
+                raise ValueError(
+                    f"{Path(self.model_path).name} is a static {self.input_size[0]}x"
+                    f"{self.input_size[1]} IR, it cannot run at {explicit[0]}x{explicit[1]}. "
+                    "Re-export with export.dynamic_input=true."
+                )
 
-        if self.device != "CPU":
+        # Only rect + keep_ratio feeds per-image sizes; otherwise every input is resized to
+        # input_size, so pin H/W static (~10% faster on CPU than leaving them dynamic).
+        keep_dynamic_hw = dynamic_hw and self.rect and self.keep_ratio
+        if self.device != "CPU" or (dynamic_hw and not keep_dynamic_hw):
             batch = -1 if self.max_batch_size > 1 else 1
-            det_ov_model.reshape({"input": [batch, self.channels, *self.input_size]})
+            hw = [-1, -1] if keep_dynamic_hw else list(self.input_size)
+            det_ov_model.reshape({"input": [batch, self.channels, *hw]})
 
         inference_hint = "f16" if self.half else "f32"
         inference_mode = "CUMULATIVE_THROUGHPUT" if self.max_batch_size > 1 else "LATENCY"

@@ -21,8 +21,12 @@ class ONNXModel:
         apply_nms: bool = True,
         nms_iou_thresh: float = 0.7,
         labels_to_use: List[int] = None,  # empty -> keep all classes; else keep only these ids
+        input_width: int = None,  # for dynamic-H/W graphs; None -> ONNX img_size metadata
+        input_height: int = None,
     ):
         self.model_path = model_path
+        self.input_width = input_width
+        self.input_height = input_height
         self.rect = rect
         self.keep_ratio = keep_ratio
         self.binarize_masks = binarize_masks
@@ -66,10 +70,27 @@ class ONNXModel:
         """Auto-read input_size, channel count, and detect graph type from the ONNX model."""
         inp = self.model.get_inputs()[0]
         self.channels = int(inp.shape[1])
-        self.input_size = (inp.shape[2], inp.shape[3])  # (H, W)
+        h, w = inp.shape[2], inp.shape[3]
         # single output = sem_seg fused-argmax graph; detection graphs have >= 3
         self.sem_seg = len(self.model.get_outputs()) == 1
         self.has_masks = len(self.model.get_outputs()) > 3
+        explicit = (self.input_height, self.input_width)
+        if (explicit[0] is None) != (explicit[1] is None):
+            raise ValueError("Pass both input_height and input_width, or neither.")
+        if isinstance(h, int) and isinstance(w, int):
+            if explicit[0] is not None and explicit != (h, w):
+                raise ValueError(
+                    f"{self.model_path} is a static {h}x{w} graph, it cannot run at "
+                    f"{explicit[0]}x{explicit[1]}. Re-export with export.dynamic_input=true."
+                )
+            self.input_size = (h, w)  # (H, W)
+        else:
+            # Dynamic H/W: explicit args, else the img_size our export writes into the metadata
+            if explicit[0] is not None:
+                self.input_size = explicit
+            else:
+                meta = self.model.get_modelmeta().custom_metadata_map
+                self.input_size = tuple(map(int, meta["img_size"].split("x")))
 
     def _test_pred(self) -> None:
         dummy = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)

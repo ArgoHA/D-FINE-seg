@@ -172,7 +172,7 @@ export: # TensorRT must be done on the inference device
   from_pretrained: False # if True - exports pretrained weights, training is not needed
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
-  dynamic_input: False # applies to onnx and openvino; the tensorrt engine is always built static
+  dynamic_input: False # dynamic H/W, onnx and openvino; tensorrt and coreml are static
   formats: [onnx, tensorrt, openvino, coreml] # null = all; litert paused (litert-torch caps torch<2.13)
   parity: True # after export, print cosine / max-abs-diff of each backend vs torch on one input
   ov_int8_max_drop: 0.02
