@@ -128,9 +128,3 @@ Train a bigger dfine-seg model and use it as a teacher for a smaller dfine-seg m
 - Five released Cityscapes sem-seg checkpoints, one per size: `dfine_sem_{n,s,m,l,x}_cityscapes.pt`. Cityscapes val, 1024x2048 whole-image, TensorRT 10.13.3.9 fp16, batch 1, RTX 5070 Ti - mIoU 77.99 (N), 81.12 (S), 81.41 (M), 83.80 (L), 84.84 (X). N was initialized from COCO detection weights (no obj2coco N checkpoint exists), S/M/L/X from obj2coco (Objects365 pretraining, then COCO). Checkpoints are best-on-val epochs; last-epoch numbers and the full 28-model comparison live in [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
 - `load_model("x", task="sem_seg")` auto-downloads them (`dataset` defaults to cityscapes for this task); class names and the 1024x2048 input size come from the checkpoint metadata.
 - Fine-tune a custom sem-seg dataset from these weights with a different class count: `train.pretrained_model_path: dfine_sem_l_cityscapes.pt`. The classifier and aux head re-initialize for the new class set; backbone, encoder, mask fuser and seg neck load.
-
-## 2026-10-15 - README benchmarks refactor
-
-- The README benchmarks section now leads with the native-resolution Cityscapes semantic-segmentation results: the hero plot (linear axis to 25 ms end-to-end), the N-X table (params, mIoU, pixel acc, engine and e2e ms) with YOLO26x-sem, EfficientViT-L2 and Mask2Former-Swin-L reference rows, followed by the 640 Cityscapes detection and instance-segmentation tables.
-- The 640 semantic-segmentation table (superseded by the native results), the metric definitions, the VisDrone and TACO results, COCO-style APs and the export-format comparisons moved to docs/benchmarks.md.
-- The License section now states that the released Cityscapes weights are non-commercial per the Cityscapes terms of use; the code stays Apache-2.0.
