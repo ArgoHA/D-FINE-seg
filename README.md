@@ -28,7 +28,7 @@
 D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, and **semantic segmentation** - one codebase, one config flag (`task: detect | segment | sem_seg`), five model sizes (N -> X).
 
 - End-to-end workflow - dataset prep -> training (DDP, EMA, AMP, mosaic) -> export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) -> benchmarked multi-backend inference
-- Accuracy - Cityscapes semantic segmentation at native 1024x2048: D-FINE-X reaches 84.84 mIoU at 14.6 ms end-to-end, +1.5 mIoU over Mask2Former Swin-L with 6.4x lower latency and a quarter of the params, and D-FINE-L matches or beats YOLO26-x on every axis; also beats YOLO26 and RF-DETR on 640 Cityscapes detection & instance-seg F1, and YOLO26 on TACO and VisDrone (TensorRT FP16, end-to-end protocol)
+- Accuracy - Cityscapes semantic segmentation at native 1024x2048: D-FINE-X reaches 84.84 mIoU at 14.6 ms end-to-end, the highest of 28 models - +1.26 mIoU over YOLO26-x, and +1.5 mIoU over Mask2Former Swin-L with 6.4x lower latency and a quarter of the params - and D-FINE-L matches or beats YOLO26-x on every axis; also beats YOLO26 and RF-DETR on 640 Cityscapes detection & instance-seg F1, and YOLO26 on TACO and VisDrone (TensorRT FP16, end-to-end protocol)
 - Paper - [D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment](https://arxiv.org/abs/2602.23043)
 - Not a fork: the detection core follows the [D-FINE paper](https://github.com/Peterande/D-FINE); segmentation heads, training, export and inference are implemented from scratch.
 
@@ -145,7 +145,7 @@ data/dataset/
 
 Every pixel gets a class from `label_to_name` (background included). Pixels with value `train.sem_seg.ignore_index` (default 255) are excluded from loss and metrics and during inference 255 is the "background" or "ignored" class. `dfine split` works unchanged; `keep_ratio: True` is supported (letterbox pad is filled with `ignore_index`, so pad pixels don't supervise); `coco_dataset: True` is not supported for this task.
 
-Released Cityscapes weights load with `load_model("x", task="sem_seg")` - names and input size come from the checkpoint. They are also a strong init for your own driving/outdoor data: point `train.pretrained_model_path` at one with a different `label_to_name` and the class heads re-initialize while the rest keeps the Cityscapes training (N from COCO detection weights, S/M/L/X from obj2coco). Benchmark numbers and the full 28-model comparison: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
+Released Cityscapes weights load with `load_model("x", task="sem_seg")` - names and input size come from the checkpoint. They are also a strong init for your own driving/outdoor data: point `train.pretrained_model_path` at one with a different `label_to_name` and the class heads re-initialize while the rest keeps the Cityscapes training (N from COCO detection weights, S/M/L/X from obj2coco). A model fine-tuned from them is still derived from Cityscapes and inherits its non-commercial terms (see [License](#license)) - for commercial use, start from the COCO / obj2coco weights instead. Benchmark numbers and the full 28-model comparison: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
 
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
 
