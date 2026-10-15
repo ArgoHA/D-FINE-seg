@@ -72,7 +72,8 @@ def _predict(argv: List[str]) -> int:
     ap.add_argument(
         "--task",
         choices=("detect", "segment", "sem_seg"),
-        help="task for .pt weights (graph artifacts carry it)",
+        help="task for .pt weights (graph artifacts carry it); with a size preset, "
+        "sem_seg picks the Cityscapes weights",
     )
     ap.add_argument("--conf", type=float, default=0.5, help="confidence threshold (default 0.5)")
     ap.add_argument("--device", help="cuda | cpu | mps (default: best available)")

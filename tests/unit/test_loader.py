@@ -21,6 +21,7 @@ def weights(tmp_path):
         (tmp_path / f"dfine_{size}_coco.pt").touch()
         (tmp_path / f"dfine_{size}_obj2coco.pt").touch()
         (tmp_path / f"dfine_seg_{size}_coco.pt").touch()
+        (tmp_path / f"dfine_sem_{size}_cityscapes.pt").touch()
     return tmp_path
 
 
@@ -52,9 +53,29 @@ def test_obj2coco(weights):
     assert pretrained_path("s", "detect", "obj2coco", weights).endswith("dfine_s_obj2coco.pt")
 
 
-def test_sem_seg_has_no_pretrained_weights(weights):
-    with pytest.raises(ValueError, match="no pretrained sem_seg weights"):
+@pytest.mark.parametrize("size", SIZES)
+def test_sem_seg_filenames(weights, size):
+    assert pretrained_path(size, "sem_seg", "cityscapes", weights).endswith(
+        f"dfine_sem_{size}_cityscapes.pt"
+    )
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_sem_seg_dataset_defaults_to_cityscapes(weights, size):
+    """The one-liner: dataset=None picks each task's only released family."""
+    assert pretrained_path(size, "sem_seg", weights_dir=weights).endswith(
+        f"dfine_sem_{size}_cityscapes.pt"
+    )
+
+
+def test_sem_seg_weights_are_cityscapes_only(weights):
+    with pytest.raises(ValueError, match="only for dataset='cityscapes'"):
         pretrained_path("s", "sem_seg", "coco", weights)
+
+
+def test_segment_dataset_is_coco_only(weights):
+    with pytest.raises(ValueError, match="only for dataset='coco'"):
+        pretrained_path("s", "segment", "cityscapes", weights)
 
 
 def test_unknown_size(weights):
@@ -70,6 +91,11 @@ def test_unknown_task(weights):
 def test_unknown_dataset(weights):
     with pytest.raises(ValueError, match="dataset must be coco\\|obj2coco"):
         pretrained_path("s", "detect", "imagenet", weights)
+
+
+def test_cityscapes_dataset_without_task_hints_sem_seg(weights):
+    with pytest.raises(ValueError, match='use task="sem_seg"'):
+        pretrained_path("s", "detect", "cityscapes", weights)
 
 
 # ---- dispatch ----------------------------------------------------------------
@@ -218,6 +244,29 @@ def test_released_filename_gets_coco_names(tmp_path, monkeypatch):
     ckpt = tmp_path / "dfine_n_coco.pt"
     ckpt.touch()
     assert load_model(ckpt).names == COCO_NAMES
+
+
+def test_sem_seg_filename_gets_no_coco_default(tmp_path, monkeypatch):
+    """A Cityscapes release is not a COCO model: names come from its meta, never COCO."""
+    from dfine_seg.model.utils import _COCO_FILENAME_RE, _FILENAME_RE
+
+    assert _FILENAME_RE.match("dfine_sem_x_cityscapes.pt")
+    assert not _COCO_FILENAME_RE.match("dfine_sem_x_cityscapes.pt")
+    _fake_backend(monkeypatch)
+    ckpt = tmp_path / "dfine_sem_x_cityscapes.pt"
+    ckpt.touch()
+    assert load_model(ckpt).names is None
+
+
+def test_size_route_sem_seg_no_coco_names(weights, monkeypatch):
+    """load_model("x", task="sem_seg") resolves Cityscapes; names must not default to COCO."""
+    _fake_backend(monkeypatch)
+    assert load_model("x", task="sem_seg", weights_dir=weights).names is None
+
+
+def test_size_route_detect_gets_coco_names(weights, monkeypatch):
+    _fake_backend(monkeypatch)
+    assert load_model("x", weights_dir=weights).names == COCO_NAMES
 
 
 def test_unknown_filename_gets_no_names(tmp_path, monkeypatch):

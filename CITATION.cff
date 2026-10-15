@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use D-FINE-seg, please cite the software and its paper."
 title: "D-FINE-seg"
 type: software
-version: 0.4.2
-date-released: "2026-09-16"
+version: 0.6.0
+date-released: "2026-10-15"
 authors:
   - given-names: Argo
     family-names: Saakyan

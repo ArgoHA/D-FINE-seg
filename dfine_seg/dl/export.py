@@ -135,23 +135,42 @@ class SemSegExportWrapper(nn.Module):
         return self
 
 
-def _check_pretrained_classes(ckpt: str, n_config: int) -> None:
-    """Refuse to export pretrained weights whose head doesn't match `train.label_to_name`.
+def _check_pretrained(ckpt: str, task: str, n_config: int, img_size) -> None:
+    """Refuse to export pretrained weights that would produce a broken artifact.
 
-    `load_tuning_state` loads non-strictly, so a mismatch drops every score head and leaves
-    it at random init - and parity then compares that corrupt model against graphs exported
-    from it, so the export "passes". Straight from `dfine init` (2 template classes)
-    this produced a green check on a broken model.
+    `load_tuning_state` loads non-strictly, so a class-count mismatch drops every score head
+    and a task mismatch leaves the other task's heads at random init - and parity then
+    compares that corrupt model against graphs exported from it, so the export "passes".
+    Straight from `dfine init` (2 template classes) this produced a green check on a broken
+    model.
     """
     state = torch.load(ckpt, map_location="cpu", weights_only=True)
-    n_ckpt = describe(*unwrap_checkpoint(state))["num_classes"]
-    if n_ckpt != n_config:
+    sd, meta = unwrap_checkpoint(state)
+    info = describe(sd, meta)
+    # Segment weights are a superset of detect (same det heads plus an unused fuser), so
+    # exporting detect from them is fine; every other mismatch exports random heads.
+    if info["task"] != task and not (info["task"] == "segment" and task == "detect"):
         raise ValueError(
-            f"{Path(ckpt).name} has {n_ckpt} classes but train.label_to_name has {n_config}. "
-            "export.from_pretrained cannot reconcile that: the mismatched heads would be "
-            "dropped and exported at random init. Either list the checkpoint's classes "
-            "(dfine_seg.api.coco_names.COCO_NAMES for the released COCO weights), or train "
-            "on your own classes first and export with export.from_pretrained=False."
+            f"{Path(ckpt).name} is a {info['task']} checkpoint but task is {task}. "
+            "export.from_pretrained exports the released weights as-is, so the other task's "
+            "heads would be random init and parity would still pass. Point "
+            "train.pretrained_model_path at a matching release, or train first and export "
+            "with export.from_pretrained=False."
+        )
+    if info["num_classes"] != n_config:
+        raise ValueError(
+            f"{Path(ckpt).name} has {info['num_classes']} classes but train.label_to_name has "
+            f"{n_config}. export.from_pretrained cannot reconcile that: the mismatched heads "
+            "would be dropped and exported at random init. Either list the checkpoint's "
+            "classes (dfine_seg.api.coco_names.COCO_NAMES for the COCO releases; the "
+            "Cityscapes sem-seg releases carry their own label_to_name), or train on your own "
+            "classes first and export with export.from_pretrained=False."
+        )
+    meta_img = meta.get("img_size")
+    if meta_img and tuple(meta_img) != tuple(img_size):
+        logger.warning(
+            f"{Path(ckpt).name} was trained at {meta_img[0]}x{meta_img[1]} but exports at "
+            f"{img_size[0]}x{img_size[1]} - the graph adapts, expect some accuracy drop."
         )
 
 
@@ -168,9 +187,9 @@ def prepare_model(cfg, device, dynamic: bool = False):
         task=cfg.task,
     )
     if cfg.export.from_pretrained:
-        # Export the COCO/obj2coco pretrained weights directly (no trained model.pt).
+        # Export a released checkpoint directly (no trained model.pt).
         ckpt = ensure_pretrained(cfg.train.pretrained_model_path)
-        _check_pretrained_classes(ckpt, len(cfg.train.label_to_name))
+        _check_pretrained(ckpt, cfg.task, len(cfg.train.label_to_name), cfg.train.img_size)
         load_tuning_state(model, ckpt)
     else:
         ckpt = Path(cfg.train.path_to_save) / "model.pt"
