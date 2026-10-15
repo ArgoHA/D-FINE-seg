@@ -314,6 +314,7 @@ It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the
 | YOLO26x-sem | 40.13 | 83.58 | 96.79 | 10.37 | 13.58 |
 | EfficientViT-L2 | 52.61 | 83.20 | 96.87 | 9.56 | 19.87 |
 | Mask2Former-Swin-L | 215.46 | 83.33 | 96.91 | 64.51 | 94.07 |
+| SegFormer-B5 | 84.61 | 81.41 | 96.62 | 38.81 | 42.12 |
 
 - **D-FINE-X vs Mask2Former-Swin-L** (the most accurate Mask2Former checkpoint): +1.51 mIoU, 4.5x lower engine latency, 6.4x lower end-to-end latency, about a quarter of the parameters. X has the highest mIoU and pixel accuracy of the 28 models.
 - **D-FINE-L vs YOLO26x-sem** (the most accurate YOLO26-sem checkpoint): +0.22 mIoU, +0.14 pixel acc, 13% lower engine latency, 28% lower end-to-end latency, 38% fewer parameters. One training seed and a small margin, so read it as "matches or beats".
