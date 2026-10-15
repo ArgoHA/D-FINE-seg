@@ -34,8 +34,8 @@ The headline result - semantic segmentation on Cityscapes at native 1024x2048 - 
 | model | params (M) | input | conf | **F1** | precision | recall | IoU | e2e ms | engine ms |
 |---|---|---|---|---|---|---|---|---|---|
 | **D-FINE-seg S** | 11.87 | 640x640 | 0.5 | **0.661** | 0.748 | 0.592 | 0.375 | **3.09** | 1.9 |
-| YOLO26-M | 26.98 | 640x640 | 0.25 | 0.599 | 0.688 | 0.53 | 0.312 | 5.24 | 2.08 |
-| RF-DETR-seg-medium | 35.4 | 432x432 | 0.35 | 0.62 | 0.789 | 0.51 | 0.346 | 16.33 | **1.8** |
+| YOLO26-M | 26.98 | 640x640 | 0.25 | 0.599 | 0.688 | 0.53 | 0.312 | 5.32 | 2.05 |
+| RF-DETR-seg-medium | 35.4 | 432x432 | 0.35 | 0.62 | 0.789 | 0.51 | 0.346 | 16.81 | **1.77** |
 
 #### Semantic segmentation
 
