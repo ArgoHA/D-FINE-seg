@@ -1,0 +1,213 @@
+# Benchmarks (archive)
+
+The headline result - semantic segmentation on Cityscapes at native 1024x2048 - is in the [main README](https://github.com/ArgoHA/D-FINE-seg#benchmarks). The full 28-model comparison, protocol and per-class IoU: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark). The results below are older and are not updated with every latency/accuracy improvement in this repo.
+
+### Metrics
+
+**Detection / instance segmentation** - GT objects and predictions are matched one-to-one: a prediction is a TP if IoU > 0.5 (box for `detect`, mask for `segment`) and the class matches; only the highest-IoU prediction per GT counts, extra overlapping ones are FPs; a class mismatch is one FP + one FN.
+
+- **F1 / Precision / Recall** - computed from those TP/FP/FN counts at `train.conf_thresh`.
+- **IoU** (penalized) - mean IoU over all outcomes: TPs contribute their IoU, FPs and FNs contribute 0 (= sum of TP IoUs / (TPs + FPs + FNs)).
+- **mAP_50 / mAP_50_95** - COCO-style average precision (mask versions for `segment`).
+
+**Semantic segmentation** - all metrics come from one pixel confusion matrix accumulated over the whole eval set at original image resolution (`ignore_index` pixels excluded). A pixel of class *i* predicted as *j* counts as an FN for *i* and an FP for *j* - each confused pixel penalizes both classes.
+
+- **mIoU** (decision metric) - macro-averaged: per-class pixel IoU = TP / (TP + FP + FN), averaged over classes present in GT, so every class has equal weight regardless of pixel count.
+- **pixel_acc** - micro: fraction of all valid pixels classified correctly, so it is dominated by large classes.
+
+### Cityscapes - vs YOLO26 and RF-DETR (fine-tuning)
+
+![Cityscapes val - accuracy vs latency for the 640x640 fine-tuning benchmark](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/cityscapes_benchmark.png)
+
+500 Cityscapes val images at original 2048x1024, TensorRT 10.13 FP16, batch 1, RTX 5070 Ti. Every framework runs its **own shipped inference code**, scored by one validator against the same GT. Confidence thresholds were calculated for each framework separately to maximize the F1. Two latency columns - **e2e** (end-to-end, including each framework's CPU preprocessing) and **engine** (pure TensorRT execute) - because they can disagree. Full protocol and every known asymmetry: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
+
+#### Detection
+
+| model | params (M) | input | conf | **F1** | precision | recall | IoU | e2e ms | engine ms |
+|---|---|---|---|---|---|---|---|---|---|
+| **D-FINE-seg S** | 10.29 | 640x640 | 0.5 | **0.703** | 0.817 | 0.617 | 0.446 | **2.0** | **1.38** |
+| YOLO26-M | 21.79 | 640x640 | 0.25 | 0.691 | 0.792 | 0.613 | 0.432 | 3.03 | 1.59 |
+| RF-DETR-medium | 33.39 | 576x576 | 0.35 | 0.673 | 0.769 | 0.599 | 0.409 | 10.2 | 1.45 |
+
+#### Instance segmentation
+
+| model | params (M) | input | conf | **F1** | precision | recall | IoU | e2e ms | engine ms |
+|---|---|---|---|---|---|---|---|---|---|
+| **D-FINE-seg S** | 11.87 | 640x640 | 0.5 | **0.661** | 0.748 | 0.592 | 0.375 | **3.09** | 1.9 |
+| YOLO26-M | 26.98 | 640x640 | 0.25 | 0.599 | 0.688 | 0.53 | 0.312 | 5.24 | 2.08 |
+| RF-DETR-seg-medium | 35.4 | 432x432 | 0.35 | 0.62 | 0.789 | 0.51 | 0.346 | 16.33 | **1.8** |
+
+#### Semantic segmentation
+
+RF-DETR has no semantic segmentation task, so this one is D-FINE-seg vs YOLO26.
+
+> Superseded by the native 1024x2048 results in the main README; kept for reference.
+
+| model | params (M) | input | **mIoU** | pixel acc | e2e ms | engine ms |
+|---|---|---|---|---|---|---|
+| D-FINE-seg S | 8.02 | 640x640 | 0.728 | 0.95 | **1.79** | 1.5 |
+| **D-FINE-seg M** | 16 | 640x640 | **0.753** | 0.954 | 2.24 | 2.06 |
+| YOLO26-L | 17.87 | 640x640 | 0.739 | 0.949 | 3.56 | 1.63 |
+| YOLO26-M | 14.32 | 640x640 | 0.733 | 0.947 | 3.08 | **1.16** |
+
+### Other datasets
+
+<details>
+<summary><b>VisDrone - object detection</b></summary>
+
+[VisDrone dataset](https://github.com/VisDrone/VisDrone-Dataset) - a large-scale drone-captured benchmark with 10 categories across diverse urban and rural scenes (~6500 train / ~550 val / ~1600 test-dev images).
+YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25, D-FINE - 0.5. F1-score measured with IoU threshold 0.5. Preserved original dataset split (VisDrone2019-DET-train, VisDrone2019-DET-val, VisDrone2019-DET-test-dev). Metrics are reported on **test-dev** set. Latency measured end-to-end (preprocessing + forward pass + postprocessing) on **RTX 5070 Ti** with **TensorRT FP16** at 640x640, batch size 1.
+
+| Model | F1-score | IoU | Precision | Recall | Latency (ms) |
+|:------|:--------:|:---:|:---------:|:------:|:------------:|
+| **D-FINE N** | **0.531** | 0.288 | 0.724 | 0.42 | 1.6 |
+| YOLO26 N | 0.455 | 0.226 | 0.631 | 0.356 | 2.8 |
+| **D-FINE S** | **0.584** | 0.332 | 0.73 | 0.486 | 2.1 |
+| YOLO26 S | 0.510 | 0.264 | 0.652 | 0.419 | 3.1 |
+| **D-FINE M** | **0.605** | 0.351 | 0.732 | 0.516 | 2.7 |
+| YOLO26 M | 0.562 | 0.301 | 0.667 | 0.485 | 3.6 |
+| **D-FINE L** | **0.606** | 0.351 | 0.722 | 0.523 | 3.3 |
+| YOLO26 L | 0.568 | 0.308 | 0.676 | 0.490 | 4.1 |
+| **D-FINE X** | **0.611** | 0.354 | 0.718 | 0.532 | 4.5 |
+| YOLO26 X | 0.584 | 0.319 | 0.682 | 0.510 | 5.3 |
+
+> D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~7% higher mean relative F1-score with ~28% latency reduction. Notably, IoU is ~15% higher (mean relative improvement across all models).
+
+![VisDrone](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/visdrone_bench.png)
+
+</details>
+
+<details>
+<summary><b>TACO - object detection and instance segmentation</b></summary>
+
+[TACO dataset](http://tacodataset.org/) (1500 images, 59 effective classes of waste in diverse environments, 86/14 train/val split by batch ID). The benchmarking environment is the same as for VisDrone.
+
+#### Instance Segmentation
+
+| Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
+|:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
+| **D-FINE-seg N** | 5.1 | **0.231** | 0.106 | 0.307 | 0.185 | 3.2 |
+| YOLO26-seg N | 2.7 | 0.062 | 0.027 | 0.272 | 0.035 | 3.8 |
+| **D-FINE-seg S** | 11.9 | **0.281** | 0.134 | 0.405 | 0.215 | 3.7 |
+| YOLO26-seg S | 10.4 | 0.177 | 0.080 | 0.278 | 0.130 | 4.3 |
+| **D-FINE-seg M** | 21.2 | **0.296** | 0.14 | 0.355 | 0.254 | 4.5 |
+| YOLO26-seg M | 23.6 | 0.267 | 0.128 | 0.365 | 0.210 | 5.3 |
+| **D-FINE-seg L** | 32.8 | **0.342** | 0.167 | 0.439 | 0.279 | 5.0 |
+| YOLO26-seg L | 28.0 | 0.287 | 0.137 | 0.394 | 0.226 | 5.8 |
+| **D-FINE-seg X** | 64.3 | **0.380** | 0.19 | 0.46 | 0.324 | 6.3 |
+| YOLO26-seg X | 62.8 | 0.300 | 0.146 | 0.408 | 0.238 | 7.6 |
+
+#### Object Detection
+
+| Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
+|:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
+| **D-FINE N** | 3.8 | **0.237** | 0.115 | 0.34 | 0.181 | 1.9 |
+| YOLO26 N | 2.4 | 0.072 | 0.033 | 0.274 | 0.042 | 3.4 |
+| **D-FINE S** | 10.3 | **0.300** | 0.155 | 0.416 | 0.234 | 2.4 |
+| YOLO26 S | 9.5 | 0.170 | 0.081 | 0.279 | 0.122 | 3.5 |
+| **D-FINE M** | 19.6 | **0.299** | 0.157 | 0.391 | 0.242 | 2.9 |
+| YOLO26 M | 20.4 | 0.232 | 0.115 | 0.303 | 0.188 | 4.2 |
+| **D-FINE L** | 31.2 | **0.355** | 0.188 | 0.452 | 0.292 | 3.5 |
+| YOLO26 L | 24.8 | 0.250 | 0.128 | 0.356 | 0.193 | 4.7 |
+| **D-FINE X** | 62.6 | **0.391** | 0.212 | 0.454 | 0.343 | 4.7 |
+| YOLO26 X | 55.7 | 0.303 | 0.158 | 0.412 | 0.239 | 6.1 |
+
+> D-FINE-seg outperforms YOLO26 in fine-tuning setting on TACO dataset in F1-score across every model size (N/S/M/L/X). In segmentation task - ~75% higher mean relative F1-score and ~16% latency reduction. In detection task - ~80% higher F1-score and ~28% latency reduction.
+
+Note: although D-FINE does not require NMS, it still provides a small accuracy boost, so NMS is enabled by default in the current version. This is included in the reported latency.
+
+#### COCO-style APs
+
+<details>
+<summary><b>Mask AP (Segmentation)</b></summary>
+
+| Model | Mask mAP@50-95 | Mask mAP@50 |
+|:------|:--------------:|:-----------:|
+| **D-FINE-seg N** | **0.094** | 0.141 |
+| YOLO26-seg N | 0.041 | 0.058 |
+| **D-FINE-seg S** | **0.177** | 0.250 |
+| YOLO26-seg S | 0.111 | 0.165 |
+| D-FINE-seg M | 0.157 | 0.229 |
+| **YOLO26-seg M** | **0.195** | 0.270 |
+| **D-FINE-seg L** | **0.212** | 0.310 |
+| YOLO26-seg L | 0.174 | 0.242 |
+| **D-FINE-seg X** | **0.242** | 0.340 |
+| YOLO26-seg X | 0.210 | 0.291 |
+
+</details>
+
+<details>
+<summary><b>Box AP (Detection)</b></summary>
+
+| Model | Box mAP@50-95 | Box mAP@50 |
+|:------|:-------------:|:----------:|
+| **D-FINE N** | **0.123** | 0.169 |
+| YOLO26 N | 0.060 | 0.075 |
+| **D-FINE S** | **0.202** | 0.244 |
+| YOLO26 S | 0.098 | 0.124 |
+| **D-FINE M** | **0.204** | 0.246 |
+| YOLO26 M | 0.172 | 0.214 |
+| **D-FINE L** | **0.256** | 0.314 |
+| YOLO26 L | 0.230 | 0.272 |
+| **D-FINE X** | **0.269** | 0.336 |
+| YOLO26 X | 0.256 | 0.300 |
+
+> AP computed with confidence threshold 0.01, max 100 detections per image. D-FINE-seg wins on 4 of 5 mask AP sizes (YOLO26 leads at M) and all 5 box AP sizes.
+
+</details>
+
+#### Format Comparisons
+
+Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessing + inference + postprocessing.
+
+<details>
+<summary><b>Desktop: Intel i5-12400F + RTX 5070 Ti</b></summary>
+
+| Model | Format | F1-score | Latency (ms) |
+|:------|:-------|:--------:|:------------:|
+| D-FINE-seg S | Torch FP32 | 0.263 | 20.4 |
+| D-FINE-seg S | TensorRT FP32 | 0.264 | 6.5 |
+| D-FINE-seg S | TensorRT FP16 | 0.263 | 5.0 |
+| D-FINE S | Torch FP32 | 0.276 | 18.0 |
+| D-FINE S | TensorRT FP32 | 0.272 | 4.5 |
+| D-FINE S | TensorRT FP16 | 0.274 | 3.6 |
+
+> TensorRT FP16 -> ~4x faster than Torch FP32, no F1 drop
+
+</details>
+
+<details>
+<summary><b>Edge: Intel N150 (OpenVINO)</b></summary>
+
+| Model | Format | F1-score | Latency (ms) |
+|:------|:-------|:--------:|:------------:|
+| D-FINE-seg S | FP32 | 0.264 | 431.2 |
+| D-FINE-seg S | FP16 | 0.264 | 272.2 |
+| D-FINE-seg S | INT8 | 0.243 | 205.0 |
+| D-FINE S | FP32 | 0.272 | 188.4 |
+| D-FINE S | FP16 | 0.271 | 120.8 |
+| D-FINE S | INT8 | 0.250 | 76.3 |
+
+> FP16 -> ~60% faster than FP32, no F1 drop. INT8 -> ~2x faster than FP32 but noticeable F1 drop
+
+</details>
+
+<details>
+<summary><b>Apple Silicon: MacBook Pro M1 Pro (CoreML)</b></summary>
+
+| Model | Format | F1-score | Latency (ms) | Model size (mb) |
+|:------|:-------|:--------:|:------------:|:----------:|
+| D-FINE S Torch (mps) | FP32 | 0.278 | 45.2 | 41.6 |
+| D-FINE S CoreML | FP32 | 0.278 | 20.0 | 41.8 |
+| D-FINE S CoreML | FP16 | 0.270 | 32.5 | 21.1 |
+| D-FINE S CoreML | INT8 | 0.268 | 19.8 | 11.2 |
+| D-FINE-seg S Torch (mps) | FP32 | 0.261 | 72.3 | 48.3 |
+| D-FINE-seg S CoreML | FP32 | 0.261 | 64.6 | 48.3 |
+| D-FINE-seg S CoreML | FP16 | 0.259 | 79.1 | 24.3 |
+| D-FINE-seg S CoreML | INT8 | 0.256 | 62.1 | 12.8 |
+
+> CoreML FP32 -> ~2x faster than Torch MPS, no F1 drop. FP16 is ~30% slower than FP32 on Apple Silicon - the Neural Engine prefers FP32 for this architecture. INT8 shows strong accuracy, same latency on this machine, but 4 times smaller weights size.
+
+</details>
+
+</details>

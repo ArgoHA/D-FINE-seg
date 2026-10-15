@@ -8,7 +8,16 @@ from loguru import logger
 from .dist_utils import is_main_process
 
 HF_REPO_ID = "ArgoSA/D-FINE-seg"
-_FILENAME_RE = re.compile(r"^dfine_(?:seg_(n|s|m|l|x)_coco|(n|s|m|l|x)_(coco|obj2coco))\.pt$")
+# Released checkpoint filenames that may be auto-downloaded from HF. _COCO_FILENAME_RE is
+# the COCO-family subset of _FILENAME_RE - extend _COCO_RELEASES for a new COCO release and
+# _FILENAME_RE's alternatives for anything carrying its own meta (e.g. `dfine_sem_*_cityscapes`).
+_SIZE = r"(n|s|m|l|x)"
+_COCO_RELEASES = (rf"seg_{_SIZE}_coco", rf"{_SIZE}_(coco|obj2coco)")
+_CITYSCAPES_RELEASES = (rf"sem_{_SIZE}_cityscapes",)
+_FILENAME_RE = re.compile(rf"^dfine_(?:{'|'.join(_COCO_RELEASES + _CITYSCAPES_RELEASES)})\.pt$")
+# The COCO-family subset: these releases are COCO models, so a bare (meta-less) state_dict
+# loaded by path still gets the bundled COCO names - `dfine_sem_*` is Cityscapes and is not.
+_COCO_FILENAME_RE = re.compile(rf"^dfine_(?:{'|'.join(_COCO_RELEASES)})\.pt$")
 
 obj365_ids = [
     0,
@@ -161,8 +170,9 @@ def matched_state(state: Dict[str, torch.Tensor], params: Dict[str, torch.Tensor
 def unwrap_checkpoint(state: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
     """Split any checkpoint format into (state_dict, meta).
 
-    `save_checkpoint` writes {"model": sd, "meta": {...}}; every released checkpoint is a
-    bare state_dict and "ema" is the legacy upstream format - both yield an empty meta.
+    `save_checkpoint` writes {"model": sd, "meta": {...}}; "ema" is the legacy upstream
+    format and the COCO-family releases are bare state_dicts - both yield an empty meta.
+    The Cityscapes sem-seg releases carry meta (task, label_to_name, img_size).
     """
     if "ema" in state:
         return state["ema"]["module"], {}
@@ -239,11 +249,13 @@ def load_tuning_state(model, path: str):
     pretrain_state_dict = unwrap_checkpoint(state)[0]
     maybe_inflate_stem(model.state_dict(), pretrain_state_dict)
 
-    # Adjust head parameters between datasets
+    # Adjust head parameters between datasets. KeyError = one side has no detection heads
+    # (sem_seg checkpoint or model): nothing to adjust, matched_state drops the mismatched
+    # sem heads on class-count change. Real tensor bugs must not be swallowed here.
     try:
         adjusted_state_dict = adjust_head_parameters(model.state_dict(), pretrain_state_dict)
         stat, infos = matched_state(model.state_dict(), adjusted_state_dict)
-    except Exception:
+    except KeyError:
         stat, infos = matched_state(model.state_dict(), pretrain_state_dict)
 
     model.load_state_dict(stat, strict=False)
@@ -256,10 +268,11 @@ def ensure_pretrained(path: str | Path) -> str:
     """Resolve a pretrained checkpoint path, fetching from HF if missing.
 
     If the file already exists, returns the path unchanged. If it's missing and
-    the filename matches the standard `dfine_<size>_<dataset>.pt` pattern, it's
-    downloaded from `HF_REPO_ID` into the same directory. For non-standard
-    filenames (e.g. user-supplied fine-tuning checkpoints), returns the path
-    as-is so the caller raises FileNotFoundError as before.
+    the filename matches a released checkpoint (`_FILENAME_RE`: COCO
+    detection/instance-seg, Cityscapes sem-seg), it's downloaded from
+    `HF_REPO_ID` into the same directory. For non-standard filenames (e.g.
+    user-supplied fine-tuning checkpoints), returns the path as-is so the
+    caller raises FileNotFoundError as before.
     """
     p = Path(path)
     if p.exists():

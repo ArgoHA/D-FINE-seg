@@ -19,8 +19,7 @@ training, export, accuracy or inference latency, follow the module guide in `scr
 - Instance segmentation requires polygon annotations; bbox-only data must fail.
 - Four-channel input uses RGB+extra `.npy` arrays. Do not add TIFF support; OpenCV corrupts some
   four-channel TIFFs. `train.in_channels` supports only 3 or 4.
-- Mask tasks need a `dfine_seg_*` checkpoint to restore the trained MaskDecoder. There are no released
-  semantic-segmentation weights; semantic segmentation fine-tunes from instance-segmentation weights.
+- Mask tasks need a `dfine_seg_*` checkpoint to restore the trained MaskDecoder. Released semantic-segmentation weights are Cityscapes-only (`dfine_sem_*_cityscapes.pt`, auto-downloaded by `load_model(size, task="sem_seg")`); other datasets fine-tune from instance-segmentation weights or from the Cityscapes init (heads re-initialize on class-count change).
 - `model.pt` is the best checkpoint and is used by validation, inference, export, and bench. `last.pt`
   is the latest state and is not resumable because checkpoints contain no optimizer or EMA state.
 
@@ -59,3 +58,4 @@ training, export, accuracy or inference latency, follow the module guide in `scr
 - Prefer the smallest clear implementation and short comments that explain only non-obvious choices.
 - Do not commit, push, create branches, or open pull requests unless explicitly requested. Leave
   changes uncommitted for review.
+- In Markdown files (README, CHANGELOG, docs) never hard-wrap lines: write each paragraph or bullet as one line, however long. The 100-column limit is Python-only (ruff).

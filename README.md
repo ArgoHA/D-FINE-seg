@@ -28,7 +28,7 @@
 D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, and **semantic segmentation** - one codebase, one config flag (`task: detect | segment | sem_seg`), five model sizes (N -> X).
 
 - End-to-end workflow - dataset prep -> training (DDP, EMA, AMP, mosaic) -> export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) -> benchmarked multi-backend inference
-- Accuracy - on Cityscapes, beats YOLO26 and RF-DETR on detection & instance-seg F1 and leads mIoU on semantic segmentation, at real-time latency with 2-3x fewer params; also higher F1 than YOLO26 on TACO and VisDrone (TensorRT FP16, end-to-end protocol)
+- Accuracy - Cityscapes semantic segmentation at native 1024x2048: D-FINE-X reaches 84.84 mIoU at 14.6 ms end-to-end, the highest of 28 models - +1.26 mIoU over YOLO26-x, and +1.5 mIoU over Mask2Former Swin-L with 6.4x lower latency and a quarter of the params - and D-FINE-L matches or beats YOLO26-x on every axis; also beats YOLO26 and RF-DETR on 640 Cityscapes detection & instance-seg F1, and YOLO26 on TACO and VisDrone (TensorRT FP16, end-to-end protocol)
 - Paper - [D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment](https://arxiv.org/abs/2602.23043)
 - Not a fork: the detection core follows the [D-FINE paper](https://github.com/Peterande/D-FINE); segmentation heads, training, export and inference are implemented from scratch.
 
@@ -39,11 +39,11 @@ One frame, three tasks, one config flag:
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/cityscapes_benchmark.png" width="100%">
+  <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/cityscapes_semseg_native.png" width="100%">
 </p>
 
 <p align="center">
-  <sub><a href="#cityscapes---vs-yolo26-and-rf-detr-fine-tuning">Full tables below</a></sub>
+  <sub><a href="#benchmarks">Full tables below</a></sub>
 </p>
 
 ## Highlights
@@ -51,7 +51,7 @@ One frame, three tasks, one config flag:
 - **Instance segmentation head** (`task: segment`) - lightweight mask head on top of D-FINE's HybridEncoder PAN outputs: stride 8/16/32 features fused to 1/4 resolution, then a dot-product between per-query mask embeddings (3-layer MLP) and the shared mask features yields per-instance masks
 - **Semantic segmentation head** (`task: sem_seg`) - reuses the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier: no queries, no NMS
 - **Mask-aware training** - box-cropped BCE + Dice mask losses (instance seg) and CE + multi-class soft Dice with `ignore_index` (semantic seg), mask supervision inside contrastive denoising, and Dice + sigmoid-focal mask costs in the Hungarian matcher - all train-time only, zero inference cost
-- **COCO-pretrained weights for detection and instance segmentation**, auto-downloaded on first use - fine-tuning starts from a trained mask decoder, not from scratch
+- **Pretrained weights for every task** - detection on COCO (plain and Objects365-pretrained), COCO instance segmentation, Cityscapes semantic segmentation
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
 - **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, knowledge distillation, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB, auto-batch size.
 - **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML / LiteRT)
@@ -65,7 +65,7 @@ pip install dfine-seg           # inference + training
 pip install 'dfine-seg[all]'    # + every export backend, SAM3, Gradio demo
 ```
 
-COCO-pretrained weights (detection **and** instance segmentation) auto-download from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use.
+Pretrained weights auto-download from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use: detection on COCO (`dfine_{n,s,m,l,x}_coco.pt`, and `dfine_{n,s,m,l,x}_obj2coco.pt` - Objects365 pretraining, then COCO), COCO instance segmentation (`dfine_seg_{n,s,m,l,x}_coco.pt`), Cityscapes semantic segmentation (`dfine_sem_{n,s,m,l,x}_cityscapes.pt`).
 
 <details>
 <summary>Extras, if you need them (backends are large and platform-specific)</summary>
@@ -88,6 +88,7 @@ from dfine_seg import load_model, read_image, Visualizer
 
 model = load_model("s")                              # COCO detection, weights auto-downloaded
 model = load_model("s", task="segment")              # COCO instance segmentation
+model = load_model("x", task="sem_seg")              # Cityscapes semantic segmentation
 model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes/input size auto-detected, supports: .pt | .engine | .onnx | .xml
 
 img = read_image("path/to/image.jpg")
@@ -143,6 +144,8 @@ data/dataset/
 ```
 
 Every pixel gets a class from `label_to_name` (background included). Pixels with value `train.sem_seg.ignore_index` (default 255) are excluded from loss and metrics and during inference 255 is the "background" or "ignored" class. `dfine split` works unchanged; `keep_ratio: True` is supported (letterbox pad is filled with `ignore_index`, so pad pixels don't supervise); `coco_dataset: True` is not supported for this task.
+
+Released Cityscapes weights load with `load_model("x", task="sem_seg")` - names and input size come from the checkpoint. They are also a strong init for your own driving/outdoor data: point `train.pretrained_model_path` at one with a different `label_to_name` and the class heads re-initialize while the rest keeps the Cityscapes training (N from COCO detection weights, S/M/L/X from obj2coco). A model fine-tuned from them is still derived from Cityscapes and inherits its non-commercial terms (see [License](#license)) - for commercial use, start from the COCO / obj2coco weights instead. Benchmark numbers and the full 28-model comparison: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
 
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
 
@@ -291,29 +294,33 @@ A simplified ByteTrack ([Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.068
 dfine demo         # == make demo   (pip: pip install 'dfine-seg[demo]')
 ```
 
-A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no configuration, weights download on first use. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation (prompts are comma- or newline-separated - each one becomes a class).
+A web UI for running inference on uploaded images and videos (or a webcam snapshot). It starts on COCO detection `s` - no setup. The **Model** panel then swaps in any other model at runtime: a size preset, or a path/upload of your own `.pt` / `.onnx` / `.engine` / `.xml`, with a box for the class names. `detect`, `segment` and `sem_seg` checkpoints all render, and SAM3 is selectable as a second backend for text-promptable segmentation (prompts are comma- or newline-separated - each one becomes a class).
 
 It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the Model panel loads any path the browser sends, so anyone who can reach the port can load files off this machine. `dfine demo --host 127.0.0.1` restores local-only.
 
 ## Benchmarks
 
-### Metrics
+### Semantic segmentation - Cityscapes at native 1024x2048
 
-**Detection / instance segmentation** - GT objects and predictions are matched one-to-one: a prediction is a TP if IoU > 0.5 (box for `detect`, mask for `segment`) and the class matches; only the highest-IoU prediction per GT counts, extra overlapping ones are FPs; a class mismatch is one FP + one FN.
+28 models from 5 families: the five D-FINE-seg sizes trained by us and 23 official Cityscapes checkpoints (YOLO26-sem, EfficientViT-Seg, SegFormer, Mask2Former), none of them retrained. Input is the whole 1024x2048 frame in one forward pass; each model runs its own framework's shipped pre- and postprocessing and is scored by one validator on the 500 val images. TensorRT fp16, batch 1, RTX 5070 Ti. **e2e ms** includes each framework's CPU pre- and postprocessing; **engine ms** is pure TensorRT execute. Full table, per-class IoU, protocol and every known asymmetry: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
 
-- **F1 / Precision / Recall** - computed from those TP/FP/FN counts at `train.conf_thresh`.
-- **IoU** (penalized) - mean IoU over all outcomes: TPs contribute their IoU, FPs and FNs contribute 0 (= sum of TP IoUs / (TPs + FPs + FNs)).
-- **mAP_50 / mAP_50_95** - COCO-style average precision (mask versions for `segment`).
+| model | params (M) | mIoU | pixel acc | engine ms | e2e ms |
+|---|---:|---:|---:|---:|---:|
+| **D-FINE-N** | 3.36 | 77.99 | 96.03 | 3.02 | 4.21 |
+| **D-FINE-S** | 7.99 | 81.12 | 96.47 | 5.38 | 6.37 |
+| **D-FINE-M** | 15.95 | 81.41 | 96.55 | 7.42 | 8.26 |
+| **D-FINE-L** | 24.97 | 83.80 | 96.93 | 8.98 | 9.77 |
+| **D-FINE-X** | 56.3 | **84.84** | **97.10** | 14.18 | 14.64 |
+| YOLO26x-sem | 40.13 | 83.58 | 96.79 | 10.37 | 13.58 |
+| EfficientViT-L2 | 52.61 | 83.20 | 96.87 | 9.56 | 19.87 |
+| Mask2Former-Swin-L | 215.46 | 83.33 | 96.91 | 64.51 | 94.07 |
 
-**Semantic segmentation** - all metrics come from one pixel confusion matrix accumulated over the whole eval set at original image resolution (`ignore_index` pixels excluded). A pixel of class *i* predicted as *j* counts as an FN for *i* and an FP for *j* - each confused pixel penalizes both classes.
-
-- **mIoU** (decision metric) - macro-averaged: per-class pixel IoU = TP / (TP + FP + FN), averaged over classes present in GT, so every class has equal weight regardless of pixel count.
-- **pixel_acc** - micro: fraction of all valid pixels classified correctly, so it is dominated by large classes.
+- **D-FINE-X vs Mask2Former-Swin-L** (the most accurate Mask2Former checkpoint): +1.51 mIoU, 4.5x lower engine latency, 6.4x lower end-to-end latency, about a quarter of the parameters. X has the highest mIoU and pixel accuracy of the 28 models.
+- **D-FINE-L vs YOLO26x-sem** (the most accurate YOLO26-sem checkpoint): +0.22 mIoU, +0.14 pixel acc, 13% lower engine latency, 28% lower end-to-end latency, 38% fewer parameters. One training seed and a small margin, so read it as "matches or beats".
 
 ### Cityscapes - vs YOLO26 and RF-DETR (fine-tuning)
 
-This is the main dataset where numbers are being updated. Other benchmarks are older and are not updated with every latency/accuracy improvement in this repo.
-500 Cityscapes val images at original 2048x1024, TensorRT 10.13 FP16, batch 1, RTX 5070 Ti. Every framework runs its **own shipped inference code**, scored by one validator against the same GT. Confidence thresholds were calculated for each framework separately to maximixe the F1. Two latency columns - **e2e** (end-to-end, including each framework's CPU preprocessing) and **engine** (pure TensorRT execute) - because they can disagree. Full protocol and every known asymmetry: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
+500 Cityscapes val images at original 2048x1024, TensorRT 10.13 FP16, batch 1, RTX 5070 Ti - same protocol and latency columns as above, with confidence thresholds tuned per framework to maximize F1. Full protocol: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
 
 #### Detection
 
@@ -331,178 +338,7 @@ This is the main dataset where numbers are being updated. Other benchmarks are o
 | YOLO26-M | 26.98 | 640x640 | 0.25 | 0.599 | 0.688 | 0.53 | 0.312 | 5.24 | 2.08 |
 | RF-DETR-seg-medium | 35.4 | 432x432 | 0.35 | 0.62 | 0.789 | 0.51 | 0.346 | 16.33 | **1.8** |
 
-#### Semantic segmentation
-
-RF-DETR has no semantic segmentation task, so this one is D-FINE-seg vs YOLO26.
-
-| model | params (M) | input | **mIoU** | pixel acc | e2e ms | engine ms |
-|---|---|---|---|---|---|---|
-| D-FINE-seg S | 8.02 | 640x640 | 0.728 | 0.95 | **1.79** | 1.5 |
-| **D-FINE-seg M** | 16 | 640x640 | **0.753** | 0.954 | 2.24 | 2.06 |
-| YOLO26-L | 17.87 | 640x640 | 0.739 | 0.949 | 3.56 | 1.63 |
-| YOLO26-M | 14.32 | 640x640 | 0.733 | 0.947 | 3.08 | **1.16** |
-
-### Other datasets
-
-<details>
-<summary><b>VisDrone - object detection</b></summary>
-
-[VisDrone dataset](https://github.com/VisDrone/VisDrone-Dataset) - a large-scale drone-captured benchmark with 10 categories across diverse urban and rural scenes (~6500 train / ~550 val / ~1600 test-dev images).
-YOLO26 trained for 100 epochs, D-FINE for 75. YOLO26 confidence threshold - 0.25, D-FINE - 0.5. F1-score measured with IoU threshold 0.5. Preserved original dataset split (VisDrone2019-DET-train, VisDrone2019-DET-val, VisDrone2019-DET-test-dev). Metrics are reported on **test-dev** set. Latency measured end-to-end (preprocessing + forward pass + postprocessing) on **RTX 5070 Ti** with **TensorRT FP16** at 640x640, batch size 1.
-
-| Model | F1-score | IoU | Precision | Recall | Latency (ms) |
-|:------|:--------:|:---:|:---------:|:------:|:------------:|
-| **D-FINE N** | **0.531** | 0.288 | 0.724 | 0.42 | 1.6 |
-| YOLO26 N | 0.455 | 0.226 | 0.631 | 0.356 | 2.8 |
-| **D-FINE S** | **0.584** | 0.332 | 0.73 | 0.486 | 2.1 |
-| YOLO26 S | 0.510 | 0.264 | 0.652 | 0.419 | 3.1 |
-| **D-FINE M** | **0.605** | 0.351 | 0.732 | 0.516 | 2.7 |
-| YOLO26 M | 0.562 | 0.301 | 0.667 | 0.485 | 3.6 |
-| **D-FINE L** | **0.606** | 0.351 | 0.722 | 0.523 | 3.3 |
-| YOLO26 L | 0.568 | 0.308 | 0.676 | 0.490 | 4.1 |
-| **D-FINE X** | **0.611** | 0.354 | 0.718 | 0.532 | 4.5 |
-| YOLO26 X | 0.584 | 0.319 | 0.682 | 0.510 | 5.3 |
-
-> D-FINE outperforms YOLO26 in fine-tuning setting on VisDrone dataset in F1-score across every model size. D-FINE achieves ~7% higher mean relative F1-score with ~28% latency reduction. Notably, IoU is ~15% higher (mean relative improvement across all models).
-
-![VisDrone](https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/visdrone_bench.png)
-
-</details>
-
-<details>
-<summary><b>TACO - object detection and instance segmentation</b></summary>
-
-[TACO dataset](http://tacodataset.org/) (1500 images, 59 effective classes of waste in diverse environments, 86/14 train/val split by batch ID). The benchmarking environment is the same as for VisDrone.
-
-#### Instance Segmentation
-
-| Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
-|:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
-| **D-FINE-seg N** | 5.1 | **0.231** | 0.106 | 0.307 | 0.185 | 3.2 |
-| YOLO26-seg N | 2.7 | 0.062 | 0.027 | 0.272 | 0.035 | 3.8 |
-| **D-FINE-seg S** | 11.9 | **0.281** | 0.134 | 0.405 | 0.215 | 3.7 |
-| YOLO26-seg S | 10.4 | 0.177 | 0.080 | 0.278 | 0.130 | 4.3 |
-| **D-FINE-seg M** | 21.2 | **0.296** | 0.14 | 0.355 | 0.254 | 4.5 |
-| YOLO26-seg M | 23.6 | 0.267 | 0.128 | 0.365 | 0.210 | 5.3 |
-| **D-FINE-seg L** | 32.8 | **0.342** | 0.167 | 0.439 | 0.279 | 5.0 |
-| YOLO26-seg L | 28.0 | 0.287 | 0.137 | 0.394 | 0.226 | 5.8 |
-| **D-FINE-seg X** | 64.3 | **0.380** | 0.19 | 0.46 | 0.324 | 6.3 |
-| YOLO26-seg X | 62.8 | 0.300 | 0.146 | 0.408 | 0.238 | 7.6 |
-
-#### Object Detection
-
-| Model | Params (M) | F1-score | IoU | Precision | Recall | Latency (ms) |
-|:------|:----------:|:--------:|:---:|:---------:|:------:|:------------:|
-| **D-FINE N** | 3.8 | **0.237** | 0.115 | 0.34 | 0.181 | 1.9 |
-| YOLO26 N | 2.4 | 0.072 | 0.033 | 0.274 | 0.042 | 3.4 |
-| **D-FINE S** | 10.3 | **0.300** | 0.155 | 0.416 | 0.234 | 2.4 |
-| YOLO26 S | 9.5 | 0.170 | 0.081 | 0.279 | 0.122 | 3.5 |
-| **D-FINE M** | 19.6 | **0.299** | 0.157 | 0.391 | 0.242 | 2.9 |
-| YOLO26 M | 20.4 | 0.232 | 0.115 | 0.303 | 0.188 | 4.2 |
-| **D-FINE L** | 31.2 | **0.355** | 0.188 | 0.452 | 0.292 | 3.5 |
-| YOLO26 L | 24.8 | 0.250 | 0.128 | 0.356 | 0.193 | 4.7 |
-| **D-FINE X** | 62.6 | **0.391** | 0.212 | 0.454 | 0.343 | 4.7 |
-| YOLO26 X | 55.7 | 0.303 | 0.158 | 0.412 | 0.239 | 6.1 |
-
-> D-FINE-seg outperforms YOLO26 in fine-tuning setting on TACO dataset in F1-score across every model size (N/S/M/L/X). In segmentation task - ~75% higher mean relative F1-score and ~16% latency reduction. In detection task - ~80% higher F1-score and ~28% latency reduction.
-
-Note: although D-FINE does not require NMS, it still provides a small accuracy boost, so NMS is enabled by default in the current version. This is included in the reported latency.
-
-#### COCO-style APs
-
-<details>
-<summary><b>Mask AP (Segmentation)</b></summary>
-
-| Model | Mask mAP@50-95 | Mask mAP@50 |
-|:------|:--------------:|:-----------:|
-| **D-FINE-seg N** | **0.094** | 0.141 |
-| YOLO26-seg N | 0.041 | 0.058 |
-| **D-FINE-seg S** | **0.177** | 0.250 |
-| YOLO26-seg S | 0.111 | 0.165 |
-| D-FINE-seg M | 0.157 | 0.229 |
-| **YOLO26-seg M** | **0.195** | 0.270 |
-| **D-FINE-seg L** | **0.212** | 0.310 |
-| YOLO26-seg L | 0.174 | 0.242 |
-| **D-FINE-seg X** | **0.242** | 0.340 |
-| YOLO26-seg X | 0.210 | 0.291 |
-
-</details>
-
-<details>
-<summary><b>Box AP (Detection)</b></summary>
-
-| Model | Box mAP@50-95 | Box mAP@50 |
-|:------|:-------------:|:----------:|
-| **D-FINE N** | **0.123** | 0.169 |
-| YOLO26 N | 0.060 | 0.075 |
-| **D-FINE S** | **0.202** | 0.244 |
-| YOLO26 S | 0.098 | 0.124 |
-| **D-FINE M** | **0.204** | 0.246 |
-| YOLO26 M | 0.172 | 0.214 |
-| **D-FINE L** | **0.256** | 0.314 |
-| YOLO26 L | 0.230 | 0.272 |
-| **D-FINE X** | **0.269** | 0.336 |
-| YOLO26 X | 0.256 | 0.300 |
-
-> AP computed with confidence threshold 0.01, max 100 detections per image. D-FINE-seg wins on 4 of 5 mask AP sizes (YOLO26 leads at M) and all 5 box AP sizes.
-
-</details>
-
-#### Format Comparisons
-
-Measured on TACO with D-FINE-seg S / D-FINE S at 640x640. Latency = preprocessing + inference + postprocessing.
-
-<details>
-<summary><b>Desktop: Intel i5-12400F + RTX 5070 Ti</b></summary>
-
-| Model | Format | F1-score | Latency (ms) |
-|:------|:-------|:--------:|:------------:|
-| D-FINE-seg S | Torch FP32 | 0.263 | 20.4 |
-| D-FINE-seg S | TensorRT FP32 | 0.264 | 6.5 |
-| D-FINE-seg S | TensorRT FP16 | 0.263 | 5.0 |
-| D-FINE S | Torch FP32 | 0.276 | 18.0 |
-| D-FINE S | TensorRT FP32 | 0.272 | 4.5 |
-| D-FINE S | TensorRT FP16 | 0.274 | 3.6 |
-
-> TensorRT FP16 -> ~4x faster than Torch FP32, no F1 drop
-
-</details>
-
-<details>
-<summary><b>Edge: Intel N150 (OpenVINO)</b></summary>
-
-| Model | Format | F1-score | Latency (ms) |
-|:------|:-------|:--------:|:------------:|
-| D-FINE-seg S | FP32 | 0.264 | 431.2 |
-| D-FINE-seg S | FP16 | 0.264 | 272.2 |
-| D-FINE-seg S | INT8 | 0.243 | 205.0 |
-| D-FINE S | FP32 | 0.272 | 188.4 |
-| D-FINE S | FP16 | 0.271 | 120.8 |
-| D-FINE S | INT8 | 0.250 | 76.3 |
-
-> FP16 -> ~60% faster than FP32, no F1 drop. INT8 -> ~2x faster than FP32 but noticeable F1 drop
-
-</details>
-
-<details>
-<summary><b>Apple Silicon: MacBook Pro M1 Pro (CoreML)</b></summary>
-
-| Model | Format | F1-score | Latency (ms) | Model size (mb) |
-|:------|:-------|:--------:|:------------:|:----------:|
-| D-FINE S Torch (mps) | FP32 | 0.278 | 45.2 | 41.6 |
-| D-FINE S CoreML | FP32 | 0.278 | 20.0 | 41.8 |
-| D-FINE S CoreML | FP16 | 0.270 | 32.5 | 21.1 |
-| D-FINE S CoreML | INT8 | 0.268 | 19.8 | 11.2 |
-| D-FINE-seg S Torch (mps) | FP32 | 0.261 | 72.3 | 48.3 |
-| D-FINE-seg S CoreML | FP32 | 0.261 | 64.6 | 48.3 |
-| D-FINE-seg S CoreML | FP16 | 0.259 | 79.1 | 24.3 |
-| D-FINE-seg S CoreML | INT8 | 0.256 | 62.1 | 12.8 |
-
-> CoreML FP32 -> ~2x faster than Torch MPS, no F1 drop. FP16 is ~30% slower than FP32 on Apple Silicon - the Neural Engine prefers FP32 for this architecture. INT8 shows strong accuracy, same latency on this machine, but 4 times smaller weights size.
-
-</details>
-
-</details>
+The 640 semantic segmentation comparison is superseded by the native-resolution results above. Metric definitions, the VisDrone and TACO benchmarks, COCO-style APs and the export-format comparisons: [docs/benchmarks.md](https://github.com/ArgoHA/D-FINE-seg/blob/main/docs/benchmarks.md)
 
 ## Outputs
 
@@ -563,12 +399,25 @@ And the original D-FINE paper:
 }
 ```
 
+If you use the Cityscapes-trained semantic-segmentation weights, also cite the Cityscapes dataset:
+
+```bibtex
+@inproceedings{Cordts2016Cityscapes,
+  title={The Cityscapes Dataset for Semantic Urban Scene Understanding},
+  author={Cordts, Marius and Omran, Mohamed and Ramos, Sebastian and Rehfeld, Timo and Enzweiler, Markus and Benenson, Rodrigo and Franke, Uwe and Roth, Stefan and Schiele, Bernt},
+  booktitle={Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2016}
+}
+```
+
 ## License
 
-This project is licensed under the [Apache 2.0 License](https://github.com/ArgoHA/D-FINE-seg/blob/main/LICENSE).
+The code is licensed under the [Apache 2.0 License](https://github.com/ArgoHA/D-FINE-seg/blob/main/LICENSE).
+
+The released Cityscapes semantic-segmentation weights (`dfine_sem_{n,s,m,l,x}_cityscapes.pt`) are derivative works of the [Cityscapes dataset](https://www.cityscapes-dataset.com/) and inherit its [terms of use](https://www.cityscapes-dataset.com/license/): they may be distributed for non-commercial purposes such as academic research, teaching, scientific publications, or personal experimentation, but not for commercial gain. Train on your own data and the resulting model is yours to ship commercially - the code stays Apache-2.0 (no AGPL).
 
 ## Acknowledgement
 
 The detection core is based on the [D-FINE](https://github.com/Peterande/D-FINE) paper and architecture. The mask head design follows the [Mask DINO](https://arxiv.org/abs/2206.02777) paradigm. Thank you to both teams for their excellent work.
 
-Benchmarks in this project use the [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) and [TACO](http://tacodataset.org/) datasets. We thank the authors for making these datasets publicly available.
+Benchmarks in this project use the [Cityscapes](https://www.cityscapes-dataset.com/), [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) and [TACO](http://tacodataset.org/) datasets. We thank the authors for making these datasets publicly available.

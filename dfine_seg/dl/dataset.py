@@ -19,7 +19,6 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
-from dfine_seg.model.dist_utils import is_main_process
 from dfine_seg.dl.utils import (
     LetterboxRect,
     abs_xyxy_to_norm_xywh,
@@ -33,6 +32,7 @@ from dfine_seg.dl.utils import (
     seed_worker,
     vis_one_box,
 )
+from dfine_seg.model.dist_utils import is_main_process
 from dfine_seg.viz import overlay_sem_seg, sem_seg_palette
 
 

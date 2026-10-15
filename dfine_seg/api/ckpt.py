@@ -1,10 +1,11 @@
 """Recover `model_name`, `task`, `num_classes` and class names from a checkpoint.
 
-Training writes a `meta` block (`model/utils.save_checkpoint`), but the released
-checkpoints and anything trained before it are bare `state_dict()`s, so architecture is
-always inferred from key structure: `(backbone key count, encoder hidden dim)` is unique
-per size and identical across tasks - verified on all 14 released checkpoints. `meta`
-carries what weights cannot: class names and the preprocessing the model was trained with.
+Training writes a `meta` block (`model/utils.save_checkpoint`) - the Cityscapes sem-seg
+releases carry one too - but the released COCO checkpoints and anything trained before
+meta existed are bare `state_dict()`s, so architecture is always inferred from key
+structure: `(backbone key count, encoder hidden dim)` is unique per size and identical
+across tasks - verified on every released checkpoint. `meta` carries what weights cannot:
+class names and the preprocessing the model was trained with.
 """
 
 from pathlib import Path

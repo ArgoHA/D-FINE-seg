@@ -46,9 +46,10 @@ DEFAULT_INPUT_SIZE = ""  # blank: a .pt reads its own config, a graph reads the 
 DEFAULT_CONF_THRESH = 0.5  # initial slider value
 # ─────────────────────────────────────────────────────────────────────────
 
-# The 10 released COCO checkpoints, label -> load_model(size, task). Labels mirror the
-# Python call, and anything not in here is treated as a path, so one field covers both.
-PRESETS = {f"{s} ({t})": (s, t) for t in ("detect", "segment") for s in SIZES}
+# Released checkpoints a size preset resolves, label -> load_model(size, task). Labels
+# mirror the Python call, and anything not in here is treated as a path, so one field
+# covers both. sem_seg presets download the Cityscapes weights on first pick.
+PRESETS = {f"{s} ({t})": (s, t) for t in ("detect", "segment", "sem_seg") for s in SIZES}
 
 
 # ─── Model loading (driven by the UI) ────────────────────────────────────

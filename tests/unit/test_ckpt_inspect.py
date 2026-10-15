@@ -1,7 +1,7 @@
 """Checkpoint introspection: `TorchModel(path)` needs no other arguments.
 
 Checkpoints are bare state_dicts, so size/task/num_classes come from key structure.
-Fingerprints here are the ones measured on the 14 released checkpoints; synthetic
+Fingerprints here are the ones measured on the released checkpoints; synthetic
 state_dicts keep this fast and weight-free.
 """
 
@@ -96,17 +96,23 @@ def test_malformed_sibling_config_is_ignored(tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.parametrize("size", ["n", "s", "m", "l", "x"])
-@pytest.mark.parametrize("task", ["detect", "segment"])
-def test_fingerprints_match_released_checkpoints(size, task):
+@pytest.mark.parametrize(
+    "task,stem,classes",
+    [
+        ("detect", "dfine_{size}_coco", 80),
+        ("segment", "dfine_seg_{size}_coco", 80),
+        ("sem_seg", "dfine_sem_{size}_cityscapes", 19),
+    ],
+)
+def test_fingerprints_match_released_checkpoints(size, task, stem, classes):
     """The synthetic fingerprints above are only valid if the real weights agree."""
-    stem = f"dfine_seg_{size}_coco" if task == "segment" else f"dfine_{size}_coco"
-    path = Path(__file__).resolve().parents[2] / "pretrained" / f"{stem}.pt"
+    path = Path(__file__).resolve().parents[2] / "pretrained" / f"{stem.format(size=size)}.pt"
     if not path.is_file():
         pytest.skip(f"{path.name} not downloaded")
     info = inspect(path)
     assert info["model_name"] == size
     assert info["task"] == task
-    assert info["num_classes"] == 80
+    assert info["num_classes"] == classes
     assert info["in_channels"] == 3
 
 

@@ -380,3 +380,54 @@ def test_sem_seg_forward_non_square():
         label_map = SemSegExportWrapper(model)(x)
     assert logits.shape == (1, N_CLASSES, 448, 896)
     assert label_map.shape == (1, 448, 896)
+
+
+# ── fine-tuning from a released checkpoint ───────────────────────────────
+
+
+def test_finetune_from_sem_seg_ckpt_with_fewer_classes(tmp_path):
+    """Cityscapes-style init with a different class count: backbone, encoder, mask fuser
+    and seg neck load byte-identical; only the class-count heads re-initialize. This is
+    the fine-tune recipe promised in the README/CHANGELOG."""
+    from dfine_seg.model.dfine import build_model
+    from dfine_seg.model.utils import save_checkpoint
+
+    src = build_model("n", 19, False, "cpu", img_size=[448, 896], task="sem_seg").eval()
+    ckpt = tmp_path / "dfine_sem_n_cityscapes.pt"
+    save_checkpoint(ckpt, src.state_dict(), {"task": "sem_seg", "model_name": "n"})
+
+    torch.manual_seed(123)  # different init than src, so equality proves a weight was loaded
+    model = build_model(
+        "n",
+        11,
+        False,
+        "cpu",
+        img_size=[448, 896],
+        task="sem_seg",
+        pretrained_model_path=str(ckpt),
+    ).eval()
+
+    pre, new = src.state_dict(), model.state_dict()
+    reinit, loaded = [], []
+    for k, v in new.items():
+        if k not in pre:
+            continue
+        if v.shape != pre[k].shape:
+            reinit.append(k)
+        elif torch.equal(v, pre[k]):
+            loaded.append(k)
+
+    assert reinit == [
+        "decoder.classifier.weight",
+        "decoder.classifier.bias",
+        "decoder.aux_head.2.weight",
+        "decoder.aux_head.2.bias",
+    ]
+    shape_matched = [k for k, v in new.items() if k in pre and v.shape == pre[k].shape]
+    assert set(shape_matched) == set(loaded)  # nothing shape-matching left at random init
+    assert "backbone.stem.stem1.conv.weight" in loaded
+    assert any(k.startswith("decoder.mask_decoder") for k in loaded)  # the pretrained fuser
+    assert any(k.startswith("decoder.neck") for k in loaded)  # the seg neck survives too
+    with torch.no_grad():
+        out = model(torch.zeros(1, 3, 448, 896))["sem_seg_logits"]  # the built eval_spatial_size
+    assert out.shape == (1, 11, 448, 896)
