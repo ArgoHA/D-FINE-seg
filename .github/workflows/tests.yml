@@ -45,7 +45,6 @@ jobs:
       - name: Install dependencies
         run: >
           uv sync
-          --no-install-package tensorrt
           --no-install-package tensorrt-cu12
           --no-install-package tensorrt-cu12-libs
           --no-install-package tensorrt-cu12-bindings

@@ -60,9 +60,14 @@ class OVModel:
         det_ov_model = core.read_model(self.model_path)
 
         if not self.device:
-            self.device = "CPU"
-            if "GPU" in core.get_available_devices() and not self.rect:
-                self.device = "GPU"
+            # The GPU plugin targets Intel GPUs. OpenVINO >= 2025.4 also lists NVIDIA cards
+            # (via OpenCL), and then fails to compile on them.
+            intel_gpus = [
+                d
+                for d in core.get_available_devices()
+                if d.startswith("GPU") and "Intel" in core.get_property(d, "FULL_DEVICE_NAME")
+            ]
+            self.device = intel_gpus[0] if intel_gpus and not self.rect else "CPU"
 
         # Read channel count + input_size. partial_shape (not .shape) so a dynamic
         # batch dim (max_batch_size > 1 exports) doesn't raise; C stays static.
