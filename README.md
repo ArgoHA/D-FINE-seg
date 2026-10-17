@@ -306,18 +306,18 @@ It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the
 
 | model | params (M) | mIoU | pixel acc | engine ms | e2e ms |
 |---|---:|---:|---:|---:|---:|
-| **D-FINE-N** | 3.36 | 77.99 | 96.03 | 3.02 | 4.21 |
-| **D-FINE-S** | 7.99 | 81.12 | 96.47 | 5.38 | 6.37 |
-| **D-FINE-M** | 15.95 | 81.41 | 96.55 | 7.42 | 8.26 |
-| **D-FINE-L** | 24.97 | 83.80 | 96.93 | 8.98 | 9.77 |
-| **D-FINE-X** | 56.3 | **84.84** | **97.10** | 14.18 | 14.64 |
+| **D-FINE-seg-N** | 3.36 | 77.99 | 96.03 | 3.02 | 4.21 |
+| **D-FINE-seg-S** | 7.99 | 81.12 | 96.47 | 5.38 | 6.37 |
+| **D-FINE-seg-M** | 15.95 | 81.41 | 96.55 | 7.42 | 8.26 |
+| **D-FINE-seg-L** | 24.97 | 83.80 | 96.93 | 8.98 | 9.77 |
+| **D-FINE-seg-X** | 56.3 | **84.84** | **97.10** | 14.18 | 14.64 |
 | YOLO26x-sem | 40.13 | 83.58 | 96.79 | 10.37 | 13.58 |
 | EfficientViT-L2 | 52.61 | 83.20 | 96.87 | 9.56 | 19.87 |
 | Mask2Former-Swin-L | 215.46 | 83.33 | 96.91 | 64.51 | 94.07 |
 | SegFormer-B5 | 84.61 | 81.41 | 96.62 | 38.81 | 42.12 |
 
-- **D-FINE-X vs Mask2Former-Swin-L** (the most accurate Mask2Former checkpoint): +1.51 mIoU, 4.5x lower engine latency, 6.4x lower end-to-end latency, about a quarter of the parameters. X has the highest mIoU and pixel accuracy of the 28 models.
-- **D-FINE-L vs YOLO26x-sem** (the most accurate YOLO26-sem checkpoint): +0.22 mIoU, +0.14 pixel acc, 13% lower engine latency, 28% lower end-to-end latency, 38% fewer parameters. One training seed and a small margin, so read it as "matches or beats".
+- **D-FINE-seg-X vs Mask2Former-Swin-L** (the most accurate Mask2Former checkpoint): +1.51 mIoU, 4.5x lower engine latency, 6.4x lower end-to-end latency, about a quarter of the parameters. X has the highest mIoU and pixel accuracy of the 28 models.
+- **D-FINE-seg-L vs YOLO26x-sem** (the most accurate YOLO26-sem checkpoint): +0.22 mIoU, +0.14 pixel acc, 13% lower engine latency, 28% lower end-to-end latency, 38% fewer parameters. One training seed and a small margin, so read it as "matches or beats".
 - **Cityscapes test** (held-out 1525 images, official evaluation server): D-FINE-seg-X 83.23 vs YOLO26x-sem 82.10 mIoU - the val margin holds on test.
 
 ### Cityscapes - vs YOLO26 and RF-DETR (fine-tuning)
