@@ -318,6 +318,7 @@ It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the
 
 - **D-FINE-X vs Mask2Former-Swin-L** (the most accurate Mask2Former checkpoint): +1.51 mIoU, 4.5x lower engine latency, 6.4x lower end-to-end latency, about a quarter of the parameters. X has the highest mIoU and pixel accuracy of the 28 models.
 - **D-FINE-L vs YOLO26x-sem** (the most accurate YOLO26-sem checkpoint): +0.22 mIoU, +0.14 pixel acc, 13% lower engine latency, 28% lower end-to-end latency, 38% fewer parameters. One training seed and a small margin, so read it as "matches or beats".
+- **Cityscapes test** (held-out 1525 images, official evaluation server): D-FINE-seg-X 83.23 vs YOLO26x-sem 82.10 mIoU - the val margin holds on test.
 
 ### Cityscapes - vs YOLO26 and RF-DETR (fine-tuning)
 
