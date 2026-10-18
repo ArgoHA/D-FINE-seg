@@ -1133,21 +1133,20 @@ class DFINETransformer(nn.Module):
         if enable_mask_head:
             pred_masks = None
             aux_masks = None
-            dn_pred_masks = None
             dn_aux_masks = None
             mask_feats = list(feats) if low_level_feat is None else [low_level_feat] + list(feats)
             mask_feat = self.mask_decoder(mask_feats)
 
             # Compute masks for regular queries
             pred_masks = self._mask_logits_from_h(hs[-1], mask_feat)  # logits
-            aux_masks = [
-                self._mask_logits_from_h(h, mask_feat) for h in hs[:-1]
-            ]  # list of [B,Q,Hm,Wm]
+            if self.training:  # aux masks only feed the loss
+                aux_masks = [
+                    self._mask_logits_from_h(h, mask_feat) for h in hs[:-1]
+                ]  # list of [B,Q,Hm,Wm]
 
-            # Compute masks for denoising queries
+            # Denoising masks for every layer, final included: dn_outputs zips them per layer
             if self.training and dn_meta is not None and dn_hs is not None:
-                dn_pred_masks = self._mask_logits_from_h(dn_hs[-1], mask_feat)
-                dn_aux_masks = [self._mask_logits_from_h(h, mask_feat) for h in dn_hs[:-1]]
+                dn_aux_masks = [self._mask_logits_from_h(h, mask_feat) for h in dn_hs]
 
         if self.training:
             out = {
@@ -1198,9 +1197,6 @@ class DFINETransformer(nn.Module):
                     dn_out_logits[-1],
                     aux_masks=dn_aux_masks if enable_mask_head else None,
                 )
-                # Add the final layer's denoising masks separately
-                if enable_mask_head and dn_pred_masks is not None:
-                    out["dn_pred_masks"] = dn_pred_masks
                 out["dn_pre_outputs"] = {"pred_logits": dn_pre_logits, "pred_boxes": dn_pre_bboxes}
                 out["dn_meta"] = dn_meta
 
@@ -1244,7 +1240,7 @@ class DFINETransformer(nn.Module):
                 )
         else:
             for a, b, c, d, m in zip(
-                outputs_class, outputs_coord, outputs_corners, outputs_ref, aux_masks
+                outputs_class, outputs_coord, outputs_corners, outputs_ref, aux_masks, strict=True
             ):
                 results.append(
                     {

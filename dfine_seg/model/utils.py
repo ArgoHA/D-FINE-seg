@@ -108,15 +108,20 @@ def map_class_weights(cur_tensor, pretrain_tensor):
     if pretrain_tensor.size() == cur_tensor.size():
         return pretrain_tensor
 
+    # Remap only between Objects365 and COCO heads. Any other class-count change (e.g. COCO ->
+    # custom dataset) returns the pretrained tensor as is, and matched_state drops the mismatch.
+    n_coco, min_obj365 = len(obj365_ids), max(obj365_ids) + 2
     adjusted_tensor = cur_tensor.clone()
     adjusted_tensor.requires_grad = False
 
-    if pretrain_tensor.size() > cur_tensor.size():
+    if cur_tensor.shape[0] == n_coco and pretrain_tensor.shape[0] >= min_obj365:
         for coco_id, obj_id in enumerate(obj365_ids):
             adjusted_tensor[coco_id] = pretrain_tensor[obj_id + 1]
-    else:
+    elif pretrain_tensor.shape[0] == n_coco and cur_tensor.shape[0] >= min_obj365:
         for coco_id, obj_id in enumerate(obj365_ids):
             adjusted_tensor[obj_id + 1] = pretrain_tensor[coco_id]
+    else:
+        return pretrain_tensor
 
     return adjusted_tensor
 

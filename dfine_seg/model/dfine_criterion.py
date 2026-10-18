@@ -818,19 +818,6 @@ class DFINECriterion(nn.Module):
                     l_dict = {k + f"_dn_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
-            # Compute mask loss for final layer denoising (if available)
-            if "dn_pred_masks" in outputs and "masks" in self.losses:
-                dn_final_outputs = {
-                    "pred_masks": outputs["dn_pred_masks"],
-                    "pred_boxes": outputs["dn_outputs"][-1]["pred_boxes"],
-                }
-                l_dict = self.loss_masks(dn_final_outputs, targets, indices_dn, dn_num_boxes)
-                l_dict = {
-                    k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict
-                }
-                l_dict = {k + "_dn_final": v for k, v in l_dict.items()}
-                losses.update(l_dict)
-
             # In case of auxiliary traditional head output at first decoder layer.
             if "dn_pre_outputs" in outputs:
                 aux_outputs = outputs["dn_pre_outputs"]
