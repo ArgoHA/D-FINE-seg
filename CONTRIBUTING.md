@@ -11,7 +11,7 @@ Ask questions in [GitHub Issues](https://github.com/ArgoHA/D-FINE-seg/issues). C
 Open an issue with the **Bug report** template and include:
 
 - `dfine-seg` version, install method (pip or source), OS, GPU, and the versions of torch and of the backend in use (TensorRT, OpenVINO, ...);
-- the task (`det`, `seg`, `sem_seg`), model size, and the relevant config;
+- the task (`detect`, `segment`, `sem_seg`), model size, and the relevant config;
 - the command you ran and the full error or a description of the wrong output;
 - a minimal reproduction, if you can share one.
 
