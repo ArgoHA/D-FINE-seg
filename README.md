@@ -27,7 +27,7 @@
 
 D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, and **semantic segmentation** - one codebase, one config flag (`task: detect | segment | sem_seg`), five model sizes (N -> X).
 
-- End-to-end workflow - dataset prep -> training (DDP, EMA, AMP, mosaic) -> export (ONNX, TensorRT, OpenVINO, CoreML, LiteRT) -> benchmarked multi-backend inference
+- End-to-end workflow - dataset prep -> training (DDP, EMA, AMP, mosaic) -> export (ONNX, TensorRT, OpenVINO, CoreML) -> benchmarked multi-backend inference
 - Accuracy - Cityscapes semantic segmentation at native 1024x2048: D-FINE-seg-X reaches 84.84 mIoU at 14.6 ms end-to-end, the highest of [28 models](https://github.com/ArgoHA/cityscapes-benchmark/blob/main/results/RESULTS_SEMSEG_NATIVE.csv) - +1.26 mIoU over YOLO26-x, and +1.5 mIoU over Mask2Former Swin-L with 6.4x lower latency and a quarter of the params - and D-FINE-seg-L matches or beats YOLO26-x on every axis; also beats YOLO26 and RF-DETR on 640 Cityscapes detection & instance-seg F1, and YOLO26 on TACO and VisDrone (TensorRT FP16, end-to-end protocol)
 - Paper - [D-FINE-seg: Object Detection and Instance Segmentation Framework with Multi-Backend Deployment](https://arxiv.org/abs/2602.23043)
 - Not a fork: the detection core follows the [D-FINE paper](https://github.com/Peterande/D-FINE); segmentation heads, training, export and inference are implemented from scratch.
@@ -54,7 +54,7 @@ One frame, three tasks, one config flag:
 - **Pretrained weights for every task** - detection on COCO (plain and Objects365-pretrained), COCO instance segmentation, Cityscapes semantic segmentation
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
 - **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, knowledge distillation, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB, auto-batch size.
-- **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML / LiteRT)
+- **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML)
 
 ## Quick Start
 
@@ -195,7 +195,7 @@ train:
 | `dfine init` | write `config.yaml` from the packaged template (`--task`, `--model`, `-d`, `--force`) |
 | `dfine split` | create train/val CSV splits (test split if configured) |
 | `dfine train` | train the model |
-| `dfine export` | export to ONNX, TensorRT, OpenVINO, CoreML (+ LiteRT when named) |
+| `dfine export` | export to ONNX, TensorRT, OpenVINO, CoreML |
 | `dfine bench` | benchmark all exported models on the val set |
 | `dfine infer` | run on test folder, save visualizations + YOLO txt predictions |
 | `dfine check-errors` | compare predictions against GT, save only mismatches (FP/FN) |
@@ -252,7 +252,6 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 | **TensorRT** | FP16 | Must be exported on the target GPU. **Static input shape only** |
 | **OpenVINO** | FP16, INT8 | Single export for FP32 or FP16 (pick during inference) and separate INT8 quantization script |
 | **CoreML** | FP16, INT8 | Cross-platform export, inference on macOS / iOS. FP32 and INT8 exported by default  |
-| **LiteRT** | INT8 | On-device TFLite (mobile / edge). FP32 and INT8 exported by default |
 
 > **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
@@ -275,7 +274,7 @@ Six inference backends in `dfine_seg/infer/`:
 | **OpenVINO** | `.xml` | CPU, iGPU |
 | **ONNX Runtime** | `.onnx` | CUDA, CPU |
 | **CoreML** | `.mlpackage` | macOS (GPU), iOS |
-| **LiteRT** | `.tflite` | CPU, mobile / edge (Android) |
+| **LiteRT** | `.tflite` | CPU, mobile / edge (Android), support paused |
 
 Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`); sem_seg wrappers return a single `sem_seg` `[H, W]` label map at original image resolution. For sem_seg, `dfine infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
 
@@ -373,6 +372,10 @@ The 640 semantic segmentation comparison is superseded by the native-resolution 
   <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/infer_detect.jpg" width="66%">
   <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/infer_segment.jpg" width="28%">
 </p>
+
+## Contributing
+
+Questions, bug reports and change proposals go to [GitHub Issues](https://github.com/ArgoHA/D-FINE-seg/issues). Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request: changes are discussed in an issue first.
 
 ## Citation
 

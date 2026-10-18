@@ -12,7 +12,7 @@ authors:
 abstract: >-
   A framework for real-time object detection, instance segmentation, and
   semantic segmentation, with training, export, and optimized inference across
-  PyTorch, ONNX, TensorRT, OpenVINO, CoreML, and LiteRT backends.
+  PyTorch, ONNX, TensorRT, OpenVINO and CoreML backends.
 keywords:
   - object detection
   - instance segmentation

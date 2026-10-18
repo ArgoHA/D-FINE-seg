@@ -6,6 +6,8 @@ D-FINE-seg is maintained by one person and used daily for production training wo
 
 Ask questions in [GitHub Issues](https://github.com/ArgoHA/D-FINE-seg/issues). Check the [README](README.md) and existing issues first.
 
+Support is best effort: there is no guaranteed response time, but issues are usually answered within a few days.
+
 ## Reporting bugs
 
 Open an issue with the **Bug report** template and include:
