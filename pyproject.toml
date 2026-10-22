@@ -150,9 +150,9 @@ filterwarnings = [
 # The dev group depends on dfine-seg[all], so a plain `uv sync` still installs every
 # extra and the clone workflow is unchanged. (uv 0.11 has no `default-extras` key.)
 default-groups = ["dev"]
-# Lock for both dev (mac) and training (linux) so uv.lock is portable.
+# Lock for both dev (Apple Silicon mac; torch ships no Intel-mac wheels) and training (linux).
 environments = [
-    "sys_platform == 'darwin'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux'",
 ]
 
