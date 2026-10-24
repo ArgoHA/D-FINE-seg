@@ -70,7 +70,8 @@ export = [
 # tensorrt-cu12 directly, not the `tensorrt` meta package: that one resolves to cu13 for
 # pip users (uv overrides don't ship in the wheel), whose cuda-runtime dep is a deprecated
 # stub that fails to build. Exact on purpose: the overrides below are keyed to this version.
-trt = ["tensorrt-cu12==10.13.3.9; sys_platform == 'linux'"]
+# x86_64 only: the bindings ship no Linux ARM wheels, and uv>=0.13 refuses to lock otherwise.
+trt = ["tensorrt-cu12==10.13.3.9; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 # SAM3 pre-annotation (dfine_seg/etl/sam_labels.py).
 label = ["transformers>=5.15.0"]
 # Gradio UI (dfine_seg/app/demo.py). Capped: the UI is written against gradio 6 components.
@@ -150,6 +151,8 @@ filterwarnings = [
 # The dev group depends on dfine-seg[all], so a plain `uv sync` still installs every
 # extra and the clone workflow is unchanged. (uv 0.11 has no `default-extras` key.)
 default-groups = ["dev"]
+# Lock-only security override: gradio 6.x caps pillow<13. Drop it when moving to gradio 7.
+override-dependencies = ["pillow>=13.0.0"]
 # Lock for both dev (Apple Silicon mac; torch ships no Intel-mac wheels) and training (linux).
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
