@@ -18,7 +18,7 @@ class TorchModel:
         n_outputs: int = None,  # None -> read from the checkpoint's class head
         input_width: int = None,  # None -> sidecar config's train.img_size, else 640
         input_height: int = None,
-        conf_thresh: float = 0.5,
+        conf_thresh: float | List[float] = 0.5,
         rect: bool = False,  # cuts paddings, inference is faster, accuracy might be lower
         keep_ratio: bool = None,  # None -> sidecar config's train.keep_ratio, else False
         apply_nms: bool = True,
@@ -53,11 +53,6 @@ class TorchModel:
         self.binarize_masks = binarize_masks
         self.mask_threshold = mask_threshold
 
-        if isinstance(conf_thresh, float):
-            self.conf_threshs = [conf_thresh] * self.n_outputs
-        elif isinstance(conf_thresh, list):
-            self.conf_threshs = conf_thresh
-
         if not device:
             self.device = "cpu"
             if torch.backends.mps.is_available():
@@ -67,10 +62,18 @@ class TorchModel:
         else:
             self.device = device
 
+        self.conf_thresh = self._prep_conf(conf_thresh)
+
         self.np_dtype = np.float32
 
         self._load_model()
         self._test_pred()
+
+    def _prep_conf(self, conf_thresh: float | List[float]) -> float | torch.Tensor:
+        """One float, or a per-class tensor on the model's device (built once, not per image)."""
+        if np.ndim(conf_thresh):
+            return torch.as_tensor(conf_thresh, dtype=torch.float32, device=self.device)
+        return float(conf_thresh)
 
     def _load_model(self):
         self.model = build_model(
@@ -209,6 +212,7 @@ class TorchModel:
         outputs,
         processed_sizes,
         original_sizes,
+        conf_thresh: float | List[float] | None = None,
         num_top_queries=300,
         use_focal_loss=True,
     ) -> List[Dict[str, torch.Tensor]]:
@@ -242,14 +246,14 @@ class TorchModel:
             topk_labels = topk_labels.gather(1, order)  # [B,K]
             topk_qidx = order
 
+        conf_thresh = self.conf_thresh if conf_thresh is None else self._prep_conf(conf_thresh)
+
         results = []
         for b in range(B):
             sb = topk_scores[b]
             lb = topk_labels[b]
             qb = topk_qidx[b]
-            # Apply per-class confidence thresholds
-            conf_threshs_tensor = torch.tensor(self.conf_threshs, device=sb.device)
-            keep = sb >= conf_threshs_tensor[lb]
+            keep = sb >= (conf_thresh if type(conf_thresh) is float else conf_thresh[lb])
             if self.labels_to_use:  # restrict to requested class ids
                 lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
                 keep &= torch.isin(lb, lbl_set)
@@ -378,6 +382,7 @@ class TorchModel:
         preds: torch.tensor,
         processed_sizes: List[Tuple[int, int]],
         original_sizes: List[Tuple[int, int]],
+        conf_thresh: float | List[float] | None = None,
     ):
         if self.task == "sem_seg":
             return self.process_sem_seg(
@@ -387,16 +392,21 @@ class TorchModel:
                 self.keep_ratio,
                 self.labels_to_use,
             )
-        return self._preds_postprocess(preds, processed_sizes, original_sizes)
+        return self._preds_postprocess(preds, processed_sizes, original_sizes, conf_thresh)
 
     @torch.no_grad()
     def __call__(
-        self, inputs: NDArray[np.uint8], bgr: bool = True
+        self,
+        inputs: NDArray[np.uint8],
+        bgr: bool = True,
+        conf_thresh: float | List[float] | None = None,
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
         3-channel inputs already in RGB order (e.g., ``.npy`` read via
         ``read_image_hwc``); ignored for >3 channels.
+        ``conf_thresh`` (one float or a per-class list) overrides the constructor's value for
+        this call only; ignored for sem_seg.
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: torch.Tensor of shape (N,), dtype int64
@@ -407,7 +417,7 @@ class TorchModel:
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
-        return self._postprocess(preds, processed_sizes, original_sizes)
+        return self._postprocess(preds, processed_sizes, original_sizes, conf_thresh)
 
     @staticmethod
     def mask2poly(masks: np.ndarray, img_shape: Tuple[int, int]) -> List[np.ndarray]:

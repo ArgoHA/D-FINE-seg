@@ -37,18 +37,23 @@ class CoreMLModel:
 
         # No class count anywhere: the fused graph emits labels, and a per-class list carries
         # its own length.
-        scalar = isinstance(conf_thresh, (int, float))
-        self.conf_thresh = float(conf_thresh) if scalar else None
-        self.conf_threshs = None if scalar else list(conf_thresh)
-        if scalar and not 0.0 <= self.conf_thresh <= 1.0:
+        if np.ndim(conf_thresh) == 0 and not 0.0 <= conf_thresh <= 1.0:
             # Catches the old `Model(path, n_outputs)` positional call, which would otherwise
             # land the class count in conf_thresh and silently return nothing.
             raise ValueError(
                 f"conf_thresh must be in [0, 1], got {conf_thresh!r}. The n_outputs argument "
                 "was removed - this wrapper reads everything it needs from the graph."
             )
+        self.conf_thresh = self._prep_conf(conf_thresh)
 
         self._test_pred()
+
+    @staticmethod
+    def _prep_conf(conf_thresh: float | List[float]) -> float | torch.Tensor:
+        """One float, or a per-class tensor on the CPU, where the numpy-backed scores live."""
+        if np.ndim(conf_thresh):
+            return torch.as_tensor(conf_thresh, dtype=torch.float32, device="cpu")
+        return float(conf_thresh)
 
     def _load_model(self):
         self.model = ct.models.MLModel(str(self.model_path))
@@ -230,6 +235,7 @@ class CoreMLModel:
         outputs: List[np.ndarray],
         processed_sizes: List[Tuple[int, int]],
         original_sizes: List[Tuple[int, int]],
+        conf_thresh: float | List[float] | None = None,
     ) -> List[Dict[str, torch.Tensor]]:
         """
         returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
@@ -246,15 +252,12 @@ class CoreMLModel:
 
         boxes = self.rescale_boxes(boxes, processed_sizes, original_sizes, self.keep_ratio)
 
+        conf_thresh = self.conf_thresh if conf_thresh is None else self._prep_conf(conf_thresh)
+
         results = []
         for b in range(B):
             sb, lb, bb = scores[b], labels[b], boxes[b]
-            # Apply per-class confidence thresholds
-            if self.conf_threshs is not None:
-                conf_t = torch.tensor(self.conf_threshs, device=sb.device)
-                conf_keep = sb >= conf_t[lb]
-            else:
-                conf_keep = sb >= self.conf_thresh
+            conf_keep = sb >= (conf_thresh if type(conf_thresh) is float else conf_thresh[lb])
             if self.labels_to_use:  # restrict to requested class ids
                 lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
                 conf_keep &= torch.isin(lb, lbl_set)
@@ -290,12 +293,17 @@ class CoreMLModel:
         return results
 
     def __call__(
-        self, inputs: NDArray[np.uint8], bgr: bool = True
+        self,
+        inputs: NDArray[np.uint8],
+        bgr: bool = True,
+        conf_thresh: float | List[float] | None = None,
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
         3-channel inputs already in RGB order (e.g., ``.npy`` read via
         ``read_image_hwc``); ignored for >3 channels.
+        ``conf_thresh`` (one float or a per-class list) overrides the constructor's value for
+        this call only; ignored for sem_seg.
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: torch.Tensor of shape (N,), dtype int64
@@ -306,7 +314,7 @@ class CoreMLModel:
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
-        return self._postprocess(preds, processed_sizes, original_sizes)
+        return self._postprocess(preds, processed_sizes, original_sizes, conf_thresh)
 
     @staticmethod
     def mask2poly(masks: np.ndarray, img_shape: Tuple[int, int]) -> List[np.ndarray]:

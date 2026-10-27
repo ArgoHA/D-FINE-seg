@@ -160,33 +160,26 @@ DEFAULT_BACKEND = "D-FINE-seg"
 
 
 # ─── Inference helpers ───────────────────────────────────────────────────
-def _set_model_conf_threshold(model, conf_thresh: float) -> None:
-    """Set a uniform confidence threshold for the currently loaded backend."""
-    conf = float(np.clip(conf_thresh, 0.0, 1.0))
-    if getattr(model, "conf_threshs", None) is not None:
-        model.conf_threshs = [conf] * len(model.conf_threshs)
-        if getattr(model, "_conf_threshs_t", None) is not None:
-            model._conf_threshs_t.fill_(conf)  # TRT reads this device copy, not the list
-    elif hasattr(model, "conf_thresh"):
-        model.conf_thresh = conf
-
-
-def _select_backend(backend: str, prompt: str, conf_thresh: float):
-    """Return (model, visualizer) for the chosen backend, applying conf / prompt."""
+def _select_backend(backend: str, prompt: str):
+    """Return (model, visualizer) for the chosen backend, applying the prompt."""
     if backend == "SAM3":
         m = _get_sam_model()
         m.prompts = m.parse_prompts(prompt)
-        m.conf_thresh = float(np.clip(conf_thresh, 0.0, 1.0))
         return m, Visualizer(n_classes=len(m.prompts), class_names=dict(enumerate(m.prompts)))
     if CURRENT.model is None:
         raise gr.Error("No model loaded - fix the model settings above and press Load.")
-    _set_model_conf_threshold(CURRENT.model, conf_thresh)
     return CURRENT.model, CURRENT.vis
 
 
-def _run_on_bgr(img_bgr, model_obj, vis_obj, minimize: bool = False) -> np.ndarray:
+def _clamp_conf(conf_thresh: float) -> float:
+    """The slider bounds it, but Gradio API clients can send anything."""
+    return float(np.clip(conf_thresh, 0.0, 1.0))
+
+
+def _run_on_bgr(img_bgr, model_obj, vis_obj, conf_thresh: float, minimize: bool = False):
     """Run model + visualizer on a single BGR frame. Returns annotated BGR."""
-    return vis_obj(img_bgr, model_obj(img_bgr)[0], minimize=minimize)
+    out = model_obj(img_bgr, conf_thresh=_clamp_conf(conf_thresh))[0]
+    return vis_obj(img_bgr, out, minimize=minimize)
 
 
 # ─── Tab 1: Images (single upload or webcam snapshot) ───────────────────
@@ -202,10 +195,10 @@ def predict_image(
         return None
     # Logged before the work starts, so a slow click is distinguishable from a queued one.
     print(f"[image] {backend} {img.shape[1]}x{img.shape[0]} …", flush=True)
-    model_obj, vis_obj = _select_backend(backend, prompt, conf_thresh)
+    model_obj, vis_obj = _select_backend(backend, prompt)
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     t0 = time.perf_counter()
-    vis = _run_on_bgr(img_bgr, model_obj, vis_obj, minimize=minimize)
+    vis = _run_on_bgr(img_bgr, model_obj, vis_obj, conf_thresh, minimize=minimize)
     ms = (time.perf_counter() - t0) * 1000
     print(f"[image] {backend} {ms:.1f} ms")
     return cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
@@ -223,7 +216,7 @@ def predict_video(
     """Process every `stride`-th frame; copy annotations to skipped frames."""
     if video_path is None:
         return None
-    model_obj, vis_obj = _select_backend(backend, prompt, conf_thresh)
+    model_obj, vis_obj = _select_backend(backend, prompt)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise gr.Error(f"Cannot open video: {video_path}")
@@ -247,7 +240,7 @@ def predict_video(
         if not ok:
             break
         if idx % stride == 0:
-            results = model_obj(frame)
+            results = model_obj(frame, conf_thresh=_clamp_conf(conf_thresh))
             last_results = results[0]
         if last_results is not None:
             frame = vis_obj(frame, last_results, minimize=minimize)

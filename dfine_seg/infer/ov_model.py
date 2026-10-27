@@ -48,12 +48,16 @@ class OVModel:
         self._read_model_metadata()
 
         # Per-class confidence thresholds
-        if isinstance(conf_thresh, float):
-            self.conf_threshs = [conf_thresh] * self.n_outputs
-        elif isinstance(conf_thresh, list):
-            self.conf_threshs = conf_thresh
+        self.conf_thresh = self._prep_conf(conf_thresh)
 
         self._test_pred()
+
+    @staticmethod
+    def _prep_conf(conf_thresh: float | List[float]) -> float | torch.Tensor:
+        """One float, or a per-class tensor on the CPU, where the numpy-backed scores live."""
+        if np.ndim(conf_thresh):
+            return torch.as_tensor(conf_thresh, dtype=torch.float32, device="cpu")
+        return float(conf_thresh)
 
     def _load_model(self):
         core = Core()
@@ -281,6 +285,7 @@ class OVModel:
         outputs: List[NDArray],
         processed_sizes: List[Tuple[int, int]],
         original_sizes: List[Tuple[int, int]],
+        conf_thresh: float | List[float] | None = None,
         num_top_queries=300,
         use_focal_loss=True,
     ) -> List[Dict[str, NDArray]]:
@@ -318,14 +323,14 @@ class OVModel:
             topk_labels = topk_labels.gather(1, order)  # [B,K]
             topk_qidx = order
 
+        conf_thresh = self.conf_thresh if conf_thresh is None else self._prep_conf(conf_thresh)
+
         results = []
         for b in range(B):
             sb = topk_scores[b]
             lb = topk_labels[b]
             qb = topk_qidx[b]
-            # Apply per-class confidence thresholds
-            conf_threshs_tensor = torch.tensor(self.conf_threshs, device=sb.device)
-            keep = sb >= conf_threshs_tensor[lb]
+            keep = sb >= (conf_thresh if type(conf_thresh) is float else conf_thresh[lb])
             if self.labels_to_use:  # restrict to requested class ids
                 lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
                 keep &= torch.isin(lb, lbl_set)
@@ -369,12 +374,17 @@ class OVModel:
         return results
 
     def __call__(
-        self, inputs: NDArray[np.uint8], bgr: bool = True
+        self,
+        inputs: NDArray[np.uint8],
+        bgr: bool = True,
+        conf_thresh: float | List[float] | None = None,
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
         3-channel inputs already in RGB order (e.g., ``.npy`` read via
         ``read_image_hwc``); ignored for >3 channels.
+        ``conf_thresh`` (one float or a per-class list) overrides the constructor's value for
+        this call only; ignored for sem_seg.
         Output:
             List of batch size length. Each element is a dict {"labels", "boxes", "scores"}
             labels: torch.Tensor of shape (N,), dtype int64
@@ -385,7 +395,7 @@ class OVModel:
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
-        return self._postprocess(preds, processed_sizes, original_sizes)
+        return self._postprocess(preds, processed_sizes, original_sizes, conf_thresh)
 
     @staticmethod
     def mask2poly(masks: np.ndarray, img_shape: Tuple[int, int]) -> List[np.ndarray]:

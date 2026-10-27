@@ -91,11 +91,16 @@ class SAM3Model:
 
     @torch.inference_mode()
     def __call__(
-        self, img: NDArray[np.uint8], prompts: Union[str, List[str]] = None, bgr: bool = True
+        self,
+        img: NDArray[np.uint8],
+        prompts: Union[str, List[str]] = None,
+        bgr: bool = True,
+        conf_thresh: float = None,
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Input image as ndarray (BGR, HWC). Pass ``bgr=False`` for RGB input.
         ``prompts`` overrides ``self.prompts`` for this call (and persists).
+        ``conf_thresh`` overrides ``self.conf_thresh`` for this call only.
         Output: list of length 1 with dict {"labels", "boxes", "scores", "masks"}, without
         ``masks`` when ``task="detect"``; one forward per prompt, all detections merged,
         ``labels`` = prompt index; a prompt that finds nothing contributes nothing (its masks
@@ -103,6 +108,7 @@ class SAM3Model:
         """
         if prompts is not None:
             self.prompts = self.parse_prompts(prompts)
+        conf_thresh = self.conf_thresh if conf_thresh is None else conf_thresh
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if bgr else img
         h, w = rgb.shape[:2]
 
@@ -116,12 +122,12 @@ class SAM3Model:
                 outputs = self.model(**inputs)
             if detect:
                 res = self.processor.post_process_object_detection(
-                    outputs, threshold=self.conf_thresh, target_sizes=[(h, w)]
+                    outputs, threshold=conf_thresh, target_sizes=[(h, w)]
                 )[0]
             else:
                 res = self.processor.post_process_instance_segmentation(
                     outputs,
-                    threshold=self.conf_thresh,
+                    threshold=conf_thresh,
                     mask_threshold=self.mask_threshold,
                     target_sizes=[(h, w)],
                 )[0]

@@ -48,21 +48,19 @@ class TRTModel:
         self._stream = torch.cuda.Stream(device=self.device) if self.device == "cuda" else None
         self._setup_io_buffers()
 
-        # single threshold or per class thresholds
-        scalar = isinstance(conf_thresh, (int, float))
-        self.conf_thresh = float(conf_thresh) if scalar else None
-        conf_threshs = None if scalar else list(conf_thresh)
-        self._conf_threshs_t = (
-            torch.tensor(conf_threshs, device=self.device, dtype=torch.float32)
-            if conf_threshs is not None
-            else None
-        )
+        self.conf_thresh = self._prep_conf(conf_thresh)
 
         self._graphs: Dict[int, "torch.cuda.CUDAGraph"] = {}
         self._test_pred()
 
         if self.device == "cuda" and self.use_cuda_graph:
             self._capture_graphs()
+
+    def _prep_conf(self, conf_thresh: float | List[float]) -> float | torch.Tensor:
+        """One float, or a per-class tensor on the model's device (built once, not per image)."""
+        if np.ndim(conf_thresh):
+            return torch.as_tensor(conf_thresh, dtype=torch.float32, device=self.device)
+        return float(conf_thresh)
 
     def _load_model(self):
         self.TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
@@ -437,6 +435,7 @@ class TRTModel:
         outputs: List[torch.Tensor],
         processed_sizes: List[Tuple[int, int]],
         original_sizes: List[Tuple[int, int]],
+        conf_thresh: float | List[float] | None = None,
     ) -> List[Dict[str, NDArray]]:
         """
         returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
@@ -451,14 +450,12 @@ class TRTModel:
 
         boxes = self.rescale_boxes(boxes, processed_sizes, original_sizes, self.keep_ratio)
 
+        conf_thresh = self.conf_thresh if conf_thresh is None else self._prep_conf(conf_thresh)
+
         results = []
         for b in range(B):
             sb, lb, bb = scores[b], labels[b], boxes[b]
-            # Per-class thresholds use a cached tensor (avoids per-call alloc)
-            if self._conf_threshs_t is not None:
-                conf_keep = sb >= self._conf_threshs_t.to(sb.device, non_blocking=True)[lb]
-            else:
-                conf_keep = sb >= self.conf_thresh
+            conf_keep = sb >= (conf_thresh if type(conf_thresh) is float else conf_thresh[lb])
             if self.labels_to_use:  # restrict to requested class ids
                 lbl_set = torch.as_tensor(self.labels_to_use, device=lb.device, dtype=lb.dtype)
                 conf_keep &= torch.isin(lb, lbl_set)
@@ -496,12 +493,17 @@ class TRTModel:
         return results
 
     def __call__(
-        self, inputs: NDArray[np.uint8], bgr: bool = True
+        self,
+        inputs: NDArray[np.uint8],
+        bgr: bool = True,
+        conf_thresh: float | List[float] | None = None,
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Input image as ndarray (BGR, HWC) or BHWC. Pass ``bgr=False`` for
         3-channel inputs already in RGB order (e.g., ``.npy`` read via
         ``read_image_hwc``); ignored for >3 channels.
+        ``conf_thresh`` (one float or a per-class list) overrides the constructor's value for
+        this call only; ignored for sem_seg.
         Output:
             List of BS length. Each element is a dict {"labels", "boxes", "scores"}, device = GPU
             labels: torch.Tensor of shape (N,), dtype int64
@@ -518,7 +520,7 @@ class TRTModel:
                 inputs, bgr=bgr
             )
             preds = self._predict(processed_inputs, actual_batch=len(processed_sizes))
-            results = self._postprocess(preds, processed_sizes, original_sizes)
+            results = self._postprocess(preds, processed_sizes, original_sizes, conf_thresh)
         torch.cuda.default_stream(self.device).wait_stream(self._stream)
         return results
 
@@ -527,6 +529,7 @@ class TRTModel:
         rgb_chw: "torch.Tensor | List[torch.Tensor]",
         original_sizes: List[Tuple[int, int]] | None = None,
         input_ready: torch.cuda.Event | None = None,
+        conf_thresh: float | List[float] | None = None,
     ) -> Tuple[List[Dict[str, torch.Tensor]], torch.cuda.Event]:
         """GPU-resident entry point. Same output contract as ``__call__`` but the
         caller hands over already-on-device RGB CHW uint8 tensors (no cv2,
@@ -550,13 +553,16 @@ class TRTModel:
             input_ready: optional CUDA event the caller recorded on its stream
                 after writing the inputs. ``gpu_run`` inserts a non-blocking
                 wait on the model stream so it can't read stale data.
+            conf_thresh: per-call override, same as in ``__call__``.
 
         Returns:
             ``(results, done_event)``. ``results`` is the usual list of B
             ``{labels, boxes, scores, optional masks}`` dicts. ``done_event``
             is recorded on ``self._stream`` after postprocess - wait on it
             from your own stream (``my_stream.wait_event(done_event)``)
-            before reading the result tensors. No CPU sync inside.
+            before reading the result tensors. Postprocess syncs once per image
+            (``torch.nonzero``); a per-call ``conf_thresh`` list adds one H2D copy
+            (pass a CUDA tensor to skip it).
 
         Constraints: CUDA-only; ``keep_ratio=False`` engines only (no letterbox
         path); batch must fit the engine's max profile.
@@ -608,7 +614,7 @@ class TRTModel:
             # dynamic engines additionally re-set the input shape per call.
             self._input_tensor[:B].copy_(batch, non_blocking=True)
             preds = self._predict(self._input_tensor, actual_batch=B)
-            results = self._postprocess(preds, processed_sizes, original_sizes)
+            results = self._postprocess(preds, processed_sizes, original_sizes, conf_thresh)
             done = torch.cuda.Event()
             done.record(self._stream)
         return results, done
