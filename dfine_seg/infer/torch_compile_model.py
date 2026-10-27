@@ -258,7 +258,9 @@ class TorchCompileModel:
         keep_ratio: bool,
         labels_to_use: List[int] = None,  # empty -> keep all; else ids not requested -> 255
     ) -> List[Dict[str, torch.Tensor]]:
-        """argmax -> per-image NEAREST resize to original size (letterbox pads cropped first).
+        """Model (head): 1/4 logits -> bilinear upsample to model input size.
+        Here: argmax at input size -> per-image NEAREST resize of the label map to original size
+        (letterbox pads cropped first).
 
         Returns list of length B with {"sem_seg": uint8 [H0, W0] label map}.
         """

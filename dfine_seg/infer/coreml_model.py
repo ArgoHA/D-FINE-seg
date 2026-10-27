@@ -204,7 +204,10 @@ class CoreMLModel:
     def _postprocess_sem_seg(
         self, outputs, processed_sizes, original_sizes
     ) -> List[Dict[str, torch.Tensor]]:
-        """Fused-argmax graph: NEAREST-resize each label map to its original size."""
+        """Engine (fused graph): 1/4 logits -> bilinear upsample to model input size -> argmax.
+        Here: per-image NEAREST resize of the label map to original size (letterbox pads cropped
+        first).
+        """
         maps = np.asarray(outputs[0])  # [B, H, W] int
         if self.labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
             maps = np.where(np.isin(maps, self.labels_to_use), maps, 255)

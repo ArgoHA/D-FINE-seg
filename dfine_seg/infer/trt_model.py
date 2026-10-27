@@ -408,7 +408,10 @@ class TRTModel:
     def _postprocess_sem_seg(
         self, outputs, processed_sizes, original_sizes
     ) -> List[Dict[str, torch.Tensor]]:
-        """Fused-argmax graph: NEAREST-resize each label map to its original size (on device)."""
+        """Engine (fused graph): 1/4 logits -> bilinear upsample to model input size -> argmax.
+        Here: per-image NEAREST resize of the label map to original size (letterbox pads cropped
+        first), on device.
+        """
         maps = outputs[0]  # [B, H, W] int32
         if self.labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
             lbl_set = torch.as_tensor(self.labels_to_use, device=maps.device, dtype=maps.dtype)
