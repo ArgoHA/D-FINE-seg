@@ -28,9 +28,9 @@ train:
   infer_path: ${train.root}/output/infer
 
   ### Configs ###
-  use_wandb: True
-  device: cuda
-  label_to_name: # dataset's classes
+  use_wandb: False # set True to log to Weights & Biases (requires `wandb login`)
+  device: cuda # cuda | cpu | mps
+  label_to_name: # dataset's classes - EDIT ME (0-indexed and contiguous)
     0: person
     1: rider
     2: car
