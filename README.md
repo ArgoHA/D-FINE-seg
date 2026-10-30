@@ -25,7 +25,7 @@
 
 ---
 
-D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, and **semantic segmentation** - one codebase, one config flag (`task: detect | segment | sem_seg`), five model sizes (N -> X).
+D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, **semantic segmentation** and **keypoint estimation** - one codebase, one config flag (`task: detect | segment | sem_seg | kpts`), five model sizes (N -> X).
 
 - End-to-end workflow - dataset prep -> training (DDP, EMA, AMP, mosaic) -> export (ONNX, TensorRT, OpenVINO, CoreML) -> benchmarked multi-backend inference
 - Accuracy - Cityscapes semantic segmentation at native 1024x2048: D-FINE-seg-X reaches 84.84 mIoU at 14.6 ms end-to-end, the highest of [28 models](https://github.com/ArgoHA/cityscapes-benchmark/blob/main/results/RESULTS_SEMSEG_NATIVE.csv) - +1.26 mIoU over YOLO26-x, and +1.5 mIoU over Mask2Former Swin-L with 6.4x lower latency and a quarter of the params - and D-FINE-seg-L matches or beats YOLO26-x on every axis; also beats YOLO26 and RF-DETR on 640 Cityscapes detection & instance-seg F1, and YOLO26 on TACO and VisDrone (TensorRT FP16, end-to-end protocol)
@@ -48,13 +48,16 @@ One frame, three tasks, one config flag:
 
 ## Highlights
 
-- **Instance segmentation head** (`task: segment`) - lightweight mask head on top of D-FINE's HybridEncoder PAN outputs: stride 8/16/32 features fused to 1/4 resolution, then a dot-product between per-query mask embeddings (3-layer MLP) and the shared mask features yields per-instance masks
-- **Semantic segmentation head** (`task: sem_seg`) - reuses the pretrained instance-seg mask fuser on full-frame features, followed by a small conv neck and 1x1 classifier: no queries, no NMS
-- **Mask-aware training** - box-cropped BCE + Dice mask losses (instance seg) and CE + multi-class soft Dice with `ignore_index` (semantic seg), mask supervision inside contrastive denoising, and Dice + sigmoid-focal mask costs in the Hungarian matcher - all train-time only, zero inference cost
+- **Instance segmentation head** (`task: segment`) - lightweight mask head: per-query mask embeddings dotted with shared 1/4-resolution features fused from the encoder outputs
+- **Semantic segmentation head** (`task: sem_seg`) - the pretrained instance-seg feature fuser plus a small conv classifier: no queries, no NMS
+- **Keypoint head** (`task: kpts`) - every detection also predicts K points with a presence and a visibility score each; a keypoint decoder refines the top detections with one token per point
+- **Mask-aware training** - box-cropped BCE + Dice (instance seg), CE + Dice with `ignore_index` (semantic seg), mask costs in matching and mask supervision on denoising queries - train-time only, zero inference cost
 - **Pretrained weights for every task** - detection on COCO (plain and Objects365-pretrained), COCO instance segmentation, Cityscapes semantic segmentation
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
 - **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, knowledge distillation, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB, auto-batch size.
 - **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML)
+
+How it works - backbone, encoder and every task's decoder: [docs/arch.md](https://github.com/ArgoHA/D-FINE-seg/blob/main/docs/arch.md).
 
 ## Quick Start
 
@@ -133,6 +136,8 @@ data/dataset/
 
 **Segmentation labels**: `class_id x1 y1 x2 y2 ... xN yN` (normalized polygon coordinates)
 
+**Keypoint labels** (`task: kpts`): `class_id xc yc w h x1 y1 v1 ... xK yK vK` (normalized, the YOLO-pose format) - see [Keypoints](#keypoints-task-kpts)
+
 **Input types & channel order**: 3-channel `.jpg`/`.png` (BGR, read via `cv2.imread`), 3-channel `.npy` (RGB, read via `np.load`), or 4-channel `.npy` (RGB+extras, e.g. RGB+thermal).
 
 #### Semantic segmentation masks (`task: sem_seg`)
@@ -146,6 +151,20 @@ data/dataset/
 Every pixel gets a class from `label_to_name` (background included). Pixels with value `train.sem_seg.ignore_index` (default 255) are excluded from loss and metrics and during inference 255 is the "background" or "ignored" class. `dfine split` works unchanged; `keep_ratio: True` is supported (letterbox pad is filled with `ignore_index`, so pad pixels don't supervise); `coco_dataset: True` is not supported for this task.
 
 Released Cityscapes weights load with `load_model("x", task="sem_seg")` - names and input size come from the checkpoint. They are also a strong init for your own driving/outdoor data: point `train.pretrained_model_path` at one with a different `label_to_name` and the class heads re-initialize while the rest keeps the Cityscapes training (N from COCO detection weights, S/M/L/X from obj2coco). A model fine-tuned from them is still derived from Cityscapes and inherits its non-commercial terms (see [License](#license)) - for commercial use, start from the COCO / obj2coco weights instead. Benchmark numbers and the full 28-model comparison: [cityscapes-benchmark](https://github.com/ArgoHA/cityscapes-benchmark).
+
+#### Keypoints (`task: kpts`)
+
+Every object has a box and the same K points (`train.kpts.shape: [K, 3]`); classes without points fill all slots with `0 0 0`. Boxes are required: every decoder stage is anchored on them. For point-only tasks (e.g. centers of small objects) use `task: detect` with fixed-size pseudo-boxes around each point - the box center is the point.
+
+- **YOLO**: `class_id xc yc w h x1 y1 v1 ... xK yK vK`, normalized. A line with a different value count than `5 + K * D` is an error. With `shape: [K, 2]` the flags are omitted: `0 0` means unlabeled, any other point is visible.
+- **COCO JSON**: `ann["keypoints"]` (`[x, y, v] * K`, absolute) and `ann["area"]` (the OKS scale; YOLO labels use `0.53 * box area`). `dfine_seg/etl/coco2yolo.py` (`use_kpts=True`) and `yolo2coco.py` convert both ways.
+- **Flags**: `v=0` unlabeled, `v=1` labeled but occluded, `v=2` visible. Coordinates are learned from every labeled point (`v > 0`); points that augmentation moves off the image become unlabeled.
+- **Two scores per point**: *presence* - is the point labeled / locatable at all (trained on `v > 0`, the points COCO OKS scores), and *visible* - is it directly seen, trained on `v == 2` vs `v == 1` over labeled points only, so read it as `P(visible | present)`. The visible score needs `[K, 3]` labels that contain occluded points; without them it stays ~1 (a warning says so).
+- `train.kpts.flip_idx` is required when `K > 1` and `left_right_flip` or `up_down_flip` > 0: after a flip, slot `i` takes the point from slot `flip_idx[i]`. A mirrored left eye is a right eye, so symmetric pairs must swap (`[0, 2, 1, 4, 3, ...]` for COCO, `[1, 0]` for two eyes); points without a mirror partner keep their slot (`[0, 1]` for head, tail). Without it, flips would teach the model to confuse left and right.
+- `train.kpts.sigmas` set how fast OKS falls with distance, per point (COCO's 17 for K=17, else 0.07). A point scores `exp(-d² / (8 σ² A))`, with `d` the error and `A` the object area (COCO `area`, else `0.53 x box area`); an object counts as correct at a given threshold (0.5 ... 0.95) when the mean over its labeled points reaches it. Rule of thumb for custom points: `σ ≈ 0.6 x r`, where `r` is the error, as a fraction of `sqrt(box w x h)`, that should still score 0.5 (0.07 -> 12% of the box size). Sigmas also scale the OKS loss and matching cost.
+- `conf_thresh` is the presence threshold for drawing, `dfine infer` labels and `presence_f1`; `visible_thresh` splits drawn and written points into visible / occluded. Model outputs keep all K points with their scores, so filter them yourself, e.g. `kpts[..., 2] >= conf_thresh`. `skeleton` (zero-based pairs, drawing only) and `names` are stored in the checkpoint.
+- Init from the detection weights (`dfine_<size>_<coco|obj2coco>.pt`); the keypoint modules start at random init. `train.kpts.freeze_except_kpt: True` trains only the keypoint modules - useful when the detector already finds your objects. The best checkpoint is picked by the mean of `mAP_50_95_kpt` (COCO keypoint AP) and box `mAP_50_95`.
+- Metrics (training log and `metrics.csv`): `f1_kpt` (instances matched at OKS >= 0.5; like COCO, objects without labeled points are ignored), `mAP_50_95_kpt` (COCO keypoint AP, top-20 detections per image), `kpt_px_err` (mean error in original-image pixels over labeled points of box-matched objects), `presence_f1` (presence score >= `conf_thresh` vs labeled, over all slots of box-matched objects with labeled points), `visible_acc`, and box `mAP_50_95` / `f1`. `extended_metrics.csv` adds `precision_kpt` / `recall_kpt`, `mAP_50_kpt`, `oks_kpt` (mean OKS), `pck_kpt` (PCK at 0.05 x box diagonal), `presence_precision` / `presence_recall`.
 
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
 
@@ -172,7 +191,7 @@ If you only have a single `coco.json`, run `dfine split` to produce `train.json`
 Edit `config.yaml` - key settings:
 
 ```yaml
-task: detect  # detect | segment | sem_seg
+task: detect  # detect | segment | sem_seg | kpts
 exp_name: my_exp  # experiment name (used in output paths)
 model_name: s  # n / s / m / l / x
 
@@ -259,6 +278,8 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend - over the sorted top-K detection scores vs torch - to `parity.csv` next to the weights.
 
+For `task: kpts` the graph has one more output, `kpts` `[B, K_top, num_kpts, 4]`: x, y in input pixels plus the presence and visible scores, gathered with the same top-K as the boxes. ONNX, TensorRT, OpenVINO and CoreML carry it.
+
 For `task: sem_seg` every backend gets the same fused-argmax graph: a single int32 `sem_seg` output `[B, H, W]` (label map at input resolution, no detection postprocessor), and parity compares per-pixel argmax agreement instead of score cosine.
 
 ## Inference
@@ -276,7 +297,7 @@ Six inference backends in `dfine_seg/infer/`:
 | **CoreML** | `.mlpackage` | macOS (GPU), iOS |
 | **LiteRT** | `.tflite` | CPU, mobile / edge (Android), support paused |
 
-Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`); sem_seg wrappers return a `sem_seg` `[H, W]` label map at original image resolution. Exported with `export.sem_seg_probs: True` (or `TorchModel(..., sem_seg_probs=True)` for `.pt`), sem_seg graphs gain a second output and the wrappers also return `sem_seg_probs` `[C, h, w]` float32, the per-class softmax at 1/4 of the model input (letterbox pads included), and `sem_seg_probs_tf`, a 3x3 matrix mapping original-image pixel `(x, y, 1)` to probs-map pixel coordinates (compose with camera intrinsics as `K' = tf @ K`). Use it where per-class confidence matters, e.g. traversability cost maps or lidar / BEV fusion; the label map is unchanged. For sem_seg, `dfine infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
+Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`, + `kpts` `[N, K, 4]` for `kpts`: x, y in original image pixels, presence score, visible score - all K points are returned, threshold presence yourself; `Visualizer` hides points below `kpts.conf_thresh` and draws occluded ones hollow); sem_seg wrappers return a `sem_seg` `[H, W]` label map at original image resolution. Exported with `export.sem_seg_probs: True` (or `TorchModel(..., sem_seg_probs=True)` for `.pt`), sem_seg graphs gain a second output and the wrappers also return `sem_seg_probs` `[C, h, w]` float32, the per-class softmax at 1/4 of the model input (letterbox pads included), and `sem_seg_probs_tf`, a 3x3 matrix mapping original-image pixel `(x, y, 1)` to probs-map pixel coordinates (compose with camera intrinsics as `K' = tf @ K`). Use it where per-class confidence matters, e.g. traversability cost maps or lidar / BEV fusion; the label map is unchanged. For sem_seg, `dfine infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
 
 Also provided:
 

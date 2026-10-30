@@ -133,6 +133,22 @@ Train a bigger dfine-seg model and use it as a teacher for a smaller dfine-seg m
 
 The last decoder layer's denoising queries now get class/box supervision in instance segmentation (previously they were silently dropped, so only their mask loss was applied). Cityscapes regression: mAP_50_mask 0.496 -> 0.507 (can be noise), f1 unchanged. Aux mask logits are no longer computed at eval.
 
+## 2026-10-29 - Adding Keypoint estimation (`task: kpts`)
+
+- New task: every detection also predicts K points (YOLO-pose labels `class xc yc w h x1 y1 v1 ...` or COCO `keypoints`, `train.kpts` config block). A small MLP per decoder layer predicts initial box-relative points, plus a presence and a visibility score per point. A 2-layer keypoint decoder then refines the top 50 detections: one token per point, self-attention between the points of an object and deformable cross-attention around each point, trained with keypoint denoising. A keypoint-quality head (predicted OKS) rescores the refined detections: `score = cls^0.5 * quality^0.5`. Losses: L1 + OKS + presence/visibility BCE + quality BCE; Hungarian cost includes keypoints. Flips (with `flip_idx`), mosaic, affine and letterbox carry the points; coarse dropout marks the points it hides as occluded.
+- Metrics: `f1_kpt` (OKS >= 0.5), COCO keypoint `mAP_50_95_kpt`, `kpt_px_err`, `presence_f1`, `visible_acc` (more in `extended_metrics.csv`); best checkpoint = mean of `mAP_50_95_kpt` and box `mAP_50_95`.
+- Export: one extra `kpts` output `[B, K_top, num_kpts, 4]` for ONNX, TensorRT, OpenVINO and CoreML; all Python wrappers return `kpts` `[N, K, 4]` in original image pixels, `dfine infer` writes YOLO-pose lines, `Visualizer` draws points and skeleton. Not yet in the C++ library or the int8 export scripts. TensorRT engines for `kpts` keep GridSample in fp32 (TensorRT 10.13 mis-executes the keypoint decoder's chained GridSamples in fp16).
+- `train.kpts.freeze_except_kpt` trains only the keypoint modules (per-query head and keypoint decoder).
+
+#### Results (S, 640x640, init from COCO person detection weights, RTX 5070 Ti, batch 1)
+
+| Task | Metric | D-FINE-seg S | Reference |
+|------|--------|--------------|-----------|
+| 17-point COCO pose, val2017, 20 epochs | keypoint AP / person box AP / TensorRT fp16 latency | 62.0 / 64.2 / 2.06 ms | YOLO26s-pose, same 20 epochs from COCO detection weights: 55.0 / 59.8 / 2.13 ms; released YOLO26s-pose (300 epochs, Objects365 init): 62.7 / - / 2.14 ms |
+| One ground-contact point (ankle midpoint), COCO val, 10 epochs | median error / box height | 0.024 | 0.123 (box bottom-center) |
+
+Keypoint AP is the official COCO scorer on all val2017 images with people; latency is per-image predict at conf 0.5 through each framework's own pipeline. TensorRT matches PyTorch (62.0 vs 62.1 AP). The previous per-detection MLP head alone reached 37.8 AP. The single predicted point beats the box bottom-center on 93% of people (97% when the ankles are visible).
+
 ## 2026-10-31 - Semantic segmentation probability output
 
 `export.sem_seg_probs: True` adds a second output to the sem_seg graph: the per-class softmax at 1/4 of the model input, next to the unchanged int32 label map. Every wrapper then also returns `sem_seg_probs` `[C, h, w]` and `sem_seg_probs_tf` (3x3 original-pixel -> probs-pixel transform, exact under letterbox; `K' = tf @ K` for camera projection). For `.pt`: `TorchModel(..., sem_seg_probs=True)`. Intended for consumers that fuse per-class confidence (traversability, lidar painting, BEV). The C++ core accepts these engines and ignores the extra output. Measured on TensorRT fp16 (RTX 5070 Ti, Cityscapes val at 1024x2048): the engine gets ~0.02 ms slower and end-to-end latency stays within run-to-run noise (S 6.66 -> 6.69 ms, X 14.87 -> 14.77-14.98 ms); the label map and mIoU are unchanged.
