@@ -8,11 +8,27 @@ from typing import Dict, List
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from faster_coco_eval import COCO, COCOeval_faster
 from loguru import logger
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from torchvision.ops import box_iou
 
 from dfine_seg.dl.utils import filter_preds, rle_to_masks
+from dfine_seg.model.kpts import BOX_AREA_FACTOR, kpt_oks
+
+KPT_MAX_DETS = 20  # COCO keypoint AP scores the top 20 detections per image (100 for boxes)
+
+# task=kpts metrics reported only with the extended ones (extended_metrics.csv); the main
+# table keeps f1_kpt, mAP_50_95_kpt, kpt_px_err, presence_f1, visible_acc
+KPT_EXTENDED_METRICS = (
+    "precision_kpt",
+    "recall_kpt",
+    "mAP_50_kpt",
+    "oks_kpt",
+    "pck_kpt",
+    "presence_precision",
+    "presence_recall",
+)
 
 # Suppress verbose output from faster_coco_eval
 logging.getLogger("faster_coco_eval").setLevel(logging.WARNING)
@@ -49,6 +65,7 @@ class Validator:
         iou_thresh=0.5,
         mask_batch_size=1000,
         compute_maps=True,
+        kpts_meta=None,
     ) -> None:
         """
         Format example:
@@ -58,6 +75,10 @@ class Validator:
 
         mask_batch_size - Number of images to process at once when computing mask metrics.
             Lower values use less RAM but may be slower. Default 500.
+
+        kpts_meta - task=kpts (dl.utils.kpts_meta): adds keypoint metrics. Preds then carry
+            "kpts" [N, K, 4] (x, y, presence, visible) and GT "kpts" [N, K, 3] (x, y, v)
+            plus optional COCO "areas"; all absolute at original resolution.
         """
         self.gt = gt
         self.preds = preds
@@ -70,6 +91,9 @@ class Validator:
         self.conf_matrix = None
         self.mask_batch_size = mask_batch_size
         self.compute_maps = compute_maps
+        self.kpt_sigmas = kpts_meta["sigmas"] if kpts_meta else None
+        self.kpt_visibility = bool(kpts_meta) and kpts_meta["shape"][1] == 3
+        self.kpt_conf_thresh = kpts_meta["conf_thresh"] if kpts_meta else 0.5
 
         # Use faster_coco_eval backend for numpy 2.x compatibility
         self.torch_metric = MeanAveragePrecision(
@@ -149,6 +173,15 @@ class Validator:
                     }
                 )
                 del tm_mask
+
+        if self.kpt_sigmas is not None:
+            kpt_metrics = self._kpt_metrics()
+            if self.compute_maps:
+                kpt_metrics["mAP_50_kpt"], kpt_metrics["mAP_50_95_kpt"] = self._kpt_coco_ap()
+            for name in KPT_EXTENDED_METRICS:
+                if name in kpt_metrics:
+                    metrics["extended_metrics"][name] = kpt_metrics.pop(name)
+            metrics.update(kpt_metrics)
 
         if not extended:
             metrics.pop("extended_metrics", None)
@@ -305,16 +338,17 @@ class Validator:
             pred_masks = (pred_masks > 0.5).to(torch.uint8)
         return self._pairwise_mask_iou(pred_masks, gt_masks)
 
-    def _instance_metrics(self, preds, iou_fn):
+    def _instance_metrics(self, preds, iou_fn, gts=None):
+        gts = self.gt if gts is None else gts
         metrics_per_class = defaultdict(lambda: {"TPs": 0, "FPs": 0, "FNs": 0, "IoUs": []})
         all_classes = sorted(
-            {label for sample in [*preds, *self.gt] for label in sample["labels"].tolist()}
+            {label for sample in [*preds, *gts] for label in sample["labels"].tolist()}
         )
         class_to_idx = {cls_id: idx for idx, cls_id in enumerate(all_classes)}
         n_classes = len(all_classes)
         conf_matrix = np.zeros((n_classes + 1, n_classes + 1), dtype=int)
 
-        for pred, gt in zip(preds, self.gt):
+        for pred, gt in zip(preds, gts):
             pred_labels = pred["labels"]
             gt_labels = gt["labels"]
             matches, unmatched_preds, unmatched_gts = match_instances(
@@ -346,6 +380,155 @@ class Validator:
                 metrics_per_class[gt_label]["IoUs"].append(0)
 
         return metrics_per_class, conf_matrix, class_to_idx
+
+    @staticmethod
+    def _kpt_areas(gt) -> torch.Tensor:
+        """OKS scale: the COCO annotation area, else BOX_AREA_FACTOR * box area."""
+        if gt.get("areas") is not None:
+            return gt["areas"].float()
+        wh = gt["boxes"][:, 2:] - gt["boxes"][:, :2]
+        return wh[:, 0] * wh[:, 1] * BOX_AREA_FACTOR
+
+    def _kpt_metrics(self) -> Dict[str, float]:
+        """Keypoint quality of the conf-filtered preds:
+        - f1/precision/recall_kpt: instance matching at OKS >= iou_thresh. Like COCO, GT
+          without labeled points are ignored, and so are preds whose box matches one of them.
+        - oks_kpt: mean OKS (0 for FPs/FNs), the keypoint counterpart of "iou".
+        - kpt_px_err, pck_kpt: mean pixel error and PCK@0.05 * GT box diagonal over labeled
+          points of box-matched (IoU >= iou_thresh, same class) instances.
+        - presence_f1/precision/recall: presence score >= kpts.conf_thresh vs v > 0, over all
+          slots of box-matched instances that have labeled points.
+        - visible_acc: visible score >= 0.5 vs v == 2 on labeled points (with [K, 3] labels).
+        """
+        sigmas = torch.tensor(self.kpt_sigmas)
+        kpt_preds, kpt_gts = [], []
+        px_err, pck, pres_tp, pres_fp, pres_fn, vis_ok, vis_n = [], [], 0, 0, 0, 0, 0
+        for pred, gt in zip(self.preds, self.gt):
+            labeled = gt["kpts"][..., 2] > 0  # [G, K]
+            ignored = ~labeled.any(-1)
+            matches, _, _ = match_instances(
+                self._box_ious(pred, gt), pred["labels"], gt["labels"], self.iou_thresh
+            )
+            drop = {p for p, g, _ in matches if ignored[g]}
+            keep_p = torch.tensor([i not in drop for i in range(len(pred["labels"]))], dtype=bool)
+            kpt_preds.append({k: pred[k][keep_p] for k in ("labels", "boxes", "kpts")})
+            kpt_gts.append(
+                {k: gt[k][~ignored] for k in ("labels", "boxes", "kpts")}
+                | {"areas": self._kpt_areas(gt)[~ignored]}
+            )
+
+            for p, g, _ in matches:
+                if pred["labels"][p] != gt["labels"][g]:
+                    continue
+                pk, gk, lab = pred["kpts"][p], gt["kpts"][g], labeled[g]
+                if not lab.any():
+                    continue
+                present = pk[:, 2] >= self.kpt_conf_thresh
+                pres_tp += int((present & lab).sum())
+                pres_fp += int((present & ~lab).sum())
+                pres_fn += int((~present & lab).sum())
+                dist = (pk[lab, :2] - gk[lab, :2]).norm(dim=-1)
+                diag = (gt["boxes"][g, 2:] - gt["boxes"][g, :2]).norm()
+                px_err.append(dist)
+                pck.append(dist <= 0.05 * diag)
+                if self.kpt_visibility:
+                    vis_ok += int(((pk[lab, 3] >= 0.5) == (gk[lab, 2] == 2)).sum())
+                    vis_n += int(lab.sum())
+
+        def oks_fn(pred, gt):
+            if not len(pred["labels"]) or not len(gt["labels"]):
+                return torch.zeros((len(pred["labels"]), len(gt["labels"])))
+            vis = gt["kpts"][..., 2] > 0
+            return kpt_oks(
+                pred["kpts"][:, None, :, :2].float(),
+                gt["kpts"][None, ..., :2].float(),
+                vis[None],
+                gt["areas"][None],
+                sigmas,
+            )
+
+        per_class = self._instance_metrics(kpt_preds, oks_fn, gts=kpt_gts)[0]
+        tps = sum(v["TPs"] for v in per_class.values())
+        fps = sum(v["FPs"] for v in per_class.values())
+        fns = sum(v["FNs"] for v in per_class.values())
+        oks = [o for v in per_class.values() for o in v["IoUs"]]
+        precision = tps / (tps + fps) if tps + fps else 0
+        recall = tps / (tps + fns) if tps + fns else 0
+        pres_p = pres_tp / (pres_tp + pres_fp) if pres_tp + pres_fp else 0
+        pres_r = pres_tp / (pres_tp + pres_fn) if pres_tp + pres_fn else 0
+        out = {
+            "f1_kpt": 2 * precision * recall / (precision + recall) if precision + recall else 0,
+            "precision_kpt": precision,
+            "recall_kpt": recall,
+            "oks_kpt": float(np.mean(oks)) if oks else 0,
+            "kpt_px_err": float(torch.cat(px_err).mean()) if px_err else 0,
+            "pck_kpt": float(torch.cat(pck).float().mean()) if pck else 0,
+            "presence_f1": 2 * pres_p * pres_r / (pres_p + pres_r) if pres_p + pres_r else 0,
+            "presence_precision": pres_p,
+            "presence_recall": pres_r,
+        }
+        if self.kpt_visibility:
+            out["visible_acc"] = vis_ok / vis_n if vis_n else 0
+        return out
+
+    def _kpt_coco_ap(self, max_dets: int = KPT_MAX_DETS) -> tuple:
+        """COCO keypoint (AP50, AP50:95) on the unfiltered top-`max_dets` preds per image (the
+        COCO keypoint protocol). Returns zeros when nothing can be scored."""
+        images, gt_anns, dt_anns, cats = [], [], [], set()
+        for img_id, (pred, gt) in enumerate(zip(self.preds, self.gt)):
+            images.append({"id": img_id})
+            areas = self._kpt_areas(gt)
+            for i, (label, box, kp) in enumerate(zip(gt["labels"], gt["boxes"], gt["kpts"])):
+                x1, y1, x2, y2 = box.tolist()
+                cats.add(int(label))
+                gt_anns.append(
+                    {
+                        "id": len(gt_anns) + 1,
+                        "image_id": img_id,
+                        "category_id": int(label),
+                        "bbox": [x1, y1, x2 - x1, y2 - y1],
+                        "area": float(areas[i]),
+                        "iscrowd": 0,
+                        "keypoints": kp.flatten().tolist(),
+                        "num_keypoints": int((kp[:, 2] > 0).sum()),
+                    }
+                )
+            src = "all_" if "all_kpts" in pred else ""
+            kpts = pred[f"{src}kpts"][:max_dets]
+            for label, box, score, kp in zip(
+                pred[f"{src}labels"], pred[f"{src}boxes"], pred[f"{src}scores"], kpts
+            ):
+                x1, y1, x2, y2 = box.tolist()
+                dt_kp = torch.cat([kp[:, :2], torch.ones_like(kp[:, :1])], -1)
+                dt_anns.append(
+                    {
+                        "image_id": img_id,
+                        "category_id": int(label),
+                        "bbox": [x1, y1, x2 - x1, y2 - y1],
+                        "score": float(score),
+                        "keypoints": dt_kp.flatten().tolist(),
+                    }
+                )
+        if not dt_anns or not any(a["num_keypoints"] for a in gt_anns):
+            return 0.0, 0.0
+        coco_gt = COCO(
+            {
+                "images": images,
+                "annotations": gt_anns,
+                "categories": [{"id": c} for c in sorted(cats)],
+            }
+        )
+        coco_eval = COCOeval_faster(
+            coco_gt,
+            coco_gt.loadRes(dt_anns),
+            iouType="keypoints",
+            kpt_oks_sigmas=list(self.kpt_sigmas),
+        )
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
+        ap, ap50 = float(coco_eval.stats[0]), float(coco_eval.stats[1])
+        return max(ap50, 0.0), max(ap, 0.0)
 
     def save_plots(self, path_to_save) -> float:
         path_to_save = Path(path_to_save)

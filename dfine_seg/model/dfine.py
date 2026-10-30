@@ -69,6 +69,8 @@ def build_model(
     pretrained_model_path=None,
     pretrained_backbone=False,
     task=None,  # "sem_seg" swaps DFINETransformer for SemSegDecoder; else by enable_mask_head
+    num_kpts: int = 0,  # > 0 adds the keypoint head (task=kpts)
+    num_kpt_layers=None,  # keypoint decoder depth; None = size config (a checkpoint's own)
 ):
     if int(in_channels) not in (3, 4):
         raise ValueError(
@@ -82,6 +84,9 @@ def build_model(
     model_cfg["HybridEncoder"]["eval_spatial_size"] = img_size
     model_cfg["DFINETransformer"]["eval_spatial_size"] = img_size
     model_cfg["DFINETransformer"]["enable_mask_head"] = enable_mask_head
+    model_cfg["DFINETransformer"]["num_kpts"] = num_kpts
+    if num_kpt_layers is not None:
+        model_cfg["DFINETransformer"]["num_kpt_layers"] = num_kpt_layers
 
     # For models without 1/8 stride (nano), when a mask-producing head is enabled,
     # pass the backbone 1/8 feature as a low-level input for MaskDecoder
@@ -127,6 +132,7 @@ def build_loss(
     ignore_index=255,
     class_weights=None,
     kd=None,  # train.kd: loss weights, used only when a teacher is set
+    kpts_meta=None,  # task=kpts: dl.utils.kpts_meta (resolved sigmas, label shape)
 ):
     # deepcopy so appending "masks" mutates a private copy, not the shared
     # global `models` config - build_loss may be called more than once per run.
@@ -143,11 +149,29 @@ def build_loss(
         )
     if enable_mask_head and "masks" not in model_cfg["DFINECriterion"]["losses"]:
         model_cfg["DFINECriterion"]["losses"].append("masks")
-    matcher = HungarianMatcher(**model_cfg["matcher"])
+    sigmas, visibility = None, True
+    if kpts_meta:
+        model_cfg["DFINECriterion"]["losses"].append("kpts")
+        sigmas, visibility = kpts_meta["sigmas"], kpts_meta["shape"][1] == 3
+    matcher_cfg, criterion_cfg = model_cfg["matcher"], model_cfg["DFINECriterion"]
+    matcher = HungarianMatcher(
+        weight_dict=matcher_cfg["weight_dict"],
+        use_focal_loss=matcher_cfg["use_focal_loss"],
+        alpha=matcher_cfg["alpha"],
+        gamma=matcher_cfg["gamma"],
+        kpt_sigmas=sigmas,
+    )
     loss_fn = DFINECriterion(
         matcher,
+        weight_dict=criterion_cfg["weight_dict"],
+        losses=criterion_cfg["losses"],
+        alpha=criterion_cfg["alpha"],
+        gamma=criterion_cfg["gamma"],
+        reg_max=criterion_cfg["reg_max"],
         num_classes=num_classes,
         label_smoothing=label_smoothing,
+        kpt_sigmas=sigmas,
+        kpt_visibility=visibility,
         kd_weights={
             "loss_kd_cls": kd.get("cls_weight", 1.0),
             "loss_kd_loc": kd.get("loc_weight", 1.5),
@@ -155,7 +179,6 @@ def build_loss(
         }
         if kd
         else None,
-        **model_cfg["DFINECriterion"],
     )
     return loss_fn
 
@@ -176,26 +199,45 @@ def _is_muon_param(name, param):
 
 
 # The only randomly-initialized modules when a detection checkpoint is loaded for
-# task=segment - everything else comes pretrained (see train.freeze_except_mask).
+# task=segment / kpts - everything else comes pretrained (see train.freeze_except_mask,
+# train.kpts.freeze_except_kpt).
 MASK_PREFIXES = ("decoder.mask_decoder", "decoder.mask_head")
+KPT_PREFIXES = ("decoder.kpt_head", "decoder.kpt_decoder")
 
 
-def freeze_except_mask(model):
-    """Freeze every parameter outside the mask head. Returns the fully-frozen submodules.
+def freeze_except_head(model, prefixes):
+    """Freeze every parameter outside the head named by `prefixes`. Returns the frozen
+    BatchNorm layers.
 
     Call before any DDP wrap - named_parameters() gains a "module." prefix after it.
     requires_grad=False does not stop BatchNorm from updating its running stats, so the
     caller must re-apply .eval() to the returned modules after every model.train() or
-    the "frozen" features still drift epoch to epoch.
+    the "frozen" features still drift epoch to epoch. Only BatchNorm: eval() on a whole
+    frozen block would change its forward too - the decoder would return only its last
+    layer, leaving the trainable head without aux supervision.
     """
     for name, p in model.named_parameters():
-        p.requires_grad_(name.startswith(MASK_PREFIXES))
+        p.requires_grad_(name.startswith(prefixes))
+    return frozen_batchnorms(model)
+
+
+def frozen_batchnorms(model):
+    """BatchNorm layers without trainable parameters. Re-collect after a SyncBatchNorm
+    conversion: it replaces the layer objects."""
     return [
         m
         for m in model.modules()
-        if list(m.parameters(recurse=True))
-        and not any(p.requires_grad for p in m.parameters(recurse=True))
+        if isinstance(m, nn.modules.batchnorm._BatchNorm)
+        and not any(p.requires_grad for p in m.parameters())
     ]
+
+
+def freeze_except_mask(model):
+    return freeze_except_head(model, MASK_PREFIXES)
+
+
+def freeze_except_kpt(model):
+    return freeze_except_head(model, KPT_PREFIXES)
 
 
 def build_optimizer(

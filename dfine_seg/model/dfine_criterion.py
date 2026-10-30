@@ -20,6 +20,7 @@ import torchvision
 from .arch.utils import bbox2distance, box_cxcywh_to_xyxy, box_iou, generalized_box_iou
 from .dist_utils import get_world_size, is_dist_available_and_initialized
 from .kd import pair_through_gt, rebin_corners
+from .kpts import BOX_AREA_FACTOR, kpt_oks
 
 
 class DFINECriterion(nn.Module):
@@ -45,6 +46,8 @@ class DFINECriterion(nn.Module):
         share_matched_indices=False,
         label_smoothing: float = 0.0,
         kd_weights=None,
+        kpt_sigmas=None,
+        kpt_visibility: bool = True,
     ):
         """Create the criterion.
         Parameters:
@@ -54,6 +57,8 @@ class DFINECriterion(nn.Module):
             num_classes: number of object categories, omitting the special no-object category.
             reg_max (int): Max number of the discrete bins in D-FINE.
             boxes_weight_format: format for boxes weight (iou, ).
+            kpt_sigmas: per-point OKS sigmas for the "kpts" loss.
+            kpt_visibility: labels carry visibility flags ([K, 3]); else no loss_kpt_visible.
         """
         super().__init__()
         self.num_classes = num_classes
@@ -70,6 +75,8 @@ class DFINECriterion(nn.Module):
         self.num_pos, self.num_neg = None, None
         self.label_smoothing = label_smoothing
         self.kd_weights = kd_weights or {}  # loss_kd_{cls,loc,mask}; used when a teacher is set
+        self.kpt_sigmas = kpt_sigmas
+        self.kpt_visibility = kpt_visibility
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert "pred_logits" in outputs
@@ -561,6 +568,56 @@ class DFINECriterion(nn.Module):
         loss_mask_dice = self._cropped_dice_loss(pred_sel, tgt_sel, tgt_boxes)
         return {"loss_mask_bce": loss_mask_bce, "loss_mask_dice": loss_mask_dice}
 
+    def loss_kpts(self, outputs, targets, indices, num_boxes):
+        """Keypoint losses of matched queries; coordinates only count labeled (v > 0) points.
+        - loss_kpt_l1: L1 normalized by the GT box size, mean over the instance's points
+        - loss_kpt_oks: 1 - OKS (sigmas from train.kpts, area = 0.53 * GT box)
+        - loss_kpt_presence: BCE of the presence logit vs v > 0 over all K slots
+        - loss_kpt_visible: BCE of the visible logit vs v == 2 over labeled points; only when
+          the labels carry visibility flags
+        Coordinate and visible losses average over instances with labeled points, presence over
+        all matched instances (num_boxes).
+        """
+        if "pred_kpts" not in outputs:
+            return {}
+        idx = self._get_src_permutation_idx(indices)
+        src = outputs["pred_kpts"][idx].float()  # [M, K, 4]: x, y, presence, visible
+        tgt = torch.cat([t["kpts"][j] for t, (_, j) in zip(targets, indices)]).float()
+        boxes = torch.cat([t["boxes"][j] for t, (_, j) in zip(targets, indices)]).float()
+
+        labeled = tgt[..., 2] > 0  # [M, K]
+        n_labeled = labeled.sum(-1).clamp(min=1)
+        n_inst = labeled.any(-1).sum().clamp(min=1)
+        l1 = ((src[..., :2] - tgt[..., :2]).abs() / boxes[:, None, 2:].clamp(min=1e-6)).sum(-1)
+        area = boxes[:, 2] * boxes[:, 3] * BOX_AREA_FACTOR
+        sigmas = torch.as_tensor(self.kpt_sigmas, device=src.device)
+        oks = kpt_oks(src[..., :2], tgt[..., :2], labeled, area, sigmas)
+        presence = F.binary_cross_entropy_with_logits(
+            src[..., 2], labeled.float(), reduction="none"
+        )
+        losses = {
+            "loss_kpt_l1": ((l1 * labeled).sum(-1) / n_labeled).sum() / n_inst,
+            "loss_kpt_oks": ((1 - oks) * labeled.any(-1)).sum() / n_inst,
+            "loss_kpt_presence": presence.mean(-1).sum() / num_boxes,
+        }
+        if self.kpt_visibility:
+            visible = F.binary_cross_entropy_with_logits(
+                src[..., 3], (tgt[..., 2] == 2).float(), reduction="none"
+            )
+            losses["loss_kpt_visible"] = ((visible * labeled).sum(-1) / n_labeled).sum() / n_inst
+        if "pred_kpt_quality" in outputs:  # BCE towards the achieved OKS, refined queries only
+            quality = outputs["pred_kpt_quality"][idx].float()
+            mask = (quality[:, 1] > 0) & labeled.any(-1)
+            bce = F.binary_cross_entropy_with_logits(quality[:, 0], oks.detach(), reduction="none")
+            losses["loss_kpt_quality"] = (bce * mask).sum() / mask.sum().clamp(min=1)
+        if src.shape[-1] == 6 and self.weight_dict.get("loss_kpt_nll", 0):
+            # Laplace NLL (constant dropped) of the box-normalized residual, learned scale
+            log_b = src[..., 4:].clamp(min=-7)
+            r = (src[..., :2] - tgt[..., :2]).abs() / boxes[:, None, 2:].clamp(min=1e-6)
+            nll = (log_b + r * torch.exp(-log_b)).sum(-1)
+            losses["loss_kpt_nll"] = ((nll * labeled).sum(-1) / n_labeled).sum() / n_inst
+        return losses
+
     def loss_kd(self, outputs, targets, indices):
         """Distillation on student/teacher queries matched to the same GT object:
         - cls: BCE towards the teacher's per-class sigmoid scores (dark knowledge between classes)
@@ -675,6 +732,7 @@ class DFINECriterion(nn.Module):
             "vfl": self.loss_labels_vfl,
             "local": self.loss_local,
             "masks": self.loss_masks,
+            "kpts": self.loss_kpts,
         }
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -751,6 +809,26 @@ class DFINECriterion(nn.Module):
                     }
                     l_dict = {k + f"_aux_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
+
+        # Keypoint decoder inputs and intermediate layers, on the final layer's matching
+        for i, kpt_outputs in enumerate(outputs.get("kpt_aux_outputs", [])):
+            l_dict = self.loss_kpts(kpt_outputs, targets, indices, num_boxes)
+            losses.update({f"{k}_kpt_{i}": v * self.weight_dict[k] for k, v in l_dict.items()})
+        # Keypoint denoising: slot g * M + j of every image is GT j (M = max GTs per image)
+        if outputs.get("kpt_dn_outputs"):
+            device = outputs["pred_logits"].device
+            m = max(len(t["labels"]) for t in targets)
+            groups = outputs["kpt_dn_outputs"][0]["pred_kpts"].shape[1] // m
+            dn_indices = []
+            for t in targets:
+                gt = torch.arange(len(t["labels"]), device=device)
+                src = (torch.arange(groups, device=device)[:, None] * m + gt).flatten()
+                dn_indices.append((src, gt.repeat(groups)))
+            for i, kpt_outputs in enumerate(outputs["kpt_dn_outputs"]):
+                l_dict = self.loss_kpts(kpt_outputs, targets, dn_indices, num_boxes)
+                losses.update(
+                    {f"{k}_kpt_dn_{i}": v * self.weight_dict[k] for k, v in l_dict.items()}
+                )
 
         # In case of auxiliary traditional head output at first decoder layer.
         if "pre_outputs" in outputs:

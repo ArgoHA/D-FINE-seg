@@ -23,6 +23,12 @@ base_cfg = {
         "layer_scale": 1,
         "cross_attn_method": "default",
         "query_select_method": "default",
+        "num_kpt_layers": 2,  # keypoint decoder (task=kpts); 0 = per-query head only
+        "num_kpt_queries": 50,  # top-scoring queries the keypoint decoder refines
+        "kpt_dn_noise": 0.1,  # train-only keypoint denoising, GT noise x box size; 0 = off
+        "kpt_dn_groups": 1,  # box-denoising groups whose positives also denoise keypoints
+        "kpt_rescore": 0.5,  # score = cls^(1-a) * keypoint quality^a for refined queries
+        "kpt_ref_scale": 0.25,  # keypoint decoder sampling extent, x box size
     },
     "DFINECriterion": {
         "weight_dict": {
@@ -33,8 +39,14 @@ base_cfg = {
             "loss_ddf": 1.5,
             "loss_mask_bce": 1,  # only for mask head
             "loss_mask_dice": 1,  # only for mask head
+            "loss_kpt_l1": 10,  # only for keypoint head
+            "loss_kpt_oks": 4,
+            "loss_kpt_presence": 1,
+            "loss_kpt_visible": 1,
+            "loss_kpt_nll": 0,  # Laplace NLL with learned scale (keypoint decoder only)
+            "loss_kpt_quality": 1,  # predicted instance OKS (keypoint decoder only)
         },
-        "losses": ["vfl", "boxes", "local"],  #  "masks" will be added if training with segment task
+        "losses": ["vfl", "boxes", "local"],  # "masks" / "kpts" added for segment / kpts
         "alpha": 0.75,
         "gamma": 2.0,
         "reg_max": 32,
@@ -49,6 +61,8 @@ base_cfg = {
             "cost_giou": 2,
             "cost_mask": 1,  # focal mask cost for segmentation matching
             "cost_mask_dice": 1,  # dice mask cost for segmentation matching
+            "cost_kpt_l1": 5,  # mean point L1 (image-normalized) for keypoint matching
+            "cost_kpt_oks": 2,  # 1 - OKS for keypoint matching
         },
         "alpha": 0.25,
         "gamma": 2.0,
