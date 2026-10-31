@@ -9,7 +9,7 @@ Two targets from one source tree:
 
 The core is what ships to a robot or a drone: `readelf -d libdfine.so` lists only `libnvinfer.so.10`, `libcudart.so.12` and libc. The video app is one *consumer* of it.
 
-Both tasks follow the engine: `labels/boxes/scores` = detect, `+ masks` = instance segmentation, a single int32 map = semantic segmentation.
+Both tasks follow the engine: `labels/boxes/scores` = detect, `+ masks` = instance segmentation, an int32 `sem_seg` map = semantic segmentation (an `export.sem_seg_probs` output is ignored).
 
 ## core
 

@@ -27,7 +27,6 @@ TrtEngine::TrtEngine(const std::string& path) {
   runtime_.reset(nvinfer1::createInferRuntime(logger_));
   engine_.reset(runtime_->deserializeCudaEngine(blob.data(), blob.size()));
   if (!engine_) throw std::runtime_error("deserialize failed: " + path);
-  int n_out = 0;
   for (int i = 0; i < engine_->getNbIOTensors(); ++i) {
     const char* n = engine_->getIOTensorName(i);
     auto d = engine_->getTensorShape(n);
@@ -40,15 +39,14 @@ TrtEngine::TrtEngine(const std::string& path) {
       in_c = d.d[1]; in_h = d.d[2]; in_w = d.d[3];
       continue;
     }
-    ++n_out;
     std::string s = n;
     if (s == "labels") { k = d.d[1]; labels_i64 = engine_->getTensorDataType(n) == nvinfer1::DataType::kINT64; }
     if (s == "masks" && d.nbDims == 4) { has_masks = true; mask_h = d.d[2]; mask_w = d.d[3]; }
-    if (n_out == 1 && d.nbDims == 3 && engine_->getTensorDataType(n) == nvinfer1::DataType::kINT32) {
-      sem_seg = true; sem_h = d.d[1]; sem_w = d.d[2];  // TRTModel: single output = fused-argmax graph
+    // sem_seg: fused-argmax label map. An export.sem_seg_probs output is bound but unused.
+    if (s == "sem_seg" && d.nbDims == 3 && engine_->getTensorDataType(n) == nvinfer1::DataType::kINT32) {
+      sem_seg = true; sem_h = d.d[1]; sem_w = d.d[2];
     }
   }
-  if (n_out != 1) sem_seg = false;
   if (!sem_seg && k == 0) throw std::runtime_error("unexpected engine IO: no labels output");
   if (has_masks && engine_->getTensorDataType("masks") != nvinfer1::DataType::kFLOAT)
     throw std::runtime_error("masks output must be fp32");
@@ -74,7 +72,7 @@ TrtContext::TrtContext(TrtEngine& eng, cudaStream_t s) {
     else if (name == "boxes") boxes = (float*)p;
     else if (name == "scores") scores = (float*)p;
     else if (name == "masks") masks = (float*)p;
-    else if (eng.sem_seg) sem = (int32_t*)p;
+    else if (name == "sem_seg") sem = (int32_t*)p;
   }
   if (!input || (eng.sem_seg ? !sem : (!labels || !boxes || !scores || (eng.has_masks && !masks))))
     throw std::runtime_error("unexpected engine IO");

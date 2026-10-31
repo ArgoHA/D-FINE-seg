@@ -276,7 +276,7 @@ Six inference backends in `dfine_seg/infer/`:
 | **CoreML** | `.mlpackage` | macOS (GPU), iOS |
 | **LiteRT** | `.tflite` | CPU, mobile / edge (Android), support paused |
 
-Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`); sem_seg wrappers return a single `sem_seg` `[H, W]` label map at original image resolution. For sem_seg, `dfine infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
+Output contract: detection / instance segmentation wrappers return `labels`, `boxes`, `scores` (+ `masks` `[N, H, W]` for `segment`); sem_seg wrappers return a `sem_seg` `[H, W]` label map at original image resolution. Exported with `export.sem_seg_probs: True` (or `TorchModel(..., sem_seg_probs=True)` for `.pt`), sem_seg graphs gain a second output and the wrappers also return `sem_seg_probs` `[C, h, w]` float32, the per-class softmax at 1/4 of the model input (letterbox pads included), and `sem_seg_probs_tf`, a 3x3 matrix mapping original-image pixel `(x, y, 1)` to probs-map pixel coordinates (compose with camera intrinsics as `K' = tf @ K`). Use it where per-class confidence matters, e.g. traversability cost maps or lidar / BEV fusion; the label map is unchanged. For sem_seg, `dfine infer` writes palette overlays + GT-style grayscale PNG label maps (crops and tracking are box-based and skipped).
 
 Also provided:
 

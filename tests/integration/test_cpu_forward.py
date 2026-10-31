@@ -92,6 +92,13 @@ def test_forward_shapes_cpu_sem_seg():
     assert label_map.shape == (1, 640, 640) and label_map.dtype == torch.int32
     assert label_map.min() >= 0 and label_map.max() < 23
 
+    # export.sem_seg_probs: same label map + the 1/4-scale softmax
+    with torch.no_grad():
+        labels, probs = SemSegExportWrapper(model, probs=True).eval()(x)
+    assert torch.equal(labels, label_map)
+    assert probs.shape == (1, 23, 160, 160)
+    assert torch.allclose(probs.sum(1), torch.ones(1, 160, 160), atol=1e-5)
+
 
 def test_cpu_forward_latency_smoke(model_n_detect_cpu):
     """Loose ceiling: catches O(N^2) regressions, not microbenchmarks.

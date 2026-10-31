@@ -76,8 +76,8 @@ class ONNXModel:
         inp = self.model.get_inputs()[0]
         self.channels = int(inp.shape[1])
         h, w = inp.shape[2], inp.shape[3]
-        # single output = sem_seg fused-argmax graph; detection graphs have >= 3
-        self.sem_seg = len(self.model.get_outputs()) == 1
+        # sem_seg graph = label map [+ probs]; fused detection graphs have >= 3 outputs
+        self.sem_seg = len(self.model.get_outputs()) <= 2
         self.has_masks = len(self.model.get_outputs()) > 3
         explicit = (self.input_height, self.input_width)
         if (explicit[0] is None) != (explicit[1] is None):
@@ -225,6 +225,8 @@ class ONNXModel:
         first).
         """
         maps = np.asarray(outputs[0])  # [B, H, W] int
+        # export.sem_seg_probs: [B, C, H/4, W/4] softmax
+        probs = np.asarray(outputs[1], dtype=np.float32) if len(outputs) > 1 else None
         if self.labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
             maps = np.where(np.isin(maps, self.labels_to_use), maps, 255)
         results = []
@@ -238,7 +240,14 @@ class ONNXModel:
                 padh = round((proc_h - H0 * gain) / 2 - 0.1)
                 m = m[max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)]
             m = cv2.resize(m, (W0, H0), interpolation=cv2.INTER_NEAREST)
-            results.append({"sem_seg": torch.from_numpy(m)})
+            res = {"sem_seg": torch.from_numpy(m)}
+            if probs is not None:
+                tf = sem_seg_probs_transform(
+                    (H0, W0), processed_sizes[b], probs.shape[2:], self.keep_ratio
+                )
+                res["sem_seg_probs"] = torch.from_numpy(probs[b])
+                res["sem_seg_probs_tf"] = torch.from_numpy(tf)
+            results.append(res)
         return results
 
     def _postprocess(
@@ -320,7 +329,10 @@ class ONNXModel:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
-            sem_seg models instead return {"sem_seg": uint8 (H, W) dense label map} per image.
+            sem_seg models instead return {"sem_seg": uint8 (H, W) dense label map} per image,
+            + "sem_seg_probs" float32 (C, h, w): softmax at 1/4 of the model input, letterbox
+            pads included, and "sem_seg_probs_tf" float32 (3, 3) mapping original-image
+            pixels to probs pixels, when exported with export.sem_seg_probs.
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
@@ -363,6 +375,26 @@ class ONNXModel:
                 polys.append(np.array([]))
 
         return polys
+
+
+def sem_seg_probs_transform(orig_hw, proc_hw, probs_hw, keep_ratio: bool) -> NDArray:
+    """3x3 affine mapping an original-image pixel (x, y, 1) to sem_seg_probs pixel coords,
+    integers at pixel centers (cv2 / align_corners=False convention). Mirrors preprocessing:
+    stretch resize, or letterbox (resize to round(W0 * r) x round(H0 * r), pad floor(dw / 2)
+    left / top), then the model's 1/4 scale. Compose with camera intrinsics as K' = tf @ K.
+    """
+    (H0, W0), (H, W), (h, w) = orig_hw, proc_hw, probs_hw
+    if keep_ratio:
+        r = min(H / H0, W / W0)
+        new_w, new_h = int(round(W0 * r)), int(round(H0 * r))
+        left, top = (W - new_w) // 2, (H - new_h) // 2
+    else:
+        new_w, new_h, left, top = W, H, 0, 0
+    # orig -> input: (x + 0.5) * new_w / W0 - 0.5 + left; input -> probs: (x + 0.5) * w / W - 0.5
+    sx, sy = new_w / W0 * w / W, new_h / H0 * h / H
+    tx = (0.5 * new_w / W0 + left) * w / W - 0.5
+    ty = (0.5 * new_h / H0 + top) * h / H - 0.5
+    return np.array([[sx, 0, tx], [0, sy, ty], [0, 0, 1]], dtype=np.float32)
 
 
 def letterbox(

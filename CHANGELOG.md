@@ -132,3 +132,7 @@ Train a bigger dfine-seg model and use it as a teacher for a smaller dfine-seg m
 ## 2026-10-18 - Instance segmentation denoising loss fix
 
 The last decoder layer's denoising queries now get class/box supervision in instance segmentation (previously they were silently dropped, so only their mask loss was applied). Cityscapes regression: mAP_50_mask 0.496 -> 0.507 (can be noise), f1 unchanged. Aux mask logits are no longer computed at eval.
+
+## 2026-10-31 - Semantic segmentation probability output
+
+`export.sem_seg_probs: True` adds a second output to the sem_seg graph: the per-class softmax at 1/4 of the model input, next to the unchanged int32 label map. Every wrapper then also returns `sem_seg_probs` `[C, h, w]` and `sem_seg_probs_tf` (3x3 original-pixel -> probs-pixel transform, exact under letterbox; `K' = tf @ K` for camera projection). For `.pt`: `TorchModel(..., sem_seg_probs=True)`. Intended for consumers that fuse per-class confidence (traversability, lidar painting, BEV). The C++ core accepts these engines and ignores the extra output. Measured on TensorRT fp16 (RTX 5070 Ti, Cityscapes val at 1024x2048): the engine gets ~0.02 ms slower and end-to-end latency stays within run-to-run noise (S 6.66 -> 6.69 ms, X 14.87 -> 14.77-14.98 ms); the label map and mIoU are unchanged.

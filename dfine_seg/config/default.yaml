@@ -171,6 +171,7 @@ export: # TensorRT must be done on the inference device
   half: True # tensorrt, openvino
   max_batch_size: 1 # torch, tensorrt, openvino
   dynamic_input: False # dynamic H/W, onnx and openvino; tensorrt and coreml are static
+  sem_seg_probs: False # sem_seg: add the 1/4-scale softmax [C, H/4, W/4] output next to the label map
   formats: [onnx, tensorrt, openvino, coreml] # null = all; litert paused (litert-torch caps torch<2.13)
   parity: True # after export, print cosine / max-abs-diff of each backend vs torch on one input
   ov_int8_max_drop: 0.02

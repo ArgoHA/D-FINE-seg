@@ -31,6 +31,7 @@ class TorchModel:
         channels: int = None,  # None -> read from the checkpoint's stem conv
         task: str = None,  # detect | segment | sem_seg; None -> read from the checkpoint
         model_name: str = None,  # n|s|m|l|x; None -> read from the checkpoint
+        sem_seg_probs: bool = False,  # sem_seg: also return the 1/4-scale softmax
     ):
         # A .pt is a bare state_dict, so architecture is recovered from its key structure
         # Preprocessing isn't in the weights, resolve from configs
@@ -48,6 +49,9 @@ class TorchModel:
         self.labels_to_use = labels_to_use or []
         self.task = task or ("segment" if enable_mask_head else info["task"])
         self.enable_mask_head = self.task == "segment"
+        self.sem_seg_probs = sem_seg_probs
+        if sem_seg_probs and self.task != "sem_seg":
+            raise ValueError(f"sem_seg_probs=True needs a sem_seg model, got task={self.task}")
         self.channels = channels if channels is not None else info["in_channels"]
         self.debug_mode = False
         self.binarize_masks = binarize_masks
@@ -87,6 +91,8 @@ class TorchModel:
         )
         self.model.load_state_dict(self._state_dict, strict=False)
         del self._state_dict  # loaded once in __init__; don't keep a second copy alive
+        if self.task == "sem_seg":  # sem_seg_probs reads the 1/4 logits
+            self.model.decoder.return_quarter_logits = self.sem_seg_probs
         self.model.eval()
         self.model.to(self.device)
 
@@ -180,12 +186,14 @@ class TorchModel:
         original_sizes,
         keep_ratio: bool,
         labels_to_use: List[int] = None,  # empty -> keep all; else ids not requested -> 255
+        probs=None,  # [B, C, h, w] softmax of the 1/4 logits, passed through with its transform
     ) -> List[Dict[str, torch.Tensor]]:
         """Model (head): 1/4 logits -> bilinear upsample to model input size.
         Here: argmax at input size -> per-image NEAREST resize of the label map to original size
         (letterbox pads cropped first).
 
-        Returns list of length B with {"sem_seg": uint8 [H0, W0] label map}.
+        Returns list of length B with {"sem_seg": uint8 [H0, W0] label map}, plus
+        "sem_seg_probs" and "sem_seg_probs_tf" when probs is given.
         """
         maps = logits.argmax(1, keepdim=True).float()  # [B, 1, H, W]
         if labels_to_use:  # ids not requested -> 255 (ignore/void, not class 0)
@@ -204,7 +212,14 @@ class TorchModel:
                     ..., max(padh, 0) : proc_h - max(padh, 0), max(padw, 0) : proc_w - max(padw, 0)
                 ]
             m = torch.nn.functional.interpolate(m, size=(H0, W0), mode="nearest")[0, 0]
-            results.append({"sem_seg": m.to(torch.uint8)})
+            res = {"sem_seg": m.to(torch.uint8)}
+            if probs is not None:
+                tf = sem_seg_probs_transform(
+                    (H0, W0), processed_sizes[b], probs.shape[2:], keep_ratio
+                )
+                res["sem_seg_probs"] = probs[b]
+                res["sem_seg_probs_tf"] = torch.from_numpy(tf)
+            results.append(res)
         return results
 
     def _preds_postprocess(
@@ -391,6 +406,7 @@ class TorchModel:
                 original_sizes,
                 self.keep_ratio,
                 self.labels_to_use,
+                preds["sem_seg_logits_q"].float().softmax(1) if self.sem_seg_probs else None,
             )
         return self._preds_postprocess(preds, processed_sizes, original_sizes, conf_thresh)
 
@@ -413,7 +429,10 @@ class TorchModel:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
-            task=sem_seg instead returns {"sem_seg": uint8 (H, W) dense label map} per image.
+            task=sem_seg instead returns {"sem_seg": uint8 (H, W) dense label map} per image,
+            + "sem_seg_probs" float32 (C, h, w): softmax at 1/4 of the model input, letterbox
+            pads included, and "sem_seg_probs_tf" float32 (3, 3) mapping original-image
+            pixels to probs pixels, with sem_seg_probs=True.
         """
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(inputs, bgr=bgr)
         preds = self._predict(processed_inputs)
@@ -456,6 +475,26 @@ class TorchModel:
                 polys.append(np.array([]))
 
         return polys
+
+
+def sem_seg_probs_transform(orig_hw, proc_hw, probs_hw, keep_ratio: bool) -> NDArray:
+    """3x3 affine mapping an original-image pixel (x, y, 1) to sem_seg_probs pixel coords,
+    integers at pixel centers (cv2 / align_corners=False convention). Mirrors preprocessing:
+    stretch resize, or letterbox (resize to round(W0 * r) x round(H0 * r), pad floor(dw / 2)
+    left / top), then the model's 1/4 scale. Compose with camera intrinsics as K' = tf @ K.
+    """
+    (H0, W0), (H, W), (h, w) = orig_hw, proc_hw, probs_hw
+    if keep_ratio:
+        r = min(H / H0, W / W0)
+        new_w, new_h = int(round(W0 * r)), int(round(H0 * r))
+        left, top = (W - new_w) // 2, (H - new_h) // 2
+    else:
+        new_w, new_h, left, top = W, H, 0, 0
+    # orig -> input: (x + 0.5) * new_w / W0 - 0.5 + left; input -> probs: (x + 0.5) * w / W - 0.5
+    sx, sy = new_w / W0 * w / W, new_h / H0 * h / H
+    tx = (0.5 * new_w / W0 + left) * w / W - 0.5
+    ty = (0.5 * new_h / H0 + top) * h / H - 0.5
+    return np.array([[sx, 0, tx], [0, sy, ty], [0, 0, 1]], dtype=np.float32)
 
 
 def letterbox(

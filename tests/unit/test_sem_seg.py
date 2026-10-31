@@ -1,6 +1,8 @@
 """Unit tests for the sem_seg task: decoder shapes, criterion ignore_index handling,
 SemSegValidator math, and NEAREST/ignore-fill behavior of the aug pipeline."""
 
+import os
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -308,7 +310,11 @@ def test_sampling_cache_recovers_from_corruption_and_interrupted_write(tmp_path,
     cache.write_text("{")
     assert load_class_pixels(tmp_path, split, 255) == {"x.png": {"0": 1, "1": 1}}
     previous = cache.read_text()
-    cv2.imwrite(str(tmp_path / "labels/x.png"), np.array([[1, 1, 255]], dtype=np.uint8))
+    mask = tmp_path / "labels/x.png"
+    cv2.imwrite(str(mask), np.array([[1, 1, 255]], dtype=np.uint8))
+    # a same-size rewrite can land on the same coarse mtime tick, leaving the cache key equal
+    st = mask.stat()
+    os.utime(mask, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
 
     def interrupt_write(value, stream):
         stream.write("{")
@@ -431,3 +437,114 @@ def test_finetune_from_sem_seg_ckpt_with_fewer_classes(tmp_path):
     with torch.no_grad():
         out = model(torch.zeros(1, 3, 448, 896))["sem_seg_logits"]  # the built eval_spatial_size
     assert out.shape == (1, 11, 448, 896)
+
+
+# ── export.sem_seg_probs ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "orig, proc, keep_ratio",
+    [
+        ((1024, 1365), (512, 1024), True),  # pad 171 px: not a multiple of 4
+        ((321, 643), (640, 640), True),  # odd sizes, vertical pad
+        ((100, 90), (640, 640), True),  # upscale
+        ((1080, 1920), (640, 640), False),  # stretch
+    ],
+)
+def test_probs_transform_matches_letterbox(orig, proc, keep_ratio):
+    """Image edges map exactly onto the content edges the real preprocessing produces."""
+    from dfine_seg.infer.onnx_model import letterbox, sem_seg_probs_transform
+
+    (H0, W0), (H, W) = orig, proc
+    if keep_ratio:
+        _, _, (dw, dh) = letterbox(np.zeros((H0, W0, 3), np.uint8), proc, auto=False)
+        left, top = int(np.floor(dw)), int(np.floor(dh))
+        new_w, new_h = W - 2 * dw, H - 2 * dh  # dw/dh are the half pads
+    else:
+        left, top, new_w, new_h = 0, 0, W, H
+    tf = sem_seg_probs_transform(orig, proc, (H // 4, W // 4), keep_ratio).astype(np.float64)
+    # original pixel edges -0.5 / W0 - 0.5 -> input content edges -> probs coords (x + 0.5) / 4 - 0.5
+    lo = tf @ [-0.5, -0.5, 1]
+    hi = tf @ [W0 - 0.5, H0 - 0.5, 1]
+    assert lo[:2] == pytest.approx([left / 4 - 0.5, top / 4 - 0.5], abs=1e-4)
+    assert hi[:2] == pytest.approx([(left + new_w) / 4 - 0.5, (top + new_h) / 4 - 0.5], abs=1e-4)
+
+
+def test_probs_transform_matches_head_upsample():
+    """The 1/4 geometry is the head's x4 bilinear (align_corners=False) upsample: upsampling a
+    ramp of 1/4-pixel coordinates must give back tf @ x at every interior input pixel."""
+    from dfine_seg.infer.onnx_model import sem_seg_probs_transform
+
+    H, W = 64, 128
+    tf = sem_seg_probs_transform((H, W), (H, W), (H // 4, W // 4), keep_ratio=False)
+    ramp = torch.arange(W // 4, dtype=torch.float64).expand(1, 1, H // 4, W // 4)
+    up = torch.nn.functional.interpolate(ramp, scale_factor=4.0, mode="bilinear")[0, 0, 0]
+    want = torch.arange(W, dtype=torch.float64) * float(tf[0, 0]) + float(tf[0, 2])
+    interior = (want >= 0) & (want <= W // 4 - 1)  # border pixels clamp in the upsample
+    assert torch.equal(up[interior], want[interior])
+
+
+def test_probs_transform_copies_identical():
+    """infer/ modules are self-contained copies (AGENTS.md); this pins them to each other."""
+    import inspect
+    from pathlib import Path
+
+    from dfine_seg.infer import (
+        litert_model,
+        onnx_model,
+        ov_model,
+        torch_compile_model,
+        torch_model,
+        trt_model,
+    )
+
+    mods = [onnx_model, ov_model, litert_model, trt_model, torch_model, torch_compile_model]
+    srcs = {inspect.getsource(m.sem_seg_probs_transform) for m in mods}
+    coreml_src = (Path(onnx_model.__file__).parent / "coreml_model.py").read_text()
+    assert len(srcs) == 1 and next(iter(srcs)) in coreml_src  # coremltools needs macOS
+
+
+def test_postprocess_with_probs_output():
+    """A graph with the probs output adds the uncropped probs + transform; the label map is the
+    same as without it (labels_to_use filters only the label map)."""
+    from dfine_seg.infer.litert_model import LiteRTModel
+    from dfine_seg.infer.onnx_model import ONNXModel
+    from dfine_seg.infer.ov_model import OVModel
+
+    labels = np.zeros((1, 64, 64), dtype=np.int32)
+    labels[:, 32:] = 2
+    probs = np.random.rand(1, 3, 16, 16).astype(np.float32)
+    sizes = ([(64, 64)], [(32, 64)])  # 32x64 image letterboxed into 64x64
+    for cls in (ONNXModel, OVModel, LiteRTModel):
+        m = cls.__new__(cls)
+        m.keep_ratio, m.labels_to_use = True, [2]
+        base = m._postprocess_sem_seg([labels], *sizes)[0]
+        outs = [labels, probs][:: -1 if cls is LiteRTModel else 1]  # TFLite may reorder
+        out = m._postprocess_sem_seg(outs, *sizes)[0]
+        assert set(base) == {"sem_seg"}
+        assert set(out) == {"sem_seg", "sem_seg_probs", "sem_seg_probs_tf"}
+        assert torch.equal(out["sem_seg"], base["sem_seg"])
+        assert torch.equal(out["sem_seg_probs"], torch.from_numpy(probs[0]))  # pads kept
+        # the image's top edge is input row 16 (letterbox pad) -> probs edge 16 / 4 - 0.5
+        assert out["sem_seg_probs_tf"].numpy() @ [0, -0.5, 1] == pytest.approx([-0.375, 3.5, 1])
+
+
+def test_torch_model_probs(tmp_path):
+    """.pt path: sem_seg_probs=True adds the 1/4 softmax + transform, the label map is unchanged."""
+    from dfine_seg.infer.torch_model import TorchModel
+    from dfine_seg.model.dfine import build_model
+    from dfine_seg.model.utils import save_checkpoint
+
+    src = build_model("n", N_CLASSES, False, "cpu", img_size=[128, 256], task="sem_seg").eval()
+    ckpt = tmp_path / "model.pt"
+    save_checkpoint(ckpt, src.state_dict(), {"task": "sem_seg", "img_size": [128, 256]})
+
+    img = np.random.randint(0, 255, (100, 300, 3), dtype=np.uint8)
+    base = TorchModel(str(ckpt), device="cpu")(img)[0]
+    out = TorchModel(str(ckpt), device="cpu", sem_seg_probs=True)(img)[0]
+    assert set(base) == {"sem_seg"}
+    assert set(out) == {"sem_seg", "sem_seg_probs", "sem_seg_probs_tf"}
+    assert torch.equal(out["sem_seg"], base["sem_seg"])
+    assert out["sem_seg_probs"].shape == (N_CLASSES, 32, 64)
+    assert torch.allclose(out["sem_seg_probs"].sum(0), torch.ones(32, 64), atol=1e-5)
+    assert out["sem_seg_probs_tf"].shape == (3, 3)

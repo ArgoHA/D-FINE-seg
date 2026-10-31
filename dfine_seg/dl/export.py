@@ -120,15 +120,22 @@ class SemSegExportWrapper(nn.Module):
 
     int32 keeps TRT happy (no int64 output) and H*W int32 beats C*H*W fp16 logits
     on output bandwidth. One fused graph serves every backend.
+    probs=True adds a second output, the softmax of the 1/4 logits [B, C, H/4, W/4]
+    ("sem_seg_probs"), for consumers that need per-class confidence.
     """
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, probs: bool = False):
         super().__init__()
         self.model = model
+        self.probs = probs
 
     def forward(self, x):
-        logits = self.model(x)["sem_seg_logits"]  # [B, C, H, W]
-        return logits.argmax(1).to(torch.int32)
+        self.model.decoder.return_quarter_logits = self.probs
+        out = self.model(x)
+        labels = out["sem_seg_logits"].argmax(1).to(torch.int32)  # [B, H, W]
+        if self.probs:
+            return labels, out["sem_seg_logits_q"].softmax(1)
+        return labels
 
     def deploy(self):
         self.model.deploy()
@@ -214,7 +221,7 @@ def prepare_export_models(cfg, device, dynamic: bool = False) -> tuple[nn.Module
     """(raw model, fused export wrapper), both in eval mode."""
     raw_model = prepare_model(cfg, device, dynamic=dynamic)
     if cfg.task == "sem_seg":
-        model = SemSegExportWrapper(raw_model)
+        model = SemSegExportWrapper(raw_model, probs=cfg.export.get("sem_seg_probs", False))
     else:
         postprocessor = DFINEPostProcessor(
             num_classes=len(cfg.train.label_to_name),
@@ -664,11 +671,11 @@ def _run_parity_backends(cfg, x1, x_np, want, models_path: Path, add, extract) -
             logger.warning(f"Parity skipped for {tag}: {e}")
 
 
-def _parity_report(rows, low, metric_name: str, models_path: Path) -> None:
+def _parity_report(rows, low, metric_names: list[str], models_path: Path) -> None:
     if not rows:
         logger.info("Parity: no exported backends available to compare against torch")
         return
-    headers = ["format", metric_name]
+    headers = ["format", *metric_names]
     pd.DataFrame(rows, columns=headers).to_csv(models_path / "parity.csv", index=False)
     print("\n" + tabulate(rows, headers=headers, tablefmt="pretty"))
     if low:
@@ -707,31 +714,46 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
         return outs[2]  # fused: scores at index 2
 
     _run_parity_backends(cfg, x1, x_np, want, models_path, add, extract)
-    _parity_report(rows, low, "scores_cosine", models_path)
+    _parity_report(rows, low, ["scores_cosine"], models_path)
+
+
+def _sem_seg_outputs(outs) -> list[np.ndarray]:
+    """Image 0 of a sem_seg graph's outputs: [label map [H, W], probs [C, h, w] if exported].
+    Sorted by rank, not by position: TFLite may reorder outputs."""
+    outs = [outs] if isinstance(outs, torch.Tensor) else outs
+    return sorted((_to_np(o)[0] for o in outs), key=np.ndim)
 
 
 def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
-    """Per-pixel argmax agreement of each exported backend vs torch on one input.
+    """Per-pixel argmax agreement of each exported backend vs torch on one input, plus the
+    probs cosine when the graph has the sem_seg_probs output.
 
-    Every sem_seg export is the same fused graph (single int label-map output), so
-    the comparison is end-to-end and reorder-free by construction; disagreement is
-    confined to class-boundary pixels where near-tied logits flip under precision.
+    Every sem_seg export is the same fused graph, so the comparison is end-to-end and
+    reorder-free by construction; disagreement is confined to class-boundary pixels where
+    near-tied logits flip under precision.
     """
     x1, x_np = _parity_input(cfg, raw_model, x_test)
     with torch.no_grad():
-        ref = model(x1)[0].cpu().numpy()  # [H, W] int32 label map
+        ref = _sem_seg_outputs(model(x1))
 
     rows, low = [], []
 
-    def add(name, is_int8, label_map):
-        m = _to_np(label_map).reshape(ref.shape)
-        agree = float((m == ref).mean())
-        rows.append([name, round(agree, 6)])
-        if not agree >= (0.90 if is_int8 else 0.99):
+    def add(name, is_int8, outs):
+        thresh = 0.90 if is_int8 else 0.99
+        agree = float((outs[0].reshape(ref[0].shape) == ref[0]).mean())
+        row = [name, round(agree, 6)]
+        if not agree >= thresh:
             low.append(f"{name} agreement={agree:.4f}")
+        if len(ref) > 1:
+            cos = _cosine(ref[1], outs[1]) if len(outs) > 1 else float("nan")
+            row.append(round(cos, 6))
+            if not cos >= thresh:
+                low.append(f"{name} probs_cosine={cos:.4f}")
+        rows.append(row)
 
-    _run_parity_backends(cfg, x1, x_np, want, models_path, add, lambda key, outs: outs[0][0])
-    _parity_report(rows, low, "pixel_agreement", models_path)
+    metrics = ["pixel_agreement"] + (["probs_cosine"] if len(ref) > 1 else [])
+    _run_parity_backends(cfg, x1, x_np, want, models_path, add, lambda _, o: _sem_seg_outputs(o))
+    _parity_report(rows, low, metrics, models_path)
 
 
 def run_dynamic_size_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
@@ -769,8 +791,10 @@ def run_dynamic_size_parity(cfg, raw_model, model, x_test, want, models_path: Pa
         ) from e
 
     if cfg.task == "sem_seg":
-        ref_map = ref[0].cpu().numpy()  # sem_seg wrapper returns one [B, H, W] tensor
-        metrics = {"pixel_agreement": float((outs[0][0] == ref_map).mean())}
+        ref, outs = _sem_seg_outputs(ref), _sem_seg_outputs(outs)
+        metrics = {"pixel_agreement": float((outs[0] == ref[0]).mean())}
+        if len(ref) > 1:
+            metrics["probs_cosine"] = _cosine(ref[1], outs[1])
     else:
         ref = [t.cpu() for t in ref]  # (labels, boxes, scores[, masks])
         ref_scores = torch.sort(ref[2].flatten()).values.numpy()
@@ -798,6 +822,8 @@ def main(cfg: DictConfig):
     sem_seg = cfg.task == "sem_seg"
     enable_mask_head = cfg.task == "segment"
     output_names = ["sem_seg"] if sem_seg else ["labels", "boxes", "scores"]
+    if sem_seg and cfg.export.get("sem_seg_probs", False):
+        output_names.append("sem_seg_probs")
     if enable_mask_head:
         output_names.append("masks")
 

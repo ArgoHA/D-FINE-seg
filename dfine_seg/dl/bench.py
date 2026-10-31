@@ -272,6 +272,8 @@ def main(cfg: DictConfig):
             apply_nms=nms,
             channels=cfg.train.in_channels,
             task=cfg.task,
+            # like-for-like latency with exported graphs that carry the probs output
+            sem_seg_probs=cfg.task == "sem_seg" and cfg.export.get("sem_seg_probs", False),
         )
 
     if IS_MACOS:
