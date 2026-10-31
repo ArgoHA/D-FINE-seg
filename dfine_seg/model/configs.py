@@ -148,7 +148,7 @@ sizes_cfg = {
         "HGNetv2": {
             "name": "B4",
             "return_idx": [1, 2, 3],
-            "freeze_at": 0,
+            "freeze_at": -1,
             "freeze_norm": True,
             "use_lab": False,
         },
@@ -177,7 +177,7 @@ sizes_cfg = {
         "HGNetv2": {
             "name": "B5",
             "return_idx": [1, 2, 3],
-            "freeze_at": 0,
+            "freeze_at": -1,
             "freeze_norm": True,
             "use_lab": False,
         },

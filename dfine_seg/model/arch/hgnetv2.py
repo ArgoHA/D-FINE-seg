@@ -484,7 +484,7 @@ class HGNetv2(nn.Module):
             )
 
         # Skip freeze when stem was inflated for extra channels
-        if freeze_at >= 0 and in_channels == 3:
+        if freeze_at >= 0 and stem_channels[0] == 3:
             self._freeze_parameters(self.stem)
             if not freeze_stem_only:
                 for i in range(min(freeze_at + 1, len(self.stages))):
