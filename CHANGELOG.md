@@ -144,10 +144,10 @@ The last decoder layer's denoising queries now get class/box supervision in inst
 
 | Task | Metric | D-FINE-seg S | Reference |
 |------|--------|--------------|-----------|
-| 17-point COCO pose, val2017, 20 epochs | keypoint AP / person box AP / TensorRT fp16 latency | 62.0 / 64.2 / 2.06 ms | YOLO26s-pose, same 20 epochs from COCO detection weights: 55.0 / 59.8 / 2.13 ms; released YOLO26s-pose (300 epochs, Objects365 init): 62.7 / - / 2.14 ms |
+| 17-point COCO pose, val2017, 20 epochs | keypoint AP / person box AP / TensorRT fp16 latency | 63.0 / 63.6 / 2.10 ms | YOLO26s-pose, same 20 epochs from COCO detection weights: 55.0 / 59.8 / 2.13 ms; released YOLO26s-pose (300 epochs, Objects365 init): 62.7 / - / 2.14 ms |
 | One ground-contact point (ankle midpoint), COCO val, 10 epochs | median error / box height | 0.024 | 0.123 (box bottom-center) |
 
-Keypoint AP is the official COCO scorer on all val2017 images with people; latency is per-image predict at conf 0.5 through each framework's own pipeline. TensorRT matches PyTorch (62.0 vs 62.1 AP). The previous per-detection MLP head alone reached 37.8 AP. The single predicted point beats the box bottom-center on 93% of people (97% when the ankles are visible).
+Keypoint AP is the official COCO scorer on all val2017 images with people; latency is per-image predict at conf 0.5 through each framework's own pipeline. TensorRT matches PyTorch (63.0 vs 63.0 AP). The previous per-detection MLP head alone reached 37.8 AP. The single predicted point beats the box bottom-center on 93% of people (97% when the ankles are visible).
 
 ## 2026-10-31 - Semantic segmentation probability output
 
