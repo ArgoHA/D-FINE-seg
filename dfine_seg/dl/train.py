@@ -33,9 +33,12 @@ from dfine_seg.dl.utils import (
     cleanup_masks,
     encode_sample_masks_to_rle,
     get_vram_usage,
+    kpts_meta,
     log_metrics_locally,
+    num_kpts,
     poly_abs_to_mask,
     process_boxes,
+    process_kpts,
     process_masks,
     save_metrics,
     set_seeds,
@@ -43,8 +46,15 @@ from dfine_seg.dl.utils import (
     visualize_sem_seg,
     wandb_logger,
 )
-from dfine_seg.dl.validator import SemSegValidator, Validator
-from dfine_seg.model.dfine import build_loss, build_model, build_optimizer, freeze_except_mask
+from dfine_seg.dl.validator import KPT_MAX_DETS, SemSegValidator, Validator
+from dfine_seg.model.dfine import (
+    build_loss,
+    build_model,
+    build_optimizer,
+    freeze_except_kpt,
+    freeze_except_mask,
+    frozen_batchnorms,
+)
 from dfine_seg.model.dist_utils import (
     broadcast_scalar,
     cleanup_distributed,
@@ -65,7 +75,7 @@ def ckpt_meta(cfg: DictConfig) -> Dict:
     names and the preprocessing it was trained with (the sidecar config stays behind).
     Plain python only - the loaders pass `weights_only=True`, which rejects OmegaConf.
     """
-    return {
+    meta = {
         "dfine_seg_version": __version__,
         "model_name": cfg.model_name,
         "task": cfg.task,
@@ -75,6 +85,9 @@ def ckpt_meta(cfg: DictConfig) -> Dict:
         "img_size": [int(v) for v in cfg.train.img_size],
         "keep_ratio": bool(cfg.train.keep_ratio),
     }
+    if cfg.task == "kpts":
+        meta["kpts"] = kpts_meta(cfg)
+    return meta
 
 
 class ModelEMA:
@@ -126,6 +139,7 @@ class KDTeacher:
             "detect": ("detect", "segment"),
             "segment": ("segment",),
             "sem_seg": ("sem_seg",),
+            "kpts": ("kpts",),
         }
         if info["task"] not in allowed[self.task]:
             raise ValueError(
@@ -157,6 +171,8 @@ class KDTeacher:
                 img_size=list(self.img_size),
                 in_channels=info["in_channels"],
                 task=info["task"],
+                num_kpts=info["num_kpts"],
+                num_kpt_layers=info["num_kpt_layers"],
             )
         for key in ("decoder.anchors", "decoder.valid_mask"):
             sd.pop(key, None)
@@ -284,9 +300,11 @@ class Trainer:
         self.use_wandb = cfg.train.use_wandb
         self.label_to_name = cfg.train.label_to_name
         self.num_labels = len(cfg.train.label_to_name)
-        self.task = cfg.task  # detect/segment/sem_seg
+        self.task = cfg.task  # detect/segment/sem_seg/kpts
         self.mask_batch_size = cfg.train.mask_batch_size
         enable_mask_head = self.task == "segment"
+        self.num_kpts = num_kpts(cfg)
+        self.kpts_meta = kpts_meta(cfg)  # None unless task=kpts
         self.ignore_index = int(cfg.train.sem_seg.ignore_index) if self.task == "sem_seg" else None
 
         self.debug_img_path = Path(self.cfg.train.debug_img_path)
@@ -303,6 +321,10 @@ class Trainer:
 
         if self.task == "sem_seg":
             self.decision_metrics = ["mIoU"]  # dense seg has no box metrics
+        elif self.task == "kpts":
+            # Threshold-free APs: rescoring shifts scores relative to conf_thresh, so f1 peaks in
+            # the first epochs. Box AP guards detection, incl. objects without labeled points.
+            self.decision_metrics = ["mAP_50_95_kpt", "mAP_50_95"]
         elif enable_mask_head:
             for i, metric in enumerate(self.decision_metrics):
                 if metric == "mAP_50":
@@ -364,6 +386,7 @@ class Trainer:
             pretrained_model_path=cfg.train.pretrained_model_path,
             pretrained_backbone=cfg.train.get("imagenet_backbone", False),
             task=self.task,
+            num_kpts=self.num_kpts,
         )
 
         self.kd_teacher = None
@@ -372,24 +395,30 @@ class Trainer:
             if self.task == "sem_seg":
                 self.model.decoder.return_quarter_logits = True
 
-        # unfreeze only mask head
+        # unfreeze only the mask / keypoint head
         self.frozen_modules = []
+        freeze_kpt = self.task == "kpts" and cfg.train.kpts.get("freeze_except_kpt", False)
         if cfg.train.get("freeze_except_mask", False):
             if not enable_mask_head:
                 raise ValueError("train.freeze_except_mask requires task=segment")
             self.frozen_modules = freeze_except_mask(self.model)
-            if self.is_main:
-                n_train = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-                n_all = sum(p.numel() for p in self.model.parameters())
-                logger.info(
-                    f"Frozen all but the mask head: {n_train / 1e6:.2f}M / {n_all / 1e6:.2f}M "
-                    f"params trainable ({100 * n_train / n_all:.1f}%)"
-                )
+        elif freeze_kpt:
+            self.frozen_modules = freeze_except_kpt(self.model)
+        if self.frozen_modules and self.is_main:
+            n_train = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            n_all = sum(p.numel() for p in self.model.parameters())
+            logger.info(
+                f"Frozen all but the {'keypoint' if freeze_kpt else 'mask'} head: "
+                f"{n_train / 1e6:.2f}M / {n_all / 1e6:.2f}M "
+                f"params trainable ({100 * n_train / n_all:.1f}%)"
+            )
 
         if self.distributed:
             if torch.cuda.is_available():
                 if cfg.train.batch_size < 4:  # SyncBatch is useful for small batches
                     self.model = SyncBatchNorm.convert_sync_batchnorm(self.model).to(self.device)
+                    if self.frozen_modules:  # the conversion replaced the frozen BN layers
+                        self.frozen_modules = frozen_batchnorms(self.model)
                 self.model = DDP(
                     self.model,
                     device_ids=[self.local_rank],
@@ -415,6 +444,8 @@ class Trainer:
             ignore_index=self.ignore_index,
             class_weights=cfg.train.sem_seg.class_weights if self.task == "sem_seg" else None,
             kd=OmegaConf.to_container(cfg.train.kd) if self.kd_teacher is not None else None,
+            kpts_meta=self.kpts_meta,
+            img_size=tuple(cfg.train.img_size),
         )
 
         use_muon = cfg.train.get("use_muon", False)
@@ -481,6 +512,8 @@ class Trainer:
     ) -> List[Dict[str, torch.Tensor]]:
         """
         returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
+        (+ "kpts" [N, K, 4] abs x, y, presence, visible for task=kpts, and "all_kpts"
+        for the top KPT_MAX_DETS of the all_* arrays - COCO keypoint AP scores only those)
         """
         logits, boxes = outputs["pred_logits"], outputs["pred_boxes"]
         has_masks = ("pred_masks" in outputs) and (outputs["pred_masks"] is not None)
@@ -491,6 +524,9 @@ class Trainer:
         boxes = process_boxes(
             boxes, inputs.shape[2:], orig_sizes, keep_ratio, inputs.device
         )  # B x TopQ x 4
+        kpts = None
+        if "pred_kpts" in outputs:
+            kpts = process_kpts(outputs["pred_kpts"], inputs.shape[2:], orig_sizes, keep_ratio)
 
         # scores/labels and preliminary topK over all Q*C
         if use_focal_loss:
@@ -535,6 +571,9 @@ class Trainer:
                 "all_scores": topk_scores[b].detach().cpu(),
                 "all_labels": topk_labels[b].detach().cpu(),
             }
+            if kpts is not None:
+                out["kpts"] = kpts[b, qb].cpu()
+                out["all_kpts"] = kpts[b, topk_qidx[b][:KPT_MAX_DETS]].cpu()
 
             if has_masks and qb.numel() > 0:
                 # gather only kept masks, cast to half to save mem during resizing
@@ -572,6 +611,17 @@ class Trainer:
                 inputs.device,
             )
             result = dict(labels=lab.detach().cpu(), boxes=box.squeeze(0).detach().cpu())
+            if target.get("kpts") is not None:
+                kp = process_kpts(
+                    target["kpts"][None],
+                    inputs[idx].shape[1:],
+                    orig_sizes[idx][None],
+                    keep_ratio,
+                )[0].cpu()
+                kp[kp[..., 2] == 0, :2] = 0
+                result["kpts"] = kp
+                areas = target.get("areas")
+                result["areas"] = areas.cpu() if areas is not None else None
 
             # Original res GT polys for eval
             H0 = int(orig_sizes[idx, 0].item())
@@ -637,6 +687,7 @@ class Trainer:
                         dataset_path=Path(self.cfg.train.data_path) / "images",
                         path_to_save=self.eval_preds_path,
                         label_to_name=self.label_to_name,
+                        kpts_meta=self.kpts_meta,
                     )
 
                 # collect all preds and gt for metrics
@@ -761,6 +812,7 @@ class Trainer:
                     iou_thresh=iou_thresh,
                     label_to_name=self.label_to_name,
                     mask_batch_size=self.mask_batch_size,
+                    kpts_meta=self.kpts_meta,
                 )
                 metrics = validator.compute_metrics(extended=extended)
             if path_to_save:  # val and test
@@ -1030,6 +1082,7 @@ def _evaluate_checkpoint(cfg, trainer, ddp_enabled, started_at):
         img_size=cfg.train.img_size,
         in_channels=cfg.train.in_channels,
         task=cfg.task,
+        num_kpts=num_kpts(cfg),
     )
     state = torch.load(trainer.path_to_save / "model.pt", weights_only=True)
     model.load_state_dict(unwrap_checkpoint(state)[0])

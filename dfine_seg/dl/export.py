@@ -14,15 +14,14 @@ from torch import nn
 
 from dfine_seg.api.ckpt import describe
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
+from dfine_seg.dl.utils import get_latest_experiment_name, num_kpts
 from dfine_seg.model.configs import base_cfg
 from dfine_seg.model.dfine import build_model
 from dfine_seg.model.utils import (
     ensure_pretrained,
-    unwrap_checkpoint,
     load_tuning_state,
+    unwrap_checkpoint,
 )
-
-from dfine_seg.dl.utils import get_latest_experiment_name
 
 
 class DFINEPostProcessor(nn.Module):
@@ -30,7 +29,8 @@ class DFINEPostProcessor(nn.Module):
 
     Performs: sigmoid -> topK -> cxcywh -> xyxy (in input-size pixels).
     Outputs: labels [B,K], boxes [B,K,4], scores [B,K].
-    Masks (if present) are passed through with sigmoid applied.
+    Masks (if present) are passed through with sigmoid applied. Keypoints (if present) come out
+    as [B,K,num_kpts,4]: x, y in input-size pixels, presence and visible scores.
     """
 
     def __init__(self, num_classes: int, num_top_queries: int = 300, use_focal_loss: bool = True):
@@ -62,6 +62,7 @@ class DFINEPostProcessor(nn.Module):
         logits = outputs["pred_logits"]  # [B, Q, C]
         boxes = outputs["pred_boxes"]  # [B, Q, 4]  normalised cxcywh
         pred_masks = outputs.get("pred_masks", None)  # [B, Q, Hm, Wm] or None
+        pred_kpts = outputs.get("pred_kpts", None)  # [B, Q, num_kpts, 4] or None
 
         # box conversion: normalised cxcywh -> absolute xyxy in input-size space
         abs_boxes = self.norm_xywh_to_abs_xyxy(boxes.flatten(0, 1), input_h, input_w).view(
@@ -98,6 +99,10 @@ class DFINEPostProcessor(nn.Module):
             # Gather masks for top-K queries: [B, Q, Hm, Wm] -> [B, K, Hm, Wm]
             topk_masks = pred_masks[batch_idx, topk_qidx]
             result = result + (topk_masks,)
+
+        if pred_kpts is not None:
+            scale = torch.tensor([input_w, input_h, 1.0, 1.0], device=pred_kpts.device)
+            result = result + (pred_kpts[batch_idx, topk_qidx] * scale,)
 
         return result
 
@@ -142,7 +147,7 @@ class SemSegExportWrapper(nn.Module):
         return self
 
 
-def _check_pretrained(ckpt: str, task: str, n_config: int, img_size) -> None:
+def _check_pretrained(ckpt: str, task: str, n_config: int, img_size, n_kpts: int = 0) -> None:
     """Refuse to export pretrained weights that would produce a broken artifact.
 
     `load_tuning_state` loads non-strictly, so a class-count mismatch drops every score head
@@ -173,6 +178,11 @@ def _check_pretrained(ckpt: str, task: str, n_config: int, img_size) -> None:
             "Cityscapes sem-seg releases carry their own label_to_name), or train on your own "
             "classes first and export with export.from_pretrained=False."
         )
+    if info["num_kpts"] != n_kpts:
+        raise ValueError(
+            f"{Path(ckpt).name} has {info['num_kpts']} keypoints but train.kpts.shape "
+            f"asks for {n_kpts}; the keypoint head would be exported at random init."
+        )
     meta_img = meta.get("img_size")
     if meta_img and tuple(meta_img) != tuple(img_size):
         logger.warning(
@@ -192,11 +202,18 @@ def prepare_model(cfg, device, dynamic: bool = False):
         img_size=None if dynamic else cfg.train.img_size,
         in_channels=cfg.train.in_channels,
         task=cfg.task,
+        num_kpts=num_kpts(cfg),
     )
     if cfg.export.from_pretrained:
         # Export a released checkpoint directly (no trained model.pt).
         ckpt = ensure_pretrained(cfg.train.pretrained_model_path)
-        _check_pretrained(ckpt, cfg.task, len(cfg.train.label_to_name), cfg.train.img_size)
+        _check_pretrained(
+            ckpt,
+            cfg.task,
+            len(cfg.train.label_to_name),
+            cfg.train.img_size,
+            n_kpts=num_kpts(cfg),
+        )
         load_tuning_state(model, ckpt)
     else:
         ckpt = Path(cfg.train.path_to_save) / "model.pt"
@@ -473,7 +490,11 @@ def export_to_litert(
 
 
 def export_to_tensorrt(
-    onnx_file_path: Path, half: bool, max_batch_size: int, opt_bs: int = 1
+    onnx_file_path: Path,
+    half: bool,
+    max_batch_size: int,
+    opt_bs: int = 1,
+    fp32_grid_sample: bool = False,
 ) -> None:
     import onnx
     import tensorrt as trt
@@ -497,6 +518,17 @@ def export_to_tensorrt(
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)  # 2GB
     if half:
         config.set_flag(trt.BuilderFlag.FP16)
+        if fp32_grid_sample:
+            # The keypoint decoder's deformable attention is mis-fused in fp16 (TRT 10.13):
+            # kpt AP 0.19 vs 0.29 in torch; fp32 GridSample matches torch at the same latency.
+            # Pins the box decoder's GridSamples too: keypoint-decoder-only gave the same AP
+            # and latency, and the simplified graph carries no module names to select by.
+            config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
+            for i in range(network.num_layers):
+                layer = network.get_layer(i)
+                if layer.type == trt.LayerType.GRID_SAMPLE:
+                    layer.precision = trt.float32
+                    layer.set_output_type(0, trt.float32)
 
     if max_batch_size > 1:
         profile = builder.create_optimization_profile()
@@ -826,6 +858,8 @@ def main(cfg: DictConfig):
         output_names.append("sem_seg_probs")
     if enable_mask_head:
         output_names.append("masks")
+    if cfg.task == "kpts":
+        output_names.append("kpts")
 
     device = cfg.train.device
     # from_pretrained needs no trained run - it writes into today's fresh output dir.
@@ -860,6 +894,8 @@ def main(cfg: DictConfig):
         raw_output_names = ["logits", "boxes"]
         if enable_mask_head:
             raw_output_names.append("masks")
+        if cfg.task == "kpts":
+            raw_output_names.append("kpts")
         raw_onnx_path = export_to_onnx(
             dyn_model if sem_seg else dyn_raw,
             model_path,
@@ -891,6 +927,7 @@ def main(cfg: DictConfig):
                 cfg.export.half,
                 cfg.export.max_batch_size,
                 opt_bs=cfg.export.get("opt_batch_size", 1) or 1,
+                fp32_grid_sample=cfg.task == "kpts",
             )
     if want("onnx") and cfg.export.dynamic_input:
         export_to_onnx(

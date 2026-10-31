@@ -77,8 +77,10 @@ class ONNXModel:
         self.channels = int(inp.shape[1])
         h, w = inp.shape[2], inp.shape[3]
         # sem_seg graph = label map [+ probs]; fused detection graphs have >= 3 outputs
-        self.sem_seg = len(self.model.get_outputs()) <= 2
-        self.has_masks = len(self.model.get_outputs()) > 3
+        self.output_names = [o.name for o in self.model.get_outputs()]
+        self.sem_seg = len(self.output_names) <= 2
+        self.has_masks = "masks" in self.output_names
+        self.has_kpts = "kpts" in self.output_names
         explicit = (self.input_height, self.input_width)
         if (explicit[0] is None) != (explicit[1] is None):
             raise ValueError("Pass both input_height and input_width, or neither.")
@@ -112,6 +114,23 @@ class ONNXModel:
                 out[i] = scale_boxes_ratio_kept(out[i], processed_sizes[i], orig_sizes[i])
             else:
                 out[i] = scale_boxes(out[i], orig_sizes[i], processed_sizes[i])
+        return out
+
+    @staticmethod
+    def rescale_kpts(kpts, processed_sizes, orig_sizes, keep_ratio):
+        """[B, K, N, 4] keypoints, x/y absolute in input-size space -> original image size.
+        Not clipped: a point may lie outside the image."""
+        out = kpts.clone()
+        for i in range(kpts.shape[0]):
+            proc_h, proc_w = processed_sizes[i]
+            h0, w0 = orig_sizes[i]
+            if keep_ratio:
+                gain = min(proc_h / h0, proc_w / w0)
+                out[i, ..., 0] = (out[i, ..., 0] - round((proc_w - w0 * gain) / 2 - 0.1)) / gain
+                out[i, ..., 1] = (out[i, ..., 1] - round((proc_h - h0 * gain) / 2 - 0.1)) / gain
+            else:
+                out[i, ..., 0] *= w0 / proc_w
+                out[i, ..., 1] *= h0 / proc_h
         return out
 
     @staticmethod
@@ -263,7 +282,12 @@ class ONNXModel:
         labels = torch.from_numpy(outputs[0])  # [B, K]
         boxes = torch.from_numpy(outputs[1])  # [B, K, 4], absolute xyxy in input_size space
         scores = torch.from_numpy(outputs[2])  # [B, K]
-        pred_masks = torch.from_numpy(outputs[3]) if self.has_masks else None  # [B, K, Hm, Wm]
+        named = dict(zip(self.output_names, outputs))
+        pred_masks = torch.from_numpy(named["masks"]) if self.has_masks else None  # [B,K,Hm,Wm]
+        kpts = None
+        if self.has_kpts:  # [B, K, N, 4]
+            kpts = torch.from_numpy(named["kpts"]).float()
+            kpts = self.rescale_kpts(kpts, processed_sizes, original_sizes, self.keep_ratio)
         B = labels.shape[0]
 
         boxes = self.rescale_boxes(boxes, processed_sizes, original_sizes, self.keep_ratio)
@@ -288,6 +312,8 @@ class ONNXModel:
                 keep_indices = keep_indices[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
+            if kpts is not None:
+                out["kpts"] = kpts[b][keep_indices]
 
             if pred_masks is not None and lb.numel() > 0:
                 mb = pred_masks[b][keep_indices]  # [N, Hm, Wm]
@@ -329,6 +355,8 @@ class ONNXModel:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            kpts (kpts models): torch.Tensor of shape (N, K, 4), dtype float32: x, y (abs),
+                presence score, visible score. All K points are returned
             sem_seg models instead return {"sem_seg": uint8 (H, W) dense label map} per image,
             + "sem_seg_probs" float32 (C, h, w): softmax at 1/4 of the model input, letterbox
             pads included, and "sem_seg_probs_tf" float32 (3, 3) mapping original-image

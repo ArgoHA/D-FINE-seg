@@ -13,6 +13,7 @@ from dfine_seg.dl.dataset import read_image_hwc
 from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
+    kpts_meta,
 )
 from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
 from dfine_seg.infer.byte_track import ByteTrack, Detection
@@ -47,6 +48,8 @@ def _host_result(torch_model, raw_result, image_shape):
     if "masks" in raw_result:
         result["masks"] = raw_result["masks"].cpu()
         result["polys"] = torch_model.mask2poly(result["masks"], image_shape)
+    if "kpts" in raw_result:
+        result["kpts"] = raw_result["kpts"].cpu().numpy()
     return result
 
 
@@ -69,7 +72,22 @@ def _write_class_names(output_path, labels, label_to_name):
             f.write(f"{label_to_name[int(class_id)]}\n")
 
 
-def save_yolo_annotations(res, output_path, img_path, img_shape):
+def _yolo_kpts(kpts, img_shape, kpts_meta) -> str:
+    """[K, 4] predicted points -> YOLO-pose `x y [v]` fields, normalized. v: 2 visible,
+    1 occluded, 0 absent (presence below kpts.conf_thresh, written as 0 0)."""
+    kpts_meta = kpts_meta or {}
+    with_flags = (kpts_meta.get("shape") or [0, 3])[1] == 3
+    fields = []
+    for x, y, presence, visible in kpts:
+        v = 0
+        if presence >= kpts_meta.get("conf_thresh", 0.5):
+            v = 2 if visible >= kpts_meta.get("visible_thresh", 0.5) else 1
+        x, y = (x / img_shape[1], y / img_shape[0]) if v else (0.0, 0.0)
+        fields += [f"{x:.6f}", f"{y:.6f}"] + ([str(v)] if with_flags else [])
+    return " ".join(fields)
+
+
+def save_yolo_annotations(res, output_path, img_path, img_shape, kpts_meta=None):
     output_path.mkdir(parents=True, exist_ok=True)
 
     if len(res["boxes"]) == 0:
@@ -91,9 +109,13 @@ def save_yolo_annotations(res, output_path, img_path, img_shape):
             else:
                 # YOLO detection format: class_id x_center y_center width height
                 norm_box = abs_xyxy_to_norm_xywh(box[None], img_shape[0], img_shape[1])[0]
-                f.write(
-                    f"{int(class_id)} {norm_box[0]:.6f} {norm_box[1]:.6f} {norm_box[2]:.6f} {norm_box[3]:.6f}\n"
+                line = (
+                    f"{int(class_id)} {norm_box[0]:.6f} {norm_box[1]:.6f} "
+                    f"{norm_box[2]:.6f} {norm_box[3]:.6f}"
                 )
+                if "kpts" in res:  # YOLO-pose: box + K points
+                    line += " " + _yolo_kpts(res["kpts"][idx], img_shape, kpts_meta)
+                f.write(line + "\n")
 
 
 def crops(or_img, res, paddings, output_path, output_stem):
@@ -116,7 +138,9 @@ def crops(or_img, res, paddings, output_path, output_stem):
 
 
 def run_images(torch_model, folder_path, output_path, label_to_name, to_crop, paddings):
-    visualizer = Visualizer(n_classes=max(label_to_name) + 1, class_names=label_to_name)
+    visualizer = Visualizer(
+        torch_model, n_classes=max(label_to_name) + 1, class_names=label_to_name
+    )
     labels = set()
     for img_path in tqdm(_files(folder_path, IMAGE_EXTS)):
         img = read_image_hwc(img_path)
@@ -130,7 +154,11 @@ def run_images(torch_model, folder_path, output_path, label_to_name, to_crop, pa
         labels.update(res["labels"].tolist())
 
         save_yolo_annotations(
-            res=res, output_path=output_path / "labels", img_path=img_path, img_shape=img.shape
+            res=res,
+            output_path=output_path / "labels",
+            img_path=img_path,
+            img_shape=img.shape,
+            kpts_meta=torch_model.kpts,
         )
 
         if to_crop:
@@ -196,7 +224,9 @@ def run_videos_sem_seg(torch_model, folder_path, output_path, label_to_name):
 
 
 def run_videos(torch_model, folder_path, output_path, label_to_name, to_crop, paddings):
-    visualizer = Visualizer(n_classes=max(label_to_name) + 1, class_names=label_to_name)
+    visualizer = Visualizer(
+        torch_model, n_classes=max(label_to_name) + 1, class_names=label_to_name
+    )
     labels = set()
     for video_path in _files(folder_path, VIDEO_EXTS):
         vid = cv2.VideoCapture(str(video_path))
@@ -219,6 +249,7 @@ def run_videos(torch_model, folder_path, output_path, label_to_name, to_crop, pa
                 output_path=output_path / "labels",
                 img_path=frame_name,
                 img_shape=img.shape,
+                kpts_meta=torch_model.kpts,
             )
 
             if to_crop:
@@ -260,6 +291,7 @@ def _run_video_tracked(torch_model, tracker, visualizer, video_path, output_path
         labels = res["labels"].cpu().numpy()
         scores = res["scores"].cpu().numpy()
         masks = res["masks"].cpu().numpy() if "masks" in res else None
+        kpts = res["kpts"].cpu().numpy() if "kpts" in res else None
 
         detections = [
             Detection(bbox=tuple(b.tolist()), score=float(s), cls_id=int(c))
@@ -277,6 +309,8 @@ def _run_video_tracked(torch_model, tracker, visualizer, video_path, output_path
             if masks is not None:
                 # tracker emits the source detection index, so masks follow the boxes
                 tracked_results["masks"] = masks[[t[4] for t in tracked]]
+            if kpts is not None:
+                tracked_results["kpts"] = kpts[[t[4] for t in tracked]]
         else:
             tracked_results = {
                 "track_ids": np.zeros(0, dtype=int),
@@ -302,7 +336,9 @@ def run_videos_tracked(torch_model, folder_path, output_path, label_to_name, tra
         return
 
     output_path.mkdir(parents=True, exist_ok=True)
-    visualizer = Visualizer(n_classes=max(label_to_name.keys()) + 1, class_names=label_to_name)
+    visualizer = Visualizer(
+        torch_model, n_classes=max(label_to_name) + 1, class_names=label_to_name
+    )
 
     for video_path in video_files:
         # Fresh tracker per video so IDs don't bleed across unrelated clips.
@@ -369,6 +405,8 @@ def main(cfg: DictConfig):
         channels=cfg.train.in_channels,
         task=cfg.task,
     )
+    if cfg.task == "kpts":  # live config wins over the checkpoint's thresholds / skeleton
+        torch_model.kpts = kpts_meta(cfg)
 
     if data_type == "video" and cfg.train.in_channels != 3:
         raise ValueError(

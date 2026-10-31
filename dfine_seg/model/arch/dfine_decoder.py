@@ -271,6 +271,119 @@ class TransformerDecoderLayer(nn.Module):
         return target
 
 
+TRT_GRID_SAMPLE_MAX_ROWS = 1024
+
+
+class KeypointDecoderLayer(TransformerDecoderLayer):
+    """Decoder layer over keypoint tokens [B, N, K, C]: self-attention among the K points of
+    one instance, deformable cross-attention around each point's own reference."""
+
+    def forward(
+        self,
+        target: torch.Tensor,
+        reference_points: torch.Tensor,
+        value: torch.Tensor,
+        spatial_shapes: List[List[int]],
+        query_pos_embed: torch.Tensor,
+    ) -> torch.Tensor:
+        b, n, k, c = target.shape
+        q = (target + query_pos_embed).reshape(b * n, k, c)
+        target2, _ = self.self_attn(q, q, value=target.reshape(b * n, k, c))
+        target = self.norm1(target + target2.reshape(b, n, k, c))
+
+        # TensorRT 10.13 mis-executes chained GridSamples on a shared value tensor (layer 2's
+        # grid depends on layer 1, see trt_bugs/TENSORRT_ISSUES.md); splitting the tokens into
+        # >= 2 chunks avoids it. Exported graphs only: eager / compiled runs keep one call.
+        # The count must divide n * k: uneven torch splits export as even ONNX Splits. Each
+        # query samples independently, so the result is unchanged.
+        q = (target + query_pos_embed).reshape(b, n * k, c)
+        ref = reference_points.reshape(b, n * k, 1, 4)
+        num_chunks = 1
+        if torch.onnx.is_in_onnx_export():
+            min_chunks = max(2, -(-n * k // TRT_GRID_SAMPLE_MAX_ROWS))
+            divisors = (i for i in range(min_chunks, n * k + 1) if n * k % i == 0)
+            num_chunks = next(divisors, 1)
+        chunks = zip(q.chunk(num_chunks, 1), ref.chunk(num_chunks, 1))
+        target2 = torch.cat(
+            [self.cross_attn(q_i, r_i, value, spatial_shapes) for q_i, r_i in chunks], 1
+        )
+        target = self.gateway(target, target2.reshape(b, n, k, c))
+        target = target + self.forward_ffn(target)
+        return self.norm3(target.clamp(min=-65504, max=65504))
+
+
+class KeypointDecoder(nn.Module):
+    """Refines the keypoints of the top-scoring instances with one token per point.
+
+    The per-query head regresses all K points from one instance vector whose attention samples
+    around the box, so nothing looks at the image where a point is. Here each point is a token
+    that samples the encoder memory around its current location, sees the instance's other
+    points and predicts a box-relative residual; presence/visible logits refine the same way.
+    """
+
+    def __init__(
+        self,
+        num_kpts: int,
+        hidden_dim: int,
+        nhead: int,
+        dim_feedforward: int,
+        num_levels: int,
+        num_points: Union[int, List[int]],
+        num_layers: int,
+        ref_scale: float = 0.25,
+    ) -> None:
+        super().__init__()
+        self.ref_scale = ref_scale  # sampling extent around a point, relative to its box
+        layer = KeypointDecoderLayer(
+            hidden_dim, nhead, dim_feedforward, 0.0, "relu", num_levels, num_points
+        )
+        self.layers = nn.ModuleList(copy.deepcopy(layer) for _ in range(num_layers))
+        self.kpt_embed = nn.Embedding(num_kpts, hidden_dim)
+        self.instance_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.pos_head = MLP(4, 2 * hidden_dim, hidden_dim, 2)
+        # per point: dx, dy, log Laplace scale x / y (box-relative, train-only uncertainty)
+        self.reg_head = nn.ModuleList(MLP(hidden_dim, hidden_dim, 4, 3) for _ in range(num_layers))
+        self.score_head = nn.ModuleList(nn.Linear(hidden_dim, 2) for _ in range(num_layers))
+        # every layer starts as identity: the per-query head's points and scores
+        for head in list(self.reg_head) + list(self.score_head):
+            last = head.layers[-1] if isinstance(head, MLP) else head
+            init.constant_(last.weight, 0)
+            init.constant_(last.bias, 0)
+        init.xavier_uniform_(self.pos_head.layers[0].weight)
+        init.xavier_uniform_(self.pos_head.layers[1].weight)
+        # instance keypoint quality: logit of the predicted OKS, for rescoring
+        self.quality_head = MLP(hidden_dim, hidden_dim, 1, 2)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        boxes: torch.Tensor,
+        kpts: torch.Tensor,
+        value: Tuple[torch.Tensor, ...],
+        spatial_shapes: List[List[int]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """h [B, N, C], boxes [B, N, 4] cxcywh, kpts [B, N, K, 4] initial (x, y, presence,
+        visible logits) -> ([L, B, N, K, C], quality logit [B, N]): every layer + log scales
+        (C=6) in training, the last layer (C=4) in eval."""
+        wh = boxes[..., None, 2:].detach()
+        xy, logits = kpts[..., :2].detach(), kpts[..., 2:].detach()
+        target = self.instance_proj(h)[:, :, None] + self.kpt_embed.weight
+        out = []
+        for i, layer in enumerate(self.layers):
+            ref = torch.cat([xy, (wh * self.ref_scale).expand_as(xy)], -1)
+            pos = self.pos_head(ref).clamp(min=-10, max=10)
+            target = layer(target, ref, value, spatial_shapes, pos)
+            reg = self.reg_head[i](target)
+            xy = xy + reg[..., :2] * wh
+            logits = logits + self.score_head[i](target)
+            if self.training:
+                out.append(torch.cat([xy, logits, reg[..., 2:]], -1))
+            elif i == len(self.layers) - 1:
+                out.append(torch.cat([xy, logits], -1))
+            xy, logits = xy.detach(), logits.detach()
+        return torch.stack(out), self.quality_head(target.mean(2)).squeeze(-1)
+
+
 class Gate(nn.Module):
     def __init__(self, d_model: int) -> None:
         super(Gate, self).__init__()
@@ -676,6 +789,13 @@ class DFINETransformer(nn.Module):
         enable_mask_head: bool = False,
         mask_dim: int = 256,
         mask_low_level_ch: Optional[int] = None,
+        num_kpts: int = 0,  # K points per object; 0 = no keypoint head
+        num_kpt_layers: int = 0,  # keypoint decoder depth; 0 = per-query heads only
+        num_kpt_queries: int = 50,  # top-scoring queries the keypoint decoder refines
+        kpt_dn_noise: float = 0.0,  # keypoint denoising noise, x GT box size; 0 = off
+        kpt_rescore: float = 0.0,  # refined queries score cls^(1 - a) * quality^a
+        kpt_ref_scale: float = 0.25,  # sampling extent around each point, x box size
+        kpt_dn_groups: int = 1,  # box-denoising groups that also denoise keypoints
     ) -> None:
         super().__init__()
         assert len(feat_channels) <= num_levels
@@ -698,6 +818,7 @@ class DFINETransformer(nn.Module):
         self.reg_max = reg_max
         self.mask_dim = mask_dim
         self.enable_mask_head = enable_mask_head
+        self.num_kpts = num_kpts
 
         assert query_select_method in ("default", "one2many", "agnostic"), ""
         assert cross_attn_method in ("default", "discrete"), ""
@@ -810,6 +931,31 @@ class DFINETransformer(nn.Module):
         )
         self.integral = Integral(self.reg_max)
 
+        # keypoint head: per layer, per point (dx, dy, presence logit, visible logit)
+        if num_kpts:
+            self.kpt_head = nn.ModuleList(
+                [MLP(hidden_dim, hidden_dim, num_kpts * 4, 3) for _ in range(self.eval_idx + 1)]
+                + [
+                    MLP(scaled_dim, scaled_dim, num_kpts * 4, 3)
+                    for _ in range(num_layers - self.eval_idx - 1)
+                ]
+            )
+        self.num_kpt_queries = num_kpt_queries
+        self.kpt_dn_noise = kpt_dn_noise
+        self.kpt_dn_groups = kpt_dn_groups
+        self.kpt_rescore = kpt_rescore
+        if num_kpts and num_kpt_layers:
+            self.kpt_decoder = KeypointDecoder(
+                num_kpts,
+                hidden_dim,
+                nhead,
+                dim_feedforward,
+                num_levels,
+                num_points,
+                num_kpt_layers,
+                kpt_ref_scale,
+            )
+
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
             anchors, valid_mask = self._generate_anchors()
@@ -849,6 +995,11 @@ class DFINETransformer(nn.Module):
             if hasattr(reg_, "layers"):
                 init.constant_(reg_.layers[-1].weight, 0)
                 init.constant_(reg_.layers[-1].bias, 0)
+
+        if self.num_kpts:  # points start at the box center
+            for head in self.kpt_head:
+                init.constant_(head.layers[-1].weight, 0)
+                init.constant_(head.layers[-1].bias, 0)
 
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learn_query_content:
@@ -1070,6 +1221,90 @@ class DFINETransformer(nn.Module):
         # einsum: (B,Q,C) x (B,C,H,W) -> (B,Q,H,W)
         return torch.einsum("bqc,bchw->bqhw", mask_embed, mask_feat)
 
+    def _kpts_from_h(self, hs: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+        """-> [L, B, Q, K, 4]: (x, y) normalized, presence and visible logits.
+
+        A point is its box center + a box-relative offset, unbounded so it may leave the box
+        (an occluded foot below a cut box). Every layer adds a correction to the previous
+        layer's offset (detached, like the box refinement). Eval decodes only the last layer.
+        """
+        offsets, out = None, []
+        for i, h in enumerate(hs):
+            raw = self.kpt_head[i](h).reshape(h.shape[0], h.shape[1], self.num_kpts, 4)
+            offsets = raw[..., :2] if offsets is None else raw[..., :2] + offsets.detach()
+            if self.training or i == len(hs) - 1:
+                box = boxes[i if self.training else -1].detach().unsqueeze(-2)  # [B, Q, 1, 4]
+                out.append(torch.cat([box[..., :2] + offsets * box[..., 2:], raw[..., 2:]], -1))
+        return torch.stack(out)
+
+    def _refine_kpts(
+        self,
+        h: torch.Tensor,
+        logits: torch.Tensor,
+        boxes: torch.Tensor,
+        kpts: torch.Tensor,
+        value: Tuple[torch.Tensor, ...],
+        spatial_shapes: List[List[int]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Keypoint decoder on the top num_kpt_queries queries by score; the rest keep the
+        per-query head's points. -> (points [L, B, Q, K, C], quality [B, Q, 2])"""
+        n = min(self.num_kpt_queries, logits.shape[1])
+        idx = torch.topk(logits.detach().max(-1).values, n, dim=1).indices  # [B, N]
+
+        def take(x: torch.Tensor) -> torch.Tensor:
+            index = idx.reshape(*idx.shape, *[1] * (x.dim() - 2)).expand(-1, -1, *x.shape[2:])
+            return x.gather(1, index)
+
+        refined, quality = self.kpt_decoder(take(h), take(boxes), take(kpts), value, spatial_shapes)
+        # queries outside the top N keep the per-query points and log scale 0
+        base = F.pad(kpts, (0, refined.shape[-1] - kpts.shape[-1]))
+        index = idx[:, :, None, None].expand(-1, -1, *refined.shape[-2:])
+        refined = torch.stack([base.scatter(1, index, r) for r in refined])
+        # [B, Q, 2]: quality logit, 1 where the query was refined
+        quality = torch.stack([quality, torch.ones_like(quality)], -1)
+        quality = quality.new_zeros(*logits.shape[:2], 2).scatter(
+            1, idx[..., None].expand(-1, -1, 2), quality
+        )
+        return refined, quality
+
+    def _rescore(self, logits: torch.Tensor, quality: torch.Tensor) -> torch.Tensor:
+        """Refined queries score cls^(1 - a) * quality^a, a = kpt_rescore: a detection whose
+        points are likely off ranks lower (COCO keypoint AP ranks by score)."""
+        a = self.kpt_rescore
+        score = F.sigmoid(logits).pow(1 - a) * F.sigmoid(quality[..., :1]).pow(a)
+        return torch.where(quality[..., 1:] > 0, inverse_sigmoid(score), logits)
+
+    def _denoise_kpts(
+        self,
+        h: torch.Tensor,
+        boxes: torch.Tensor,
+        kpts: torch.Tensor,
+        targets: List[Dict[str, torch.Tensor]],
+        num_groups: int,
+        value: Tuple[torch.Tensor, ...],
+        spatial_shapes: List[List[int]],
+    ) -> torch.Tensor:
+        """Train-only keypoint denoising: the keypoint decoder starts from GT points + uniform
+        noise (kpt_dn_noise x GT box size per axis) and learns to pull them back. Runs on the
+        positive queries of the first kpt_dn_groups denoising groups: slot g * M + j = GT j.
+        Unlabeled points start from the per-query head. -> [L, B, G * M, K, C], M = max GTs
+        per image."""
+        m = max(len(t["labels"]) for t in targets)
+        g = min(self.kpt_dn_groups, num_groups)
+        # denoising group i holds M positive, then M negative queries
+        arange = functools.partial(torch.arange, device=h.device)
+        slots = (arange(g)[:, None] * 2 * m + arange(m)).flatten()
+        gt = kpts.new_zeros(kpts.shape[0], m, *kpts.shape[2:3], 3)
+        gt_wh = kpts.new_zeros(kpts.shape[0], m, 1, 2)
+        for i, t in enumerate(targets):
+            gt[i, : len(t["labels"])] = t["kpts"]
+            gt_wh[i, : len(t["labels"]), 0] = t["boxes"][:, 2:]
+        gt, gt_wh, kpts = gt.repeat(1, g, 1, 1), gt_wh.repeat(1, g, 1, 1), kpts[:, slots]
+        noise = (torch.rand_like(gt[..., :2]) * 2 - 1) * self.kpt_dn_noise * gt_wh
+        xy = torch.where(gt[..., 2:] > 0, gt[..., :2] + noise, kpts[..., :2])
+        kpts = torch.cat([xy, kpts[..., 2:]], -1)
+        return self.kpt_decoder(h[:, slots], boxes[:, slots], kpts, value, spatial_shapes)[0]
+
     def forward(
         self,
         feats: List[torch.Tensor],
@@ -1077,6 +1312,7 @@ class DFINETransformer(nn.Module):
         low_level_feat: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         enable_mask_head = self._should_do_masks(targets)
+        enable_kpt_head = self.num_kpts > 0
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
         # prepare denoising training
@@ -1113,8 +1349,9 @@ class DFINETransformer(nn.Module):
             self.up,
             self.reg_scale,
             attn_mask=attn_mask,
-            return_queries=enable_mask_head,
+            return_queries=enable_mask_head or enable_kpt_head,
         )  # hs: [num_layers, B, Q, C]
+        out_kpts = self._kpts_from_h(hs, out_bboxes) if enable_kpt_head else None
 
         if self.training and dn_meta is not None:
             dn_pre_logits, pre_logits = torch.split(pre_logits, dn_meta["dn_num_split"], dim=1)
@@ -1126,8 +1363,36 @@ class DFINETransformer(nn.Module):
             dn_out_refs, out_refs = torch.split(out_refs, dn_meta["dn_num_split"], dim=2)
 
             # split hs for denoising mask computation
-            if enable_mask_head and hs is not None:
+            if hs is not None:
                 dn_hs, hs = torch.split(hs, dn_meta["dn_num_split"], dim=2)
+            if enable_kpt_head:
+                dn_out_kpts, out_kpts = torch.split(out_kpts, dn_meta["dn_num_split"], dim=2)
+
+        # keypoint decoder: final points, plus [per-query head, refine layers but the last]
+        # for the loss
+        if enable_kpt_head:
+            kpts, kpt_refine_aux, kpt_dn = out_kpts[-1], [], []
+            if hasattr(self, "kpt_decoder"):
+                value = self.decoder.value_op(memory, None, None, None, spatial_shapes)
+                refined, kpt_quality = self._refine_kpts(
+                    hs[-1], out_logits[-1], out_bboxes[-1], kpts, value, spatial_shapes
+                )
+                kpt_refine_aux = [kpts] + list(refined[:-1])
+                kpts = refined[-1]
+                if not self.training and self.kpt_rescore > 0:
+                    rescored = self._rescore(out_logits[-1], kpt_quality)
+                    out_logits = torch.cat([out_logits[:-1], rescored[None]])
+                has_dn = dn_meta is not None and dn_meta["dn_num_group"] > 0
+                if self.training and self.kpt_dn_noise > 0 and has_dn:
+                    kpt_dn = self._denoise_kpts(
+                        dn_hs[-1],
+                        dn_out_bboxes[-1],
+                        dn_out_kpts[-1],
+                        targets,
+                        dn_meta["dn_num_group"],
+                        value,
+                        spatial_shapes,
+                    )
 
         # segmentation
         if enable_mask_head:
@@ -1159,6 +1424,12 @@ class DFINETransformer(nn.Module):
             }
             if enable_mask_head:
                 out["pred_masks"] = pred_masks
+            if enable_kpt_head:
+                out["pred_kpts"] = kpts
+                out["kpt_aux_outputs"] = [{"pred_kpts": k} for k in kpt_refine_aux]
+                out["kpt_dn_outputs"] = [{"pred_kpts": k} for k in kpt_dn]
+                if hasattr(self, "kpt_decoder"):
+                    out["pred_kpt_quality"] = kpt_quality
         else:
             out = {
                 "pred_logits": out_logits[-1],
@@ -1171,6 +1442,8 @@ class DFINETransformer(nn.Module):
                     out["pred_mask_logits"] = pred_masks
             elif enable_mask_head:
                 out["pred_masks"] = torch.sigmoid(pred_masks)
+            if enable_kpt_head:
+                out["pred_kpts"] = torch.cat([kpts[..., :2], kpts[..., 2:].sigmoid()], -1)
 
         if self.training and self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss2(
@@ -1181,6 +1454,7 @@ class DFINETransformer(nn.Module):
                 out_corners[-1],
                 out_logits[-1],
                 aux_masks=aux_masks if enable_mask_head else None,
+                aux_kpts=out_kpts[:-1] if enable_kpt_head else None,
             )
             out["enc_aux_outputs"] = self._set_aux_loss(enc_topk_logits_list, enc_topk_bboxes_list)
             out["pre_outputs"] = {"pred_logits": pre_logits, "pred_boxes": pre_bboxes}
@@ -1196,6 +1470,7 @@ class DFINETransformer(nn.Module):
                     dn_out_corners[-1],
                     dn_out_logits[-1],
                     aux_masks=dn_aux_masks if enable_mask_head else None,
+                    aux_kpts=dn_out_kpts if enable_kpt_head else None,
                 )
                 out["dn_pre_outputs"] = {"pred_logits": dn_pre_logits, "pred_boxes": dn_pre_bboxes}
                 out["dn_meta"] = dn_meta
@@ -1221,36 +1496,28 @@ class DFINETransformer(nn.Module):
         teacher_corners: Optional[torch.Tensor] = None,
         teacher_logits: Optional[torch.Tensor] = None,
         aux_masks: Optional[List[torch.Tensor]] = None,
+        aux_kpts: Optional[torch.Tensor] = None,
     ) -> List[Dict[str, torch.Tensor]]:
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
         results = []
-        if aux_masks is None:
-            for a, b, c, d in zip(outputs_class, outputs_coord, outputs_corners, outputs_ref):
-                results.append(
-                    {
-                        "pred_logits": a,
-                        "pred_boxes": b,
-                        "pred_corners": c,
-                        "ref_points": d,
-                        "teacher_corners": teacher_corners,
-                        "teacher_logits": teacher_logits,
-                    }
-                )
-        else:
-            for a, b, c, d, m in zip(
-                outputs_class, outputs_coord, outputs_corners, outputs_ref, aux_masks, strict=True
-            ):
-                results.append(
-                    {
-                        "pred_logits": a,
-                        "pred_boxes": b,
-                        "pred_corners": c,
-                        "ref_points": d,
-                        "teacher_corners": teacher_corners,
-                        "teacher_logits": teacher_logits,
-                        "pred_masks": m,
-                    }
-                )
+        for i, (a, b, c, d) in enumerate(
+            zip(outputs_class, outputs_coord, outputs_corners, outputs_ref)
+        ):
+            result = {
+                "pred_logits": a,
+                "pred_boxes": b,
+                "pred_corners": c,
+                "ref_points": d,
+                "teacher_corners": teacher_corners,
+                "teacher_logits": teacher_logits,
+            }
+            if aux_masks is not None:
+                result["pred_masks"] = aux_masks[i]
+            if aux_kpts is not None:
+                result["pred_kpts"] = aux_kpts[i]
+            results.append(result)
+        for extra in (aux_masks, aux_kpts):
+            assert extra is None or len(extra) == len(results)
         return results

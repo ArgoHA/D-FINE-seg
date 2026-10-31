@@ -3,12 +3,19 @@ import os
 from pathlib import Path
 
 import hydra
+import numpy as np
 from PIL import Image
 
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
+from dfine_seg.model.kpts import BOX_AREA_FACTOR
 
 
-def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=None):
+def yolo_to_coco(
+    labels_dir, images_dir, output_file, split, categories_list=None, kpt_shape=None, skeleton=None
+):
+    """kpt_shape=(K, D): labels are YOLO-pose lines; anns get COCO `keypoints` (abs `x y v`)
+    and `area` = 0.53 * box area, the OKS scale task=kpts uses for YOLO labels. skeleton
+    (zero-based pairs) goes to the categories 1-based, as COCO stores it."""
     # Initialize COCO structure
     data_coco = {"images": [], "type": "instances", "annotations": [], "categories": []}
 
@@ -57,7 +64,10 @@ def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=Non
         for line in lines:
             if len(line.strip()) == 0:
                 continue
-            class_id, x_center, y_center, bbox_width, bbox_height = map(float, line.strip().split())
+            nums = [float(v) for v in line.strip().split()]
+            if kpt_shape is None and len(nums) != 5:  # polygon / pose lines are not boxes
+                raise ValueError(f"{label_file}: expected 5 values, got {len(nums)}")
+            class_id, x_center, y_center, bbox_width, bbox_height = nums[:5]
 
             # Convert normalized coordinates to pixel values
             x_center *= width
@@ -84,6 +94,19 @@ def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=Non
                 "segmentation": [],
                 "iscrowd": 0,
             }
+            if kpt_shape is not None:
+                k, d = kpt_shape
+                if len(nums) != 5 + k * d:
+                    raise ValueError(f"{label_file}: expected {5 + k * d} values, got {len(nums)}")
+                kp = np.array(nums[5:]).reshape(k, d)
+                if d == 2:  # no flags: (0, 0) = unlabeled
+                    kp = np.concatenate([kp, np.where((kp == 0).all(1), 0, 2)[:, None]], 1)
+                kp[:, 0] *= width
+                kp[:, 1] *= height
+                kp[kp[:, 2] == 0, :2] = 0
+                annotation["keypoints"] = [round(float(v), 2) for v in kp.reshape(-1)]
+                annotation["num_keypoints"] = int((kp[:, 2] > 0).sum())
+                annotation["area"] = area * BOX_AREA_FACTOR
             data_coco["annotations"].append(annotation)
             annotation_id += 1
 
@@ -98,6 +121,9 @@ def yolo_to_coco(labels_dir, images_dir, output_file, split, categories_list=Non
         for category_id in sorted(category_set):
             category = {"id": category_id, "name": f"class_{category_id}", "supercategory": "none"}
             data_coco["categories"].append(category)
+    if kpt_shape is not None and skeleton:
+        for category in data_coco["categories"]:
+            category["skeleton"] = [[i + 1, j + 1] for i, j in skeleton]
 
     # Save to JSON file
     with open(output_file, "w") as f_out:
@@ -118,7 +144,16 @@ def main(cfg):
 
     #     yolo_to_coco(labels_path, imgs_path, output, split, categories)
 
-    yolo_to_coco(labels_path, imgs_path, dataset_path / "annotations.json", None, categories)
+    kpts = cfg.train.kpts if cfg.task == "kpts" else None
+    yolo_to_coco(
+        labels_path,
+        imgs_path,
+        dataset_path / "annotations.json",
+        None,
+        categories,
+        kpt_shape=tuple(kpts.shape) if kpts else None,
+        skeleton=kpts.get("skeleton") if kpts else None,
+    )
 
 
 if __name__ == "__main__":

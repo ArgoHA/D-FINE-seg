@@ -6,7 +6,7 @@ exp_name: exp # experiment name
 exp: ${exp_name}_${now_dir}
 
 model_name: s # model size (n, s, m, l, x)
-task: detect # detect | segment (instance segmentation) | sem_seg (semantic segmentation)
+task: detect # detect | segment (instance segmentation) | sem_seg (semantic segmentation) | kpts (keypoints)
 
 train:
   ### Paths ###
@@ -58,12 +58,27 @@ train:
     ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
     class_weights: null # optional per-class CE weights for imbalance
 
+  # kpts only: box + K keypoints per object. YOLO: `cls xc yc w h x1 y1 [v1] ... xK yK [vK]`
+  # COCO json: ann["keypoints"]. v: 0 unlabeled, 1 occluded, 2 visible
+  kpts:
+    shape: [17, 3] # [K, 3] with visibility flags, [K, 2] without ((0, 0) = unlabeled)
+    # slot i -> flip_idx[i] on flips: swap symmetric pairs (left/right eye), else keep (e.g.
+    # [0, 1] for head, tail); required if K > 1 and any flip aug > 0. Default: COCO person
+    flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
+    sigmas: null # per-point OKS scale; null = COCO's for K=17, else 0.07 (see README)
+    names: null # optional point names
+    skeleton: null # optional zero-based [[i, j], ...] pairs, drawing only
+    conf_thresh: 0.5 # presence threshold: drawing, infer labels, presence_f1; outputs keep all K
+    visible_thresh: 0.5 # visible vs occluded: filled vs hollow marker, v=2 vs v=1 in infer labels
+    freeze_except_kpt: False # freeze everything except the keypoint head
+
   ### Distributed Training (DDP) ###
   ddp:
     enabled: False  # set to true to use multi-GPU
     n_gpus: 2  # how many GPUs / processes per node for torchrun
 
-  # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask; sem_seg overrides to mIoU
+  # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask; sem_seg overrides to mIoU,
+  # kpts to mAP_50_95_kpt + mAP_50_95
   decision_metrics:
   - f1
   - mAP_50 # will be swapped with mask version for task = segment

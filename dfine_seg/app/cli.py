@@ -232,7 +232,7 @@ def _init(argv: List[str]) -> int:
     # A directory, not a filename: the file must be called config.yaml or nothing can
     # discover it (see config.resolve.find_config).
     ap.add_argument("-d", "--dir", type=Path, default=Path("."), help="where to write it")
-    ap.add_argument("--task", choices=("detect", "segment", "sem_seg"))
+    ap.add_argument("--task", choices=("detect", "segment", "sem_seg", "kpts"))
     ap.add_argument("--model", choices=("n", "s", "m", "l", "x"))
     ap.add_argument("-f", "--force", action="store_true", help="overwrite an existing config")
     args = ap.parse_args(argv)

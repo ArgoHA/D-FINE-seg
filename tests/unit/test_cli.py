@@ -63,7 +63,7 @@ def test_init_force_overwrites(tmp_path, monkeypatch):
     assert "keep: me" not in (tmp_path / "config.yaml").read_text()
 
 
-@pytest.mark.parametrize("task", ["segment", "sem_seg"])
+@pytest.mark.parametrize("task", ["segment", "sem_seg", "kpts"])
 def test_init_task_flag(tmp_path, monkeypatch, task):
     monkeypatch.chdir(tmp_path)
     assert run(monkeypatch, "init", "--task", task) == 0
@@ -79,9 +79,10 @@ def test_init_mask_tasks_point_at_the_seg_checkpoint(tmp_path, monkeypatch, task
     assert cfg["train"]["pretrained_model_path"] == "pretrained/dfine_seg_${model_name}_coco.pt"
 
 
-def test_init_detect_keeps_the_detection_checkpoint(tmp_path, monkeypatch):
+@pytest.mark.parametrize("task", ["detect", "kpts"])
+def test_init_detect_keeps_the_detection_checkpoint(tmp_path, monkeypatch, task):
     monkeypatch.chdir(tmp_path)
-    assert run(monkeypatch, "init", "--task", "detect") == 0
+    assert run(monkeypatch, "init", "--task", task) == 0
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert "dfine_seg_" not in cfg["train"]["pretrained_model_path"]
 

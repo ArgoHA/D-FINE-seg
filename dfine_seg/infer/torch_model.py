@@ -29,7 +29,7 @@ class TorchModel:
         mask_threshold: float = 0.5,
         device: str = None,
         channels: int = None,  # None -> read from the checkpoint's stem conv
-        task: str = None,  # detect | segment | sem_seg; None -> read from the checkpoint
+        task: str = None,  # detect | segment | sem_seg | kpts; None -> read from the checkpoint
         model_name: str = None,  # n|s|m|l|x; None -> read from the checkpoint
         sem_seg_probs: bool = False,  # sem_seg: also return the 1/4-scale softmax
     ):
@@ -49,6 +49,11 @@ class TorchModel:
         self.labels_to_use = labels_to_use or []
         self.task = task or ("segment" if enable_mask_head else info["task"])
         self.enable_mask_head = self.task == "segment"
+        self.num_kpts = info["num_kpts"] if self.task == "kpts" else 0
+        if self.task == "kpts" and not self.num_kpts:
+            raise ValueError(f"{model_path} has no keypoint head (task=kpts)")
+        self.num_kpt_layers = info["num_kpt_layers"]
+        self.kpts = info["kpts"]  # skeleton / drawing thresholds from the checkpoint meta
         self.sem_seg_probs = sem_seg_probs
         if sem_seg_probs and self.task != "sem_seg":
             raise ValueError(f"sem_seg_probs=True needs a sem_seg model, got task={self.task}")
@@ -88,6 +93,8 @@ class TorchModel:
             img_size=None,
             in_channels=self.channels,
             task=self.task,
+            num_kpts=self.num_kpts,
+            num_kpt_layers=self.num_kpt_layers,
         )
         self.model.load_state_dict(self._state_dict, strict=False)
         del self._state_dict  # loaded once in __init__; don't keep a second copy alive
@@ -124,6 +131,24 @@ class TorchModel:
             else:
                 final_boxes[i] = scale_boxes(final_boxes[i], orig_sizes[i], processed_sizes[i])
         return final_boxes
+
+    @staticmethod
+    def process_kpts(kpts, processed_sizes, orig_sizes, keep_ratio):
+        """[B, Q, K, 4] (x, y normalized) -> x, y absolute in the original image, like the boxes.
+        Not clipped: a point may lie outside the image."""
+        kpts = kpts.float().clone()
+        for i in range(len(orig_sizes)):
+            proc_h, proc_w = processed_sizes[i]
+            h0, w0 = orig_sizes[i]
+            x, y = kpts[i, ..., 0] * proc_w, kpts[i, ..., 1] * proc_h
+            if keep_ratio:
+                gain = min(proc_h / h0, proc_w / w0)
+                x = (x - round((proc_w - w0 * gain) / 2 - 0.1)) / gain
+                y = (y - round((proc_h - h0 * gain) / 2 - 0.1)) / gain
+            else:
+                x, y = x * w0 / proc_w, y * h0 / proc_h
+            kpts[i, ..., 0], kpts[i, ..., 1] = x, y
+        return kpts
 
     @staticmethod
     def process_masks(
@@ -242,6 +267,9 @@ class TorchModel:
         boxes = self.process_boxes(
             boxes, processed_sizes, original_sizes, self.keep_ratio
         )  # B x TopQ x 4
+        kpts = outputs.get("pred_kpts")  # [B, Q, K, 4]
+        if kpts is not None:
+            kpts = self.process_kpts(kpts, processed_sizes, original_sizes, self.keep_ratio)
 
         # scores/labels and preliminary topK over all Q*C
         if use_focal_loss:
@@ -287,6 +315,8 @@ class TorchModel:
                 qb = qb[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
+            if kpts is not None:
+                out["kpts"] = kpts[b, qb]
 
             if has_masks and qb.numel() > 0:
                 # gather only kept masks
@@ -429,6 +459,9 @@ class TorchModel:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            kpts (task=kpts): torch.Tensor of shape (N, K, 4), dtype float32: x, y (abs),
+                presence score, visible score (P(visible | present)). All K points are returned;
+                threshold presence yourself
             task=sem_seg instead returns {"sem_seg": uint8 (H, W) dense label map} per image,
             + "sem_seg_probs" float32 (C, h, w): softmax at 1/4 of the model input, letterbox
             pads included, and "sem_seg_probs_tf" float32 (3, 3) mapping original-image
