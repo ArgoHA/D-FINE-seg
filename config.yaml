@@ -66,8 +66,9 @@ train:
   # COCO json: ann["keypoints"]. v: 0 unlabeled, 1 occluded, 2 visible
   kpts:
     shape: [17, 3] # [K, 3] with visibility flags, [K, 2] without ((0, 0) = unlabeled)
-    flip_idx: null # slot i -> flip_idx[i] on flips: swap symmetric pairs (left/right eye), else
-    # keep (e.g. [0, 1] for head, tail); required if K > 1 and any flip aug > 0
+    # slot i -> flip_idx[i] on flips: swap symmetric pairs (left/right eye), else keep (e.g.
+    # [0, 1] for head, tail); required if K > 1 and any flip aug > 0. Default: COCO person
+    flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
     sigmas: null # per-point OKS scale; null = COCO's for K=17, else 0.07 (see README)
     names: null # optional point names
     skeleton: null # optional zero-based [[i, j], ...] pairs, drawing only

@@ -48,6 +48,7 @@ class DFINECriterion(nn.Module):
         kd_weights=None,
         kpt_sigmas=None,
         kpt_visibility: bool = True,
+        kpt_aspect: float = 1.0,
     ):
         """Create the criterion.
         Parameters:
@@ -59,6 +60,7 @@ class DFINECriterion(nn.Module):
             boxes_weight_format: format for boxes weight (iou, ).
             kpt_sigmas: per-point OKS sigmas for the "kpts" loss.
             kpt_visibility: labels carry visibility flags ([K, 3]); else no loss_kpt_visible.
+            kpt_aspect: input W / H, so loss_kpt_oks is the pixel-space OKS.
         """
         super().__init__()
         self.num_classes = num_classes
@@ -77,6 +79,7 @@ class DFINECriterion(nn.Module):
         self.kd_weights = kd_weights or {}  # loss_kd_{cls,loc,mask}; used when a teacher is set
         self.kpt_sigmas = kpt_sigmas
         self.kpt_visibility = kpt_visibility
+        self.kpt_aspect = kpt_aspect
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert "pred_logits" in outputs
@@ -591,7 +594,7 @@ class DFINECriterion(nn.Module):
         l1 = ((src[..., :2] - tgt[..., :2]).abs() / boxes[:, None, 2:].clamp(min=1e-6)).sum(-1)
         area = boxes[:, 2] * boxes[:, 3] * BOX_AREA_FACTOR
         sigmas = torch.as_tensor(self.kpt_sigmas, device=src.device)
-        oks = kpt_oks(src[..., :2], tgt[..., :2], labeled, area, sigmas)
+        oks = kpt_oks(src[..., :2], tgt[..., :2], labeled, area, sigmas, self.kpt_aspect)
         presence = F.binary_cross_entropy_with_logits(
             src[..., 2], labeled.float(), reduction="none"
         )

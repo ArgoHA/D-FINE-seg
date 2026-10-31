@@ -133,6 +133,7 @@ def build_loss(
     class_weights=None,
     kd=None,  # train.kd: loss weights, used only when a teacher is set
     kpts_meta=None,  # task=kpts: dl.utils.kpts_meta (resolved sigmas, label shape)
+    img_size=None,  # (h, w) training input; keypoint OKS is measured in its pixels
 ):
     # deepcopy so appending "masks" mutates a private copy, not the shared
     # global `models` config - build_loss may be called more than once per run.
@@ -149,10 +150,12 @@ def build_loss(
         )
     if enable_mask_head and "masks" not in model_cfg["DFINECriterion"]["losses"]:
         model_cfg["DFINECriterion"]["losses"].append("masks")
-    sigmas, visibility = None, True
+    sigmas, visibility, aspect = None, True, 1.0
     if kpts_meta:
         model_cfg["DFINECriterion"]["losses"].append("kpts")
         sigmas, visibility = kpts_meta["sigmas"], kpts_meta["shape"][1] == 3
+        if img_size:  # W / H: OKS on normalized coords -> pixel-space OKS
+            aspect = img_size[1] / img_size[0]
     matcher_cfg, criterion_cfg = model_cfg["matcher"], model_cfg["DFINECriterion"]
     matcher = HungarianMatcher(
         weight_dict=matcher_cfg["weight_dict"],
@@ -160,6 +163,7 @@ def build_loss(
         alpha=matcher_cfg["alpha"],
         gamma=matcher_cfg["gamma"],
         kpt_sigmas=sigmas,
+        kpt_aspect=aspect,
     )
     loss_fn = DFINECriterion(
         matcher,
@@ -172,6 +176,7 @@ def build_loss(
         label_smoothing=label_smoothing,
         kpt_sigmas=sigmas,
         kpt_visibility=visibility,
+        kpt_aspect=aspect,
         kd_weights={
             "loss_kd_cls": kd.get("cls_weight", 1.0),
             "loss_kd_loc": kd.get("loc_weight", 1.5),

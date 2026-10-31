@@ -521,6 +521,8 @@ def export_to_tensorrt(
         if fp32_grid_sample:
             # The keypoint decoder's deformable attention is mis-fused in fp16 (TRT 10.13):
             # kpt AP 0.19 vs 0.29 in torch; fp32 GridSample matches torch at the same latency.
+            # Pins the box decoder's GridSamples too: keypoint-decoder-only gave the same AP
+            # and latency, and the simplified graph carries no module names to select by.
             config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
             for i in range(network.num_layers):
                 layer = network.get_layer(i)

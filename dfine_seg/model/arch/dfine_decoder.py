@@ -293,12 +293,16 @@ class KeypointDecoderLayer(TransformerDecoderLayer):
 
         # TensorRT 10.13 mis-executes chained GridSamples on a shared value tensor (layer 2's
         # grid depends on layer 1, see trt_bugs/TENSORRT_ISSUES.md); splitting the tokens into
-        # >= 2 chunks avoids it. The count must divide n * k: uneven torch splits export as
-        # even ONNX Splits. Each query samples independently, so the result is unchanged.
+        # >= 2 chunks avoids it. Exported graphs only: eager / compiled runs keep one call.
+        # The count must divide n * k: uneven torch splits export as even ONNX Splits. Each
+        # query samples independently, so the result is unchanged.
         q = (target + query_pos_embed).reshape(b, n * k, c)
         ref = reference_points.reshape(b, n * k, 1, 4)
-        min_chunks = max(2, -(-n * k // TRT_GRID_SAMPLE_MAX_ROWS))
-        num_chunks = next(i for i in range(min_chunks, n * k + 1) if n * k % i == 0)
+        num_chunks = 1
+        if torch.onnx.is_in_onnx_export():
+            min_chunks = max(2, -(-n * k // TRT_GRID_SAMPLE_MAX_ROWS))
+            divisors = (i for i in range(min_chunks, n * k + 1) if n * k % i == 0)
+            num_chunks = next(divisors, 1)
         chunks = zip(q.chunk(num_chunks, 1), ref.chunk(num_chunks, 1))
         target2 = torch.cat(
             [self.cross_attn(q_i, r_i, value, spatial_shapes) for q_i, r_i in chunks], 1

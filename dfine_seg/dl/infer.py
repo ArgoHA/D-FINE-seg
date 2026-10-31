@@ -13,6 +13,7 @@ from dfine_seg.dl.dataset import read_image_hwc
 from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
+    kpts_meta,
 )
 from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
 from dfine_seg.infer.byte_track import ByteTrack, Detection
@@ -404,6 +405,8 @@ def main(cfg: DictConfig):
         channels=cfg.train.in_channels,
         task=cfg.task,
     )
+    if cfg.task == "kpts":  # live config wins over the checkpoint's thresholds / skeleton
+        torch_model.kpts = kpts_meta(cfg)
 
     if data_type == "video" and cfg.train.in_channels != 3:
         raise ValueError(

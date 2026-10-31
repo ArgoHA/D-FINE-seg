@@ -50,6 +50,8 @@ class TorchModel:
         self.task = task or ("segment" if enable_mask_head else info["task"])
         self.enable_mask_head = self.task == "segment"
         self.num_kpts = info["num_kpts"] if self.task == "kpts" else 0
+        if self.task == "kpts" and not self.num_kpts:
+            raise ValueError(f"{model_path} has no keypoint head (task=kpts)")
         self.num_kpt_layers = info["num_kpt_layers"]
         self.kpts = info["kpts"]  # skeleton / drawing thresholds from the checkpoint meta
         self.sem_seg_probs = sem_seg_probs

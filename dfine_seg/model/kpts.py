@@ -45,14 +45,18 @@ def kpt_oks(
     visible: torch.Tensor,
     area: torch.Tensor,
     sigmas: torch.Tensor,
+    aspect: float = 1.0,
 ) -> torch.Tensor:
     """COCO OKS of broadcastable points -> [...].
 
     pred / gt [..., K, 2], visible [..., K] bool (v > 0), area [...] in the coords' squared
     units, sigmas [K]. Instances without labeled points get 0.
+    aspect: W / H when the coords are normalized by the image size; weighting dx^2 by it and
+    dy^2 by its inverse gives the pixel-space OKS (OKS is scale-invariant).
     Pairwise [P, G]: kpt_oks(pred[:, None], gt[None], visible[None], area[None], sigmas).
     """
-    d2 = (pred - gt).pow(2).sum(-1)
+    d = (pred - gt).pow(2)
+    d2 = d[..., 0] * aspect + d[..., 1] / aspect
     e = d2 / ((2 * sigmas).pow(2) * (area[..., None] + 1e-9) * 2)
     vis = visible.to(e.dtype)
     return (torch.exp(-e) * vis).sum(-1) / vis.sum(-1).clamp(min=1)

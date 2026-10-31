@@ -5,6 +5,7 @@ its box, so every transform can be checked against where the points must end up.
 """
 
 import random
+from pathlib import Path
 
 import albumentations as A
 import cv2
@@ -14,6 +15,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
+import dfine_seg
 from dfine_seg.api.ckpt import describe
 from dfine_seg.dl.dataset import (
     CustomDataset,
@@ -25,12 +27,14 @@ from dfine_seg.dl.dataset import (
 from dfine_seg.dl.export import DFINEPostProcessor
 from dfine_seg.dl.utils import KptCoarseDropout, process_boxes, process_kpts
 from dfine_seg.dl.validator import Validator
+from dfine_seg.infer.torch_model import TorchModel
 from dfine_seg.model.arch import dfine_decoder
 from dfine_seg.model.dfine import build_loss, build_model
 from dfine_seg.model.dfine_criterion import DFINECriterion
 from dfine_seg.model.kpts import COCO_SIGMAS, DEFAULT_SIGMA, kpt_oks, resolve_sigmas
 from dfine_seg.model.matcher import HungarianMatcher
 
+COCO_FLIP_IDX = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
 H, W = 200, 300
 BOX = (100, 50, 200, 150)  # abs xyxy
 # left point v=2 (visible), right point v=1 (occluded), third slot unlabeled
@@ -160,6 +164,13 @@ def test_flip_idx_required_with_reflections(tmp_path):
     assert kpt_config(_cfg(tmp_path, lr=0.5, shape=(1, 3), flip_idx=None))[1] == [0]  # K=1
     with pytest.raises(ValueError, match="permutation"):
         kpt_config(_cfg(tmp_path, flip_idx=(0, 0, 2)))
+
+
+def test_template_config_trains_with_flips():
+    """The shipped template (COCO shape, flips on) must pass the flip_idx check."""
+    cfg = OmegaConf.load(Path(dfine_seg.__file__).parent / "config" / "default.yaml")
+    assert cfg.train.augs.left_right_flip > 0
+    assert kpt_config(cfg) == ((17, 3), COCO_FLIP_IDX)
 
 
 def test_sigmas():
@@ -340,6 +351,31 @@ def test_model_and_loss_end_to_end():
     torch.testing.assert_close(kpts[..., 0, :2], out["pred_boxes"][..., :2])
 
 
+def test_single_point_single_object_trains():
+    """K = 1 with one object per image: keypoint denoising runs on a single token."""
+    model = build_model("n", 1, False, "cpu", img_size=[320, 320], num_kpts=1).train()
+    loss_fn = build_loss(
+        "n", 1, 0.0, False, task="kpts", kpts_meta={"shape": [1, 3], "sigmas": [0.07]}
+    )
+    targets = [
+        {
+            "labels": torch.tensor([0]),
+            "boxes": torch.tensor([[0.5, 0.5, 0.3, 0.4]]),
+            "kpts": torch.tensor([[[0.5, 0.5, 2.0]]]),
+        }
+    ]
+    losses = loss_fn(model(torch.rand(1, 3, 320, 320), targets), targets)
+    assert "loss_kpt_l1_kpt_dn_0" in losses
+    sum(losses.values()).backward()
+
+
+def test_kpts_model_needs_keypoint_head(tmp_path):
+    path = tmp_path / "det.pt"
+    torch.save(build_model("n", 1, False, "cpu").state_dict(), path)
+    with pytest.raises(ValueError, match="no keypoint head"):
+        TorchModel(model_path=path, task="kpts", device="cpu")
+
+
 def test_describe_infers_kpts():
     sd = build_model("s", 2, False, "cpu", num_kpts=5).state_dict()
     info = describe(sd)
@@ -365,6 +401,7 @@ def test_kpt_decoder_chunked_cross_attention_is_exact(monkeypatch):
     with torch.no_grad():
         ref = model(x)["pred_kpts"]
         monkeypatch.setattr(dfine_decoder, "TRT_GRID_SAMPLE_MAX_ROWS", 7)
+        monkeypatch.setattr(torch.onnx, "is_in_onnx_export", lambda: True)  # chunks: export only
         chunked = model(x)["pred_kpts"]
         monkeypatch.setattr(model.decoder.kpt_decoder, "ref_scale", 0.5)
         moved = model(x)["pred_kpts"]
@@ -465,6 +502,15 @@ def test_kpt_metrics_penalize_error():
     assert m["kpt_px_err"] == pytest.approx(3.0)  # one of two points off by 6 px
     assert m["mAP_50_95_kpt"] < 1
     assert m["extended_metrics"]["oks_kpt"] < 1
+
+
+def test_kpt_oks_aspect_is_pixel_space():
+    """Normalized coords + aspect = W / H give the pixel-space OKS on non-square inputs."""
+    h, w = 384, 640
+    pred, gt = torch.rand(5, 3, 2), torch.rand(5, 3, 2)
+    vis, area, sigmas = torch.ones(5, 3, dtype=torch.bool), torch.rand(5) * 0.1, torch.rand(3)
+    px = kpt_oks(pred * torch.tensor([w, h]), gt * torch.tensor([w, h]), vis, area * w * h, sigmas)
+    torch.testing.assert_close(kpt_oks(pred, gt, vis, area, sigmas, w / h), px)
 
 
 def test_kpt_oks_pairwise_shape():

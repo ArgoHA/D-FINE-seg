@@ -445,6 +445,7 @@ class Trainer:
             class_weights=cfg.train.sem_seg.class_weights if self.task == "sem_seg" else None,
             kd=OmegaConf.to_container(cfg.train.kd) if self.kd_teacher is not None else None,
             kpts_meta=self.kpts_meta,
+            img_size=tuple(cfg.train.img_size),
         )
 
         use_muon = cfg.train.get("use_muon", False)

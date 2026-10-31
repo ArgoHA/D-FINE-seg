@@ -1426,6 +1426,7 @@ def _probe(cfg, device, target_fraction):
         class_weights=cfg.train.sem_seg.class_weights if cfg.task == "sem_seg" else None,
         kd=OmegaConf.to_container(kd) if teacher is not None else None,
         kpts_meta=kpts_meta(cfg),
+        img_size=tuple(cfg.train.img_size),
     ).train()
     optimizer = training_optimizer(model, cfg)
     ema = ModelEMA(model, cfg.train.ema_momentum) if cfg.train.use_ema else None
