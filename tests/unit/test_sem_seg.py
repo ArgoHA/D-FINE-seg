@@ -485,23 +485,20 @@ def test_probs_transform_matches_head_upsample():
 
 
 def test_probs_transform_copies_identical():
-    """infer/ modules are self-contained copies (AGENTS.md); this pins them to each other."""
-    import inspect
+    """infer/ modules are self-contained copies (AGENTS.md); this pins them to each other. Parsed
+    from source, not imported: tensorrt / coremltools are optional and absent in CI."""
+    import ast
     from pathlib import Path
 
-    from dfine_seg.infer import (
-        litert_model,
-        onnx_model,
-        ov_model,
-        torch_compile_model,
-        torch_model,
-        trt_model,
-    )
+    import dfine_seg.infer
 
-    mods = [onnx_model, ov_model, litert_model, trt_model, torch_model, torch_compile_model]
-    srcs = {inspect.getsource(m.sem_seg_probs_transform) for m in mods}
-    coreml_src = (Path(onnx_model.__file__).parent / "coreml_model.py").read_text()
-    assert len(srcs) == 1 and next(iter(srcs)) in coreml_src  # coremltools needs macOS
+    copies = [
+        ast.dump(node)
+        for path in Path(dfine_seg.infer.__file__).parent.glob("*_model.py")
+        for node in ast.parse(path.read_text()).body
+        if getattr(node, "name", None) == "sem_seg_probs_transform"
+    ]
+    assert len(copies) == 7 and len(set(copies)) == 1
 
 
 def test_postprocess_with_probs_output():
