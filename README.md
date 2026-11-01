@@ -52,7 +52,7 @@ One frame, three tasks, one config flag:
 - **Semantic segmentation head** (`task: sem_seg`) - the pretrained instance-seg feature fuser plus a small conv classifier: no queries, no NMS
 - **Keypoint head** (`task: kpts`) - every detection also predicts K points with a presence and a visibility score each; a keypoint decoder refines the top detections with one token per point
 - **Mask-aware training** - box-cropped BCE + Dice (instance seg), CE + Dice with `ignore_index` (semantic seg), mask costs in matching and mask supervision on denoising queries - train-time only, zero inference cost
-- **Pretrained weights for every task** - detection on COCO (plain and Objects365-pretrained), COCO instance segmentation, Cityscapes semantic segmentation
+- **Pretrained weights for every task** - detection on COCO (plain and Objects365-pretrained), COCO instance segmentation, Cityscapes semantic segmentation, COCO person keypoints
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
 - **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, knowledge distillation, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB, auto-batch size.
 - **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML)
@@ -68,7 +68,7 @@ pip install dfine-seg           # inference + training
 pip install 'dfine-seg[all]'    # + every export backend, SAM3, Gradio demo
 ```
 
-Pretrained weights auto-download from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use: detection on COCO (`dfine_{n,s,m,l,x}_coco.pt`, and `dfine_{n,s,m,l,x}_obj2coco.pt` - Objects365 pretraining, then COCO), COCO instance segmentation (`dfine_seg_{n,s,m,l,x}_coco.pt`), Cityscapes semantic segmentation (`dfine_sem_{n,s,m,l,x}_cityscapes.pt`).
+Pretrained weights auto-download from [Hugging Face](https://huggingface.co/ArgoSA/D-FINE-seg) on first use: detection on COCO (`dfine_{n,s,m,l,x}_coco.pt`, and `dfine_{n,s,m,l,x}_obj2coco.pt` - Objects365 pretraining, then COCO), COCO instance segmentation (`dfine_seg_{n,s,m,l,x}_coco.pt`), Cityscapes semantic segmentation (`dfine_sem_{n,s,m,l,x}_cityscapes.pt`), COCO person keypoints (`dfine_kpts_s_coco.pt`).
 
 <details>
 <summary>Extras, if you need them (backends are large and platform-specific)</summary>
@@ -92,6 +92,7 @@ from dfine_seg import load_model, read_image, Visualizer
 model = load_model("s")                              # COCO detection, weights auto-downloaded
 model = load_model("s", task="segment")              # COCO instance segmentation
 model = load_model("x", task="sem_seg")              # Cityscapes semantic segmentation
+model = load_model("s", task="kpts")                 # COCO person keypoints (17 points)
 model = load_model("output/models/exp/model.pt")     # your checkpoint - size/task/classes/input size auto-detected, supports: .pt | .engine | .onnx | .xml
 
 img = read_image("path/to/image.jpg")
@@ -163,7 +164,8 @@ Every object has a box and the same K points (`train.kpts.shape: [K, 3]`); class
 - `train.kpts.flip_idx` is required when `K > 1` and `left_right_flip` or `up_down_flip` > 0: after a flip, slot `i` takes the point from slot `flip_idx[i]`. A mirrored left eye is a right eye, so symmetric pairs must swap (`[0, 2, 1, 4, 3, ...]` for COCO, `[1, 0]` for two eyes); points without a mirror partner keep their slot (`[0, 1]` for head, tail). Without it, flips would teach the model to confuse left and right. The config template ships COCO's person order next to `shape: [17, 3]`; set your own for other points.
 - `train.kpts.sigmas` set how fast OKS falls with distance, per point (COCO's 17 for K=17, else 0.07). A point scores `exp(-d² / (8 σ² A))`, with `d` the error and `A` the object area (COCO `area`, else `0.53 x box area`); an object counts as correct at a given threshold (0.5 ... 0.95) when the mean over its labeled points reaches it. Rule of thumb for custom points: `σ ≈ 0.6 x r`, where `r` is the error, as a fraction of `sqrt(box w x h)`, that should still score 0.5 (0.07 -> 12% of the box size). Sigmas also scale the OKS loss and matching cost.
 - `conf_thresh` is the presence threshold for drawing, `dfine infer` labels and `presence_f1`; `visible_thresh` splits drawn and written points into visible / occluded. Model outputs keep all K points with their scores, so filter them yourself, e.g. `kpts[..., 2] >= conf_thresh`. `skeleton` (zero-based pairs, drawing only) and `names` are stored in the checkpoint.
-- Init from the detection weights (`dfine_<size>_<coco|obj2coco>.pt`); the keypoint modules start at random init. `train.kpts.freeze_except_kpt: True` trains only the keypoint modules - useful when the detector already finds your objects. The best checkpoint is picked by the mean of `mAP_50_95_kpt` (COCO keypoint AP) and box `mAP_50_95`.
+- Released S weights: `load_model("s", task="kpts")` - COCO person keypoints, 65.4 keypoint AP / 64.2 person box AP at 2.10 ms TensorRT vs 62.7 / 54.3 at 2.16 ms for YOLO26s-pose (see [CHANGELOG](https://github.com/ArgoHA/D-FINE-seg/blob/main/CHANGELOG.md)). It is also a ready init for your own person keypoint data.
+- Otherwise init from the detection weights (`dfine_<size>_<coco|obj2coco>.pt`); the keypoint modules start at random init. `train.kpts.freeze_except_kpt: True` trains only the keypoint modules - useful when the detector already finds your objects. The best checkpoint is picked by the mean of `mAP_50_95_kpt` (COCO keypoint AP) and box `mAP_50_95`.
 - Metrics (training log and `metrics.csv`): `f1_kpt` (instances matched at OKS >= 0.5; like COCO, objects without labeled points are ignored), `mAP_50_95_kpt` (COCO keypoint AP, top-20 detections per image), `kpt_px_err` (mean error in original-image pixels over labeled points of box-matched objects), `presence_f1` (presence score >= `conf_thresh` vs labeled, over all slots of box-matched objects with labeled points), `visible_acc`, and box `mAP_50_95` / `f1`. `extended_metrics.csv` adds `precision_kpt` / `recall_kpt`, `mAP_50_kpt`, `oks_kpt` (mean OKS), `pck_kpt` (PCK at 0.05 x box diagonal), `presence_precision` / `presence_recall`.
 
 #### Multi-channel inputs (RGB + thermal / depth / NIR / …)
@@ -442,8 +444,10 @@ The code is licensed under the [Apache 2.0 License](https://github.com/ArgoHA/D-
 
 The released Cityscapes semantic-segmentation weights (`dfine_sem_{n,s,m,l,x}_cityscapes.pt`) are derivative works of the [Cityscapes dataset](https://www.cityscapes-dataset.com/) and inherit its [terms of use](https://www.cityscapes-dataset.com/license/): they may be distributed for non-commercial purposes such as academic research, teaching, scientific publications, or personal experimentation, but not for commercial gain. Train on your own data and the resulting model is yours to ship commercially - the code stays Apache-2.0 (no AGPL).
 
+The COCO weights (detection, instance segmentation, person keypoints) are released under Apache-2.0. They were trained on [COCO](https://cocodataset.org/) annotations (CC BY 4.0).
+
 ## Acknowledgement
 
 The detection core is based on the [D-FINE](https://github.com/Peterande/D-FINE) paper and architecture. The mask head design follows the [Mask DINO](https://arxiv.org/abs/2206.02777) paradigm. Thank you to both teams for their excellent work.
 
-Benchmarks in this project use the [Cityscapes](https://www.cityscapes-dataset.com/), [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) and [TACO](http://tacodataset.org/) datasets. We thank the authors for making these datasets publicly available.
+Benchmarks in this project use the [COCO](https://cocodataset.org/), [Cityscapes](https://www.cityscapes-dataset.com/), [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) and [TACO](http://tacodataset.org/) datasets. We thank the authors for making these datasets publicly available.

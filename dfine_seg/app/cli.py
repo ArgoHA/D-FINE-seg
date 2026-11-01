@@ -71,9 +71,9 @@ def _predict(argv: List[str]) -> int:
     ap.add_argument("source", type=Path, help="image file or a directory of images")
     ap.add_argument(
         "--task",
-        choices=("detect", "segment", "sem_seg"),
+        choices=("detect", "segment", "sem_seg", "kpts"),
         help="task for .pt weights (graph artifacts carry it); with a size preset, "
-        "sem_seg picks the Cityscapes weights",
+        "sem_seg picks the Cityscapes weights, kpts the COCO person keypoint weights",
     )
     ap.add_argument("--conf", type=float, default=0.5, help="confidence threshold (default 0.5)")
     ap.add_argument("--device", help="cuda | cpu | mps (default: best available)")
@@ -192,7 +192,7 @@ def _demo(argv: List[str]) -> int:
     """Launch the Gradio UI. Every model setting is changeable from the page itself."""
     ap = argparse.ArgumentParser(prog="dfine demo")
     ap.add_argument("model", nargs="?", default="s", help="model to open with (size or path)")
-    ap.add_argument("--task", choices=("detect", "segment", "sem_seg"), default="auto")
+    ap.add_argument("--task", choices=("detect", "segment", "sem_seg", "kpts"), default="auto")
     ap.add_argument("--host", default="0.0.0.0", help="bind address; 127.0.0.1 for local-only")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--share", action="store_true", help="public gradio.live tunnel")

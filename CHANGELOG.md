@@ -147,8 +147,19 @@ The last decoder layer's denoising queries now get class/box supervision in inst
 | 17-point COCO pose, val2017, 20 epochs | keypoint AP / person box AP / TensorRT fp16 latency | 63.0 / 63.6 / 2.10 ms | YOLO26s-pose, same 20 epochs from COCO detection weights: 55.0 / 59.8 / 2.13 ms; released YOLO26s-pose (300 epochs, Objects365 init): 62.7 / - / 2.14 ms |
 | One ground-contact point (ankle midpoint), COCO val, 10 epochs | median error / box height | 0.024 | 0.123 (box bottom-center) |
 
-Keypoint AP is the official COCO scorer on all val2017 images with people; latency is per-image predict at conf 0.5 through each framework's own pipeline. TensorRT matches PyTorch (63.0 vs 63.0 AP). The previous per-detection MLP head alone reached 37.8 AP. The single predicted point beats the box bottom-center on 93% of people (97% when the ankles are visible).
+Keypoint AP is the official COCO scorer on the 2346 val2017 images with labeled people; latency is per-image predict at conf 0.5 through each framework's own pipeline. TensorRT matches PyTorch (63.0 vs 63.0 AP). The previous per-detection MLP head alone reached 37.8 AP. The single predicted point beats the box bottom-center on 93% of people (97% when the ankles are visible).
 
 ## 2026-10-31 - Semantic segmentation probability output
 
 `export.sem_seg_probs: True` adds a second output to the sem_seg graph: the per-class softmax at 1/4 of the model input, next to the unchanged int32 label map. Every wrapper then also returns `sem_seg_probs` `[C, h, w]` and `sem_seg_probs_tf` (3x3 original-pixel -> probs-pixel transform, exact under letterbox; `K' = tf @ K` for camera projection). For `.pt`: `TorchModel(..., sem_seg_probs=True)`. Intended for consumers that fuse per-class confidence (traversability, lidar painting, BEV). The C++ core accepts these engines and ignores the extra output. Measured on TensorRT fp16 (RTX 5070 Ti, Cityscapes val at 1024x2048): the engine gets ~0.02 ms slower and end-to-end latency stays within run-to-run noise (S 6.66 -> 6.69 ms, X 14.87 -> 14.77-14.98 ms); the label map and mIoU are unchanged.
+
+## 2026-11-01 - Released COCO person keypoint weights (S)
+
+`dfine_kpts_s_coco.pt` auto-downloads with `load_model("s", task="kpts")`; it can also be the init for your own keypoint data (`train.pretrained_model_path`). It's the 20-epoch recipe above, trained for 40 epochs. Apache-2.0, like the other COCO weights.
+
+| Model | keypoint AP | AP50 / AP75 | person box AP | TensorRT fp16 latency |
+|-------|-------------|-------------|---------------|-----------------------|
+| D-FINE-seg S, 40 epochs | **65.4** | **88.0 / 71.1** | **64.2** | **2.10 ms** |
+| YOLO26s-pose (released, 300 epochs, Objects365 init) | 62.7 | 85.8 / 68.8 | 54.3 | 2.16 ms |
+
+Same protocol as above: official COCO scorer on the 2346 val2017 images with labeled people, 640x640, RTX 5070 Ti, batch 1, end-to-end latency through each framework's own predict at conf 0.5 (both measured back to back on an idle GPU). TensorRT matches PyTorch (65.4 vs 65.4 AP).

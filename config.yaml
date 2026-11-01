@@ -13,6 +13,7 @@ train:
   # init any task from det weights:  dfine_${model_name}_${train.pretrained_dataset}.pt   (default)
   # segment/sem_seg COCO init:       dfine_seg_${model_name}_coco.pt
   # sem_seg Cityscapes init:         dfine_sem_${model_name}_cityscapes.pt
+  # kpts COCO person init:           dfine_kpts_${model_name}_coco.pt
   pretrained_model_path: pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt
 
   imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights

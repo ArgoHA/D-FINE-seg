@@ -14,7 +14,11 @@ HF_REPO_ID = "ArgoSA/D-FINE-seg"
 _SIZE = r"(n|s|m|l|x)"
 _COCO_RELEASES = (rf"seg_{_SIZE}_coco", rf"{_SIZE}_(coco|obj2coco)")
 _CITYSCAPES_RELEASES = (rf"sem_{_SIZE}_cityscapes",)
-_FILENAME_RE = re.compile(rf"^dfine_(?:{'|'.join(_COCO_RELEASES + _CITYSCAPES_RELEASES)})\.pt$")
+# COCO person keypoints: carries its own meta (one class, point names), so not COCO-family
+_KPTS_RELEASES = (rf"kpts_{_SIZE}_coco",)
+_FILENAME_RE = re.compile(
+    rf"^dfine_(?:{'|'.join(_COCO_RELEASES + _CITYSCAPES_RELEASES + _KPTS_RELEASES)})\.pt$"
+)
 # The COCO-family subset: these releases are COCO models, so a bare (meta-less) state_dict
 # loaded by path still gets the bundled COCO names - `dfine_sem_*` is Cityscapes and is not.
 _COCO_FILENAME_RE = re.compile(rf"^dfine_(?:{'|'.join(_COCO_RELEASES)})\.pt$")
@@ -274,7 +278,7 @@ def ensure_pretrained(path: str | Path) -> str:
 
     If the file already exists, returns the path unchanged. If it's missing and
     the filename matches a released checkpoint (`_FILENAME_RE`: COCO
-    detection/instance-seg, Cityscapes sem-seg), it's downloaded from
+    detection/instance-seg/keypoints, Cityscapes sem-seg), it's downloaded from
     `HF_REPO_ID` into the same directory. For non-standard filenames (e.g.
     user-supplied fine-tuning checkpoints), returns the path as-is so the
     caller raises FileNotFoundError as before.

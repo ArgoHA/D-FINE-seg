@@ -12,6 +12,7 @@ import pytest
 from dfine_seg import SIZES, TASKS, load_model, pretrained_path, read_image
 from dfine_seg.api.coco_names import COCO_NAMES
 from dfine_seg.api.loader import _BACKENDS
+from dfine_seg.model.utils import _COCO_FILENAME_RE, _FILENAME_RE
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def weights(tmp_path):
         (tmp_path / f"dfine_{size}_obj2coco.pt").touch()
         (tmp_path / f"dfine_seg_{size}_coco.pt").touch()
         (tmp_path / f"dfine_sem_{size}_cityscapes.pt").touch()
+    (tmp_path / "dfine_kpts_s_coco.pt").touch()
     return tmp_path
 
 
@@ -33,7 +35,7 @@ def test_coco_names_complete():
 
 def test_exports():
     assert SIZES == ("n", "s", "m", "l", "x")
-    assert TASKS == ("detect", "segment", "sem_seg")
+    assert TASKS == ("detect", "segment", "sem_seg", "kpts")
 
 
 # ---- weight resolution -------------------------------------------------------
@@ -71,6 +73,20 @@ def test_sem_seg_dataset_defaults_to_cityscapes(weights, size):
 def test_sem_seg_weights_are_cityscapes_only(weights):
     with pytest.raises(ValueError, match="only for dataset='cityscapes'"):
         pretrained_path("s", "sem_seg", "coco", weights)
+
+
+def test_kpts_filename(weights):
+    assert pretrained_path("s", "kpts", weights_dir=weights).endswith("dfine_kpts_s_coco.pt")
+    with pytest.raises(ValueError, match="exist for sizes"):
+        pretrained_path("m", "kpts", weights_dir=weights)
+    with pytest.raises(ValueError, match="only for dataset='coco'"):
+        pretrained_path("s", "kpts", "cityscapes", weights)
+
+
+def test_kpts_release_is_downloadable_but_not_coco_named():
+    """Auto-downloadable, but its own meta (person + point names) supplies the names."""
+    assert _FILENAME_RE.match("dfine_kpts_s_coco.pt")
+    assert not _COCO_FILENAME_RE.match("dfine_kpts_s_coco.pt")
 
 
 def test_segment_dataset_is_coco_only(weights):

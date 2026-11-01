@@ -16,7 +16,7 @@ from dfine_seg.api.coco_names import COCO_NAMES
 from dfine_seg.model.utils import _COCO_FILENAME_RE, ensure_pretrained, pretrained_from_hub
 
 SIZES = ("n", "s", "m", "l", "x")
-TASKS = ("detect", "segment", "sem_seg")
+TASKS = ("detect", "segment", "sem_seg", "kpts")
 
 # file suffix -> (module, class). Only the one that matches is imported.
 _BACKENDS = {
@@ -44,7 +44,8 @@ def pretrained_path(
     copy in every directory it is called from. Pass a directory to force one.
 
     Tasks resolve to: detect -> `dfine_<size>_<coco|obj2coco>.pt`,
-    segment -> `dfine_seg_<size>_coco.pt`, sem_seg -> `dfine_sem_<size>_cityscapes.pt`.
+    segment -> `dfine_seg_<size>_coco.pt`, sem_seg -> `dfine_sem_<size>_cityscapes.pt`,
+    kpts -> `dfine_kpts_<size>_coco.pt` (COCO person keypoints).
     `dataset=None` picks each task's only released family; detect is the one task with
     two (coco | obj2coco), so that is the only place dataset= actually selects anything.
     """
@@ -64,6 +65,12 @@ def pretrained_path(
                 f"pretrained sem_seg weights exist only for dataset='cityscapes', got {dataset!r}"
             )
         filename = f"dfine_sem_{size}_cityscapes.pt"
+    elif task == "kpts":
+        if dataset not in (None, "coco"):
+            raise ValueError(
+                f"pretrained kpts weights exist only for dataset='coco', got {dataset!r}"
+            )
+        filename = f"dfine_kpts_{size}_coco.pt"
     else:  # detect - the only task with two released families
         if dataset not in (None, "coco", "obj2coco"):
             raise ValueError(
@@ -92,6 +99,7 @@ def load_model(
     model = load_model("s")                      # COCO detection weights, auto-downloaded
     model = load_model("s", task="segment")
     model = load_model("x", task="sem_seg")      # Cityscapes semantic segmentation
+    model = load_model("s", task="kpts")         # COCO person keypoints
     model = load_model("runs/exp/model.pt")      # TorchModel
     model = load_model("runs/exp/model.engine")  # TRTModel
     out = model(image)                     # the wrapper's own contract, tensors on device

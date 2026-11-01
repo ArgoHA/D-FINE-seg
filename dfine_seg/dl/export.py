@@ -174,8 +174,9 @@ def _check_pretrained(ckpt: str, task: str, n_config: int, img_size, n_kpts: int
             f"{Path(ckpt).name} has {info['num_classes']} classes but train.label_to_name has "
             f"{n_config}. export.from_pretrained cannot reconcile that: the mismatched heads "
             "would be dropped and exported at random init. Either list the checkpoint's "
-            "classes (dfine_seg.api.coco_names.COCO_NAMES for the COCO releases; the "
-            "Cityscapes sem-seg releases carry their own label_to_name), or train on your own "
+            "classes (dfine_seg.api.coco_names.COCO_NAMES for the COCO detect / segment "
+            "releases; {0: person} for the keypoint releases; the Cityscapes sem-seg releases "
+            "carry their own label_to_name), or train on your own "
             "classes first and export with export.from_pretrained=False."
         )
     if info["num_kpts"] != n_kpts:

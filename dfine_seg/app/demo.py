@@ -41,7 +41,7 @@ from dfine_seg.viz import Visualizer, classes_from_model
 
 # ─── Startup defaults (all overridable in the UI) ───────────────────────
 DEFAULT_MODEL = "s"  # size (n|s|m|l|x) -> COCO weights, or a path to .pt/.engine/.onnx/.xml
-DEFAULT_TASK = "auto"  # auto | detect | segment | sem_seg
+DEFAULT_TASK = "auto"  # auto | detect | segment | sem_seg | kpts
 DEFAULT_INPUT_SIZE = ""  # blank: a .pt reads its own config, a graph reads the graph
 DEFAULT_CONF_THRESH = 0.5  # initial slider value
 # ─────────────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ DEFAULT_CONF_THRESH = 0.5  # initial slider value
 # Released checkpoints a size preset resolves, label -> load_model(size, task). Labels
 # mirror the Python call, and anything not in here is treated as a path, so one field
 # covers both. sem_seg presets download the Cityscapes weights on first pick.
-PRESETS = {f"{s} ({t})": (s, t) for t in ("detect", "segment", "sem_seg") for s in SIZES}
+PRESETS = {f"{s} ({t})": (s, t) for t in ("detect", "segment", "sem_seg", "kpts") for s in SIZES}
 
 
 # ─── Model loading (driven by the UI) ────────────────────────────────────
