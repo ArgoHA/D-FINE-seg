@@ -292,7 +292,7 @@ class KeypointDecoderLayer(TransformerDecoderLayer):
         target = self.norm1(target + target2.reshape(b, n, k, c))
 
         # TensorRT 10.13 mis-executes chained GridSamples on a shared value tensor (layer 2's
-        # grid depends on layer 1, see trt_bugs/TENSORRT_ISSUES.md); splitting the tokens into
+        # grid depends on layer 1's output, wrong even in fp32); splitting the tokens into
         # >= 2 chunks avoids it. Exported graphs only: eager / compiled runs keep one call.
         # The count must divide n * k: uneven torch splits export as even ONNX Splits. Each
         # query samples independently, so the result is unchanged.
