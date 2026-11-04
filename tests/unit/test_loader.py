@@ -12,7 +12,6 @@ import pytest
 from dfine_seg import SIZES, TASKS, load_model, pretrained_path, read_image
 from dfine_seg.api.coco_names import COCO_NAMES
 from dfine_seg.api.loader import _BACKENDS
-from dfine_seg.model.utils import _COCO_FILENAME_RE, _FILENAME_RE
 
 
 @pytest.fixture
@@ -77,16 +76,19 @@ def test_sem_seg_weights_are_cityscapes_only(weights):
 
 def test_kpts_filename(weights):
     assert pretrained_path("s", "kpts", weights_dir=weights).endswith("dfine_kpts_s_coco.pt")
-    with pytest.raises(ValueError, match="exist for sizes"):
-        pretrained_path("m", "kpts", weights_dir=weights)
     with pytest.raises(ValueError, match="only for dataset='coco'"):
         pretrained_path("s", "kpts", "cityscapes", weights)
 
 
-def test_kpts_release_is_downloadable_but_not_coco_named():
-    """Auto-downloadable, but its own meta (person + point names) supplies the names."""
-    assert _FILENAME_RE.match("dfine_kpts_s_coco.pt")
+def test_size_route_kpts_no_coco_names(weights, monkeypatch):
+    """load_model("s", task="kpts") is auto-downloadable, but it is a one-class (person)
+    model: names come from its meta, never the 80 COCO names."""
+    from dfine_seg.model.utils import _COCO_FILENAME_RE, _FILENAME_RE
+
     assert not _COCO_FILENAME_RE.match("dfine_kpts_s_coco.pt")
+    assert _FILENAME_RE.match("dfine_kpts_s_coco.pt")
+    _fake_backend(monkeypatch)
+    assert load_model("s", task="kpts", weights_dir=weights).names is None
 
 
 def test_segment_dataset_is_coco_only(weights):
