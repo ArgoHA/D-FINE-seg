@@ -9,13 +9,14 @@ permissions: {}
 jobs:
   request:
     # Check the immutable account ID as well as who starts or re-runs the workflow.
+    # startsWith, not ==: comment bodies can end with "\r\n", and expressions have no trim.
     if: >-
       github.repository == 'ArgoHA/D-FINE-seg' &&
       github.event.issue.pull_request &&
       github.event.comment.user.id == 43640256 &&
       github.actor_id == '43640256' &&
       github.triggering_actor == 'ArgoHA' &&
-      github.event.comment.body == '@codex review'
+      startsWith(github.event.comment.body, '@codex review')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
