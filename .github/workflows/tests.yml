@@ -42,7 +42,11 @@ jobs:
       # tensorrt is Linux-gated and GPU-only; the fast suite never imports it
       # (gpu/slow tests skip on CI), so skip the ~GB+ install. --no-sync below
       # keeps `uv run` from re-adding it.
+      # onnxsim 0.4.36 ships no cp312 wheel, so it builds from sdist; its vendored onnx
+      # requires CMake < 3.5 compat, which CMake 4 (ubuntu-26.04 runner) removed.
       - name: Install dependencies
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: >
           uv sync
           --no-install-package tensorrt-cu12

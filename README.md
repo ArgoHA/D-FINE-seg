@@ -1,5 +1,10 @@
 <p align="center">
-  <h1 align="center">D-FINE-seg</h1>
+  <h1 align="center">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/logo-dark.svg">
+      <img src="https://raw.githubusercontent.com/ArgoHA/D-FINE-seg/main/assets/logo-light.svg" alt="D-FINE-seg" width="360">
+    </picture>
+  </h1>
   <p align="center">
     <strong>Real-Time Object Detection, Instance and Semantic Segmentation</strong>
   </p>

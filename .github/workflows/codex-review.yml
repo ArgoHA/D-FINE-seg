@@ -19,12 +19,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      issues: write # react to the request comment
       pull-requests: read
     outputs:
+      reaction: ${{ steps.ack.outputs.reaction }}
       open: ${{ steps.pr.outputs.open }}
       base: ${{ steps.pr.outputs.base }}
       head: ${{ steps.pr.outputs.head }}
     steps:
+      - name: Acknowledge the request
+        id: ack
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const { data: reaction } = await github.rest.reactions.createForIssueComment({
+              ...context.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+            core.setOutput('reaction', String(reaction.id));
+
       - name: Resolve the pull request
         id: pr
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -50,7 +64,8 @@ jobs:
   review:
     needs: request
     if: needs.request.outputs.open == 'true' && github.triggering_actor == 'ArgoHA'
-    runs-on: ubuntu-latest
+    # codex-action's drop-sudo fails on Ubuntu 26.04 (openai/codex-action#188).
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
       group: codex-review-${{ github.event.issue.number }}
@@ -110,32 +125,59 @@ jobs:
 
   publish:
     needs: [request, review]
-    if: github.triggering_actor == 'ArgoHA'
+    # Run after failures too, so every request ends with a visible reply.
+    if: always() && needs.request.result != 'skipped' && github.triggering_actor == 'ArgoHA'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      issues: write # remove the reaction and post failure replies
       pull-requests: write
     steps:
-      - name: Post the review
+      - name: Report the result
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           REVIEW: ${{ needs.review.outputs.review }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          PR_OPEN: ${{ needs.request.outputs.open }}
+          REQUEST_RESULT: ${{ needs.request.result }}
           REVIEWED_HEAD: ${{ needs.request.outputs.head }}
+          REACTION_ID: ${{ needs.request.outputs.reaction }}
         with:
           script: |
+            if (process.env.REACTION_ID) {
+              await github.rest.reactions.deleteForIssueComment({
+                ...context.repo,
+                comment_id: context.payload.comment.id,
+                reaction_id: Number(process.env.REACTION_ID),
+              });
+            }
+            // A newer request cancelled this review and will reply itself.
+            if (process.env.REVIEW_RESULT === 'cancelled') {
+              return;
+            }
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const reply = (text) => github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: `${text}\n\n[Workflow run](${runUrl})`,
+            });
+            if (process.env.REQUEST_RESULT === 'success' && process.env.PR_OPEN !== 'true') {
+              await reply('Codex reviews only open pull requests.');
+              return;
+            }
             const review = process.env.REVIEW.trim();
-            if (!review) {
-              throw new Error('Codex returned no review. Check the review job logs.');
+            if (process.env.REVIEW_RESULT !== 'success' || !review) {
+              await reply('Codex review failed; see the workflow logs.');
+              return;
             }
             const { data: pr } = await github.rest.pulls.get({
               ...context.repo,
               pull_number: context.issue.number,
             });
             if (pr.state !== 'open' || pr.head.sha !== process.env.REVIEWED_HEAD) {
-              core.notice('The PR changed or closed during review. Request a new review.');
+              await reply('The PR changed or closed during the review. Comment `@codex review` again.');
               return;
             }
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const result = review.length > 60000
               ? `${review.slice(0, 60000)}\n\nReview truncated; see the workflow logs.`
               : review;
