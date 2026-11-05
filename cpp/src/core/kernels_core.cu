@@ -40,11 +40,12 @@ __device__ __forceinline__ float iou(const float* a, const float* b) {
 // One block. Candidates are already score-descending (TopK); valid ones are compacted in
 // order, then greedy NMS runs over the (small) compacted set with one sync per survivor.
 // NMS runs in engine-input space; (sx, sy) is applied only to the boxes written out, so the
-// suppression result does not depend on the caller's output scale.
+// suppression result does not depend on the caller's output scale. Keypoints (kout != null)
+// follow the survivors, x/y scaled like the boxes, as in TRTModel.rescale_kpts.
 template <typename L>
 __global__ void k_postprocess(const L* labels, const float* boxes, const float* scores, int k,
                               float conf, uint64_t class_mask, float thr, float sx, float sy,
-                              Dets* out) {
+                              Dets* out, const float4* kin, int nk, float4* kout) {
   __shared__ int idx[kMaxDet];
   __shared__ float sb[kMaxDet * 4];
   __shared__ int sup[kMaxDet];
@@ -81,6 +82,17 @@ __global__ void k_postprocess(const L* labels, const float* boxes, const float* 
       ++c;
     }
     out->count = c;
+  }
+  if (kout) {  // uniform across the block
+    __syncthreads();  // count/src from thread 0 above
+    const int n = out->count * nk;
+    for (int e = t; e < n; e += blockDim.x) {
+      const int row = e / nk;
+      float4 v = kin[(size_t)out->src[row] * nk + (e - row * nk)];
+      v.x *= sx;
+      v.y *= sy;
+      kout[e] = v;
+    }
   }
 }
 
@@ -121,13 +133,15 @@ void preprocess_image(const uint8_t* src, int sp, int sw, int sh, int swap_rb, f
 
 void postprocess(const void* labels, bool labels_i64, const float* boxes, const float* scores,
                  int k, float conf, uint64_t class_mask, float nms_iou, float sx, float sy,
-                 Dets* out, cudaStream_t s) {
+                 Dets* out, cudaStream_t s, const float* kpts, int nk, float* kpts_out) {
+  const float4* ki = (const float4*)kpts;
+  float4* ko = kpts && kpts_out && nk > 0 ? (float4*)kpts_out : nullptr;
   if (labels_i64)
     k_postprocess<long long><<<1, kMaxDet, 0, s>>>((const long long*)labels, boxes, scores, k, conf,
-                                                   class_mask, nms_iou, sx, sy, out);
+                                                   class_mask, nms_iou, sx, sy, out, ki, nk, ko);
   else
     k_postprocess<int><<<1, kMaxDet, 0, s>>>((const int*)labels, boxes, scores, k, conf, class_mask,
-                                             nms_iou, sx, sy, out);
+                                             nms_iou, sx, sy, out, ki, nk, ko);
 }
 
 void upsample_masks(const Dets* dets, const float* masks, int mh0, int mw0, int cap, int h, int w,

@@ -58,8 +58,10 @@ int main(int argc, char** argv) {
     return 1;
   }
   const DfineInfo* in = dfine_info(m);
-  const char* tn = in->task == DFINE_SEM_SEG ? "sem_seg"
-                   : in->task == DFINE_SEGMENT ? "segment" : "detect";
+  const char* tn = in->task == DFINE_SEM_SEG   ? "sem_seg"
+                   : in->task == DFINE_SEGMENT ? "segment"
+                   : in->task == DFINE_KPTS    ? "kpts"
+                                               : "detect";
 
   uint8_t* dev_img = nullptr;  // a frame already on the GPU, like a camera/ISP hand-off
   if (cudaMalloc(&dev_img, (size_t)W * H * 3) != cudaSuccess) {

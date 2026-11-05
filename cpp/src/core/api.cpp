@@ -44,12 +44,14 @@ struct DfineSlot {
   cudaEvent_t done = nullptr;
   TrtContext* ctx = nullptr;
   Dets* dets = nullptr;       // device
+  float* kpts = nullptr;      // device, kpts engines: [max_det, n_kpts, 4] in image pixels
   uint8_t* stage = nullptr;   // device staging for host input
   size_t stage_cap = 0;
   int img_w = 0, img_h = 0;   // last infer, for box/mask scaling
   ~DfineSlot() {
     if (ctx) delete ctx;
     if (dets) cudaFree(dets);
+    if (kpts) cudaFree(kpts);
     if (stage) cudaFree(stage);
     if (done) cudaEventDestroy(done);
     if (stream) cudaStreamDestroy(stream);
@@ -76,7 +78,11 @@ DfineModel* dfine_open(const char* engine_path, int device) {
     m->info.mask_w = e.mask_w;
     m->info.sem_h = e.sem_h;
     m->info.sem_w = e.sem_w;
-    m->info.task = e.sem_seg ? DFINE_SEM_SEG : e.has_masks ? DFINE_SEGMENT : DFINE_DETECT;
+    m->info.num_kpts = e.n_kpts;
+    m->info.task = e.sem_seg     ? DFINE_SEM_SEG
+                   : e.has_masks ? DFINE_SEGMENT
+                   : e.n_kpts    ? DFINE_KPTS
+                                 : DFINE_DETECT;
     if (e.k > DFINE_MAX_DET) {
       delete m;
       set_err("engine top-K exceeds DFINE_MAX_DET");
@@ -128,6 +134,11 @@ DfineSlot* dfine_slot_create(const DfineModel* m) {
     CK(cudaEventCreateWithFlags(&s->done, cudaEventDisableTiming));
     CK(cudaMalloc(&s->dets, sizeof(Dets)));
     CK(cudaMemset(s->dets, 0, sizeof(Dets)));
+    if (m->engine.n_kpts) {
+      const size_t kb = (size_t)m->engine.k * m->engine.n_kpts * 4 * sizeof(float);
+      CK(cudaMalloc(&s->kpts, kb));
+      CK(cudaMemset(s->kpts, 0, kb));
+    }
     // Capture happens here, not on the hot path: the graph bakes in the buffer addresses.
     s->ctx = new TrtContext(const_cast<TrtEngine&>(m->engine), s->stream);
     return s;
@@ -143,6 +154,7 @@ void dfine_slot_destroy(DfineSlot* s) { delete s; }
 const DfineDets* dfine_dets(const DfineSlot* s) { return s ? s->dets : nullptr; }
 const float* dfine_masks(const DfineSlot* s) { return s && s->ctx ? s->ctx->masks : nullptr; }
 const int32_t* dfine_sem(const DfineSlot* s) { return s && s->ctx ? s->ctx->sem : nullptr; }
+const float* dfine_kpts(const DfineSlot* s) { return s ? s->kpts : nullptr; }
 cudaEvent_t dfine_event(const DfineSlot* s) { return s ? s->done : nullptr; }
 
 DfineStatus dfine_infer_async(DfineModel* m, DfineSlot* s, const void* img, int w, int h,
@@ -180,7 +192,7 @@ DfineStatus dfine_infer_async(DfineModel* m, DfineSlot* s, const void* img, int 
     if (!e.sem_seg)
       postprocess(s->ctx->labels, e.labels_i64, s->ctx->boxes, s->ctx->scores, e.k, m->conf,
                   m->class_mask, m->nms_iou, (float)w / e.in_w, (float)h / e.in_h, s->dets,
-                  stream);
+                  stream, s->ctx->kpts, e.n_kpts, s->kpts);
     s->img_w = w;
     s->img_h = h;
     CK(cudaEventRecord(s->done, stream));
@@ -214,6 +226,25 @@ DfineStatus dfine_copy_dets(const DfineSlot* s, DfineDets* dst, cudaStream_t str
   return guard([&]() -> DfineStatus {
     CK(cudaStreamWaitEvent(stream, s->done, 0));
     CK(cudaMemcpyAsync(dst, s->dets, sizeof(Dets), cudaMemcpyDeviceToHost, stream));
+    CK(cudaStreamSynchronize(stream));
+    return DFINE_OK;
+  });
+}
+
+DfineStatus dfine_copy_kpts(const DfineSlot* s, float* dst, int n, cudaStream_t stream) {
+  if (!s || !dst || n < 0) return DFINE_ERR_ARG;
+  if (!s->kpts) {
+    set_err("engine has no keypoints (kpts engines only)");
+    return DFINE_ERR_ARG;
+  }
+  if (n > s->m->engine.k) {
+    set_err("n exceeds the engine top-K");
+    return DFINE_ERR_ARG;
+  }
+  return guard([&]() -> DfineStatus {
+    CK(cudaStreamWaitEvent(stream, s->done, 0));
+    CK(cudaMemcpyAsync(dst, s->kpts, (size_t)n * s->m->engine.n_kpts * 4 * sizeof(float),
+                       cudaMemcpyDeviceToHost, stream));
     CK(cudaStreamSynchronize(stream));
     return DFINE_OK;
   });

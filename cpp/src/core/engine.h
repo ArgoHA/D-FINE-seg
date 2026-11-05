@@ -19,8 +19,11 @@ class TrtEngine {
   int in_h = 0, in_w = 0, in_c = 0, k = 0;  // k = top-K of the fused postprocessor
   int mask_h = 0, mask_w = 0;               // segment: per-instance mask grid (masks [1, K, mh, mw])
   int sem_h = 0, sem_w = 0;                 // sem_seg: fused-argmax label map (sem_seg [1, H, W])
+  int n_kpts = 0;                           // kpts: points per detection (kpts [1, K, n, 4])
   bool has_masks = false, sem_seg = false, labels_i64 = true;
-  const char* task() const { return sem_seg ? "sem_seg" : has_masks ? "segment" : "detect"; }
+  const char* task() const {
+    return sem_seg ? "sem_seg" : has_masks ? "segment" : n_kpts ? "kpts" : "detect";
+  }
 
  private:
   TrtLogger logger_;
@@ -39,6 +42,7 @@ class TrtContext {
   float* scores = nullptr;   // [1, K]
   float* masks = nullptr;    // segment: [1, K, mask_h, mask_w] fp32 probabilities
   int32_t* sem = nullptr;    // sem_seg: [1, sem_h, sem_w] class ids
+  float* kpts = nullptr;     // kpts: [1, K, n_kpts, 4] x, y (input-size pixels), presence, visible
 
  private:
   std::unique_ptr<nvinfer1::IExecutionContext> ctx_;

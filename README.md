@@ -60,6 +60,7 @@ One frame, three tasks, one config flag:
 - **Pretrained weights for every task** - detection on COCO (plain and Objects365-pretrained), COCO instance segmentation, Cityscapes semantic segmentation, COCO person keypoints
 - **Multi-channel inputs** - train on RGB + thermal / depth / NIR stacks (4-channel `.npy`), not just RGB
 - **Modern training stack** - Muon optimizer, DDP, EMA, mosaic + affine augs, knowledge distillation, OneCycle, early stopping, rare-class sampling (LVIS repeat-factor), WandB, auto-batch size.
+- **C++ core** - `libdfine.so` for all four tasks: TensorRT plus fused CUDA pre/postprocessing, no dependencies beyond CUDA and TensorRT, built to embed on robots and Jetson boards - a 1080p frame in under 1.6 ms with S ([numbers](#c-core))
 - **Beyond the model** - ByteTrack tracking, SAM3 auto-labeling, Gradio demo, INT8 quantization (OpenVINO / CoreML)
 
 How it works - backbone, encoder and every task's decoder: [docs/arch.md](https://github.com/ArgoHA/D-FINE-seg/blob/main/docs/arch.md).
@@ -310,6 +311,7 @@ Also provided:
 
 - `Bytetrack` - simple implementation of object tracker
 - `SAM3` - text-promptable zero-shot segmentation for auto-labeling (multi-class: repeat `--prompt` or pass `"car, person"`)
+- C++ core (`libdfine.so`) for TensorRT engines, plus an NVDEC -> NVENC video app: [cpp/README.md](https://github.com/ArgoHA/D-FINE-seg/blob/main/cpp/README.md)
 
 ### Multi-Object Tracking
 
@@ -368,6 +370,15 @@ It serves on `0.0.0.0:7860` (LAN-reachable) and prints a warning on startup: the
 | RF-DETR-seg-medium | 35.4 | 432x432 | 0.35 | 0.62 | 0.789 | 0.51 | 0.346 | 16.81 | **1.77** |
 
 The 640 semantic segmentation comparison is superseded by the native-resolution results above. Metric definitions, the VisDrone and TACO benchmarks, COCO-style APs and the export-format comparisons: [docs/benchmarks.md](https://github.com/ArgoHA/D-FINE-seg/blob/main/docs/benchmarks.md)
+
+### C++ core
+
+The [C++ core](https://github.com/ArgoHA/D-FINE-seg/blob/main/cpp/README.md) on a 1920x1080 frame already on the GPU: preprocess, TensorRT fp16 and postprocess, results left on the GPU. S models at 640x640, RTX 5070 Ti, `cpp/examples/bench.cpp`. Async runs 4 execution contexts in parallel.
+
+| | detect | segment | sem_seg | kpts |
+|---|---|---|---|---|
+| blocking, 1 slot | 1.100 ms (909 fps) | 1.580 ms (633 fps) | 1.281 ms (780 fps) | 1.465 ms (682 fps) |
+| async, 4 slots | 0.657 ms (1522 fps) | 1.153 ms (867 fps) | 1.059 ms (944 fps) | 0.929 ms (1077 fps) |
 
 ## Outputs
 

@@ -142,7 +142,7 @@ The last decoder layer's denoising queries now get class/box supervision in inst
 - New task: every detection also predicts K points (YOLO-pose labels `class xc yc w h x1 y1 v1 ...` or COCO `keypoints`, `train.kpts` config block). Architecture: [docs/arch.md](docs/arch.md)
 - Metrics: `f1_kpt` (OKS >= 0.5), COCO keypoint `mAP_50_95_kpt`, `kpt_px_err`, `presence_f1`, `visible_acc` (more in `extended_metrics.csv`); best checkpoint = mean of `mAP_50_95_kpt` and box `mAP_50_95`.
 - `train.kpts.freeze_except_kpt` trains only the keypoint modules (per-query head and keypoint decoder).
-- export and C++ core supported as in other tasks
+- Export to every backend and the C++ core (`dfine_kpts` / `dfine_copy_kpts`), same as the other tasks.
 
 #### Released COCO person keypoint weights (S only for now)
 
