@@ -26,7 +26,7 @@ from dfine_seg.dl.dataset import (
 )
 from dfine_seg.dl.export import DFINEPostProcessor
 from dfine_seg.dl.utils import KptCoarseDropout, process_boxes, process_kpts
-from dfine_seg.dl.validator import Validator
+from dfine_seg.dl.validator import KPT_MAX_DETS, Validator, top_per_class
 from dfine_seg.infer.torch_model import TorchModel
 from dfine_seg.model.arch import dfine_decoder
 from dfine_seg.model.dfine import build_loss, build_model
@@ -474,7 +474,7 @@ def _pose_preds(shift=0.0):
         "scores": torch.tensor([0.9, 0.8]),
         "kpts": kp,
     }
-    return [pred | {f"all_{k}": v for k, v in pred.items()}]
+    return [pred | {f"all_{k}": v for k, v in pred.items()} | {"all_kpts_idx": torch.arange(2)}]
 
 
 def _validator(preds):
@@ -502,6 +502,76 @@ def test_kpt_metrics_penalize_error():
     assert m["kpt_px_err"] == pytest.approx(3.0)  # one of two points off by 6 px
     assert m["mAP_50_95_kpt"] < 1
     assert m["extended_metrics"]["oks_kpt"] < 1
+
+
+def test_kpt_match_beats_overlapping_unlabeled_box():
+    """A pred with the labeled person's points but a box closer to an overlapping unlabeled
+    person must be a TP, not ignored through the unlabeled box."""
+    gt = [
+        {
+            "labels": torch.tensor([0, 0]),
+            "boxes": torch.tensor([[10.0, 10.0, 60.0, 110.0], [14.0, 10.0, 64.0, 110.0]]),
+            "kpts": torch.tensor(
+                [[[20.0, 20.0, 2], [50.0, 20.0, 2]], [[0.0, 0.0, 0], [0.0, 0.0, 0]]]
+            ),
+            "areas": None,
+        }
+    ]
+    kp = torch.tensor([[[20.0, 20.0, 0.9, 0.9], [50.0, 20.0, 0.9, 0.9]]])
+    pred = {
+        "labels": torch.tensor([0]),
+        "boxes": torch.tensor([[14.0, 10.0, 64.0, 110.0]]),  # == the unlabeled box
+        "scores": torch.tensor([0.9]),
+        "kpts": kp,
+    }
+    m = Validator(
+        gt,
+        [pred],
+        label_to_name={0: "person"},
+        kpts_meta={"shape": [2, 3], "sigmas": [0.07] * 2, "conf_thresh": 0.5},
+    ).compute_metrics()
+    assert m["f1_kpt"] == 1
+
+
+def test_top_per_class():
+    labels = torch.tensor([0, 1, 0, 0, 1])
+    scores = torch.tensor([0.1, 0.9, 0.8, 0.7, 0.2])
+    assert top_per_class(labels, scores, 2).tolist() == [1, 2, 3, 4]
+    assert top_per_class(labels, scores, 1).tolist() == [1, 2]
+
+
+def test_kpt_ap_limits_detections_per_class():
+    """COCO keypoint AP keeps the top 20 per image *and class*: 20 higher-scoring dets of
+    one class must not push out the only det of another."""
+    kp_gt = torch.tensor([[[20.0, 20.0, 2], [50.0, 20.0, 2]], [[120.0, 20.0, 2], [150.0, 20.0, 2]]])
+    gt = [
+        {
+            "labels": torch.tensor([0, 1]),
+            "boxes": torch.tensor([[10.0, 10.0, 60.0, 110.0], [110.0, 10.0, 160.0, 110.0]]),
+            "kpts": kp_gt,
+            "areas": None,
+        }
+    ]
+    n_fp = 21
+    boxes = torch.cat(
+        [gt[0]["boxes"][:1], torch.tensor([[300.0, 300.0, 350.0, 400.0]]).repeat(n_fp, 1)]
+    )
+    kpts = torch.cat([kp_gt[:1], torch.tensor([[[310.0, 310.0, 2], [340.0, 310.0, 2]]] * n_fp)])
+    boxes, kpts = torch.cat([boxes, gt[0]["boxes"][1:]]), torch.cat([kpts, kp_gt[1:]])
+    kpts = torch.cat([kpts, torch.ones_like(kpts[..., :1])], -1)  # [N, K, 4]
+    labels = torch.tensor([0] * (1 + n_fp) + [1])
+    scores = torch.cat([torch.tensor([0.99]), torch.linspace(0.9, 0.6, n_fp), torch.tensor([0.5])])
+    pred = {"labels": labels, "boxes": boxes, "scores": scores, "kpts": kpts}
+    pred |= {f"all_{k}": v for k, v in pred.items()}
+    pred["all_kpts_idx"] = top_per_class(labels, scores, KPT_MAX_DETS)
+    pred["all_kpts"] = kpts[pred["all_kpts_idx"]]
+    m = Validator(
+        gt,
+        [pred],
+        label_to_name={0: "a", 1: "b"},
+        kpts_meta={"shape": [2, 3], "sigmas": [0.07] * 2, "conf_thresh": 0.5},
+    ).compute_metrics()
+    assert m["mAP_50_95_kpt"] == pytest.approx(1)
 
 
 def test_kpt_oks_aspect_is_pixel_space():

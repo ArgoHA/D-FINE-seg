@@ -16,7 +16,7 @@ from torchvision.ops import box_iou
 from dfine_seg.dl.utils import filter_preds, rle_to_masks
 from dfine_seg.model.kpts import BOX_AREA_FACTOR, kpt_oks
 
-KPT_MAX_DETS = 20  # COCO keypoint AP scores the top 20 detections per image (100 for boxes)
+KPT_MAX_DETS = 20  # COCO keypoint AP scores the top 20 per image and class (100 for boxes)
 
 # task=kpts metrics reported only with the extended ones (extended_metrics.csv); the main
 # table keeps f1_kpt, mAP_50_95_kpt, kpt_px_err, presence_f1, visible_acc
@@ -32,6 +32,17 @@ KPT_EXTENDED_METRICS = (
 
 # Suppress verbose output from faster_coco_eval
 logging.getLogger("faster_coco_eval").setLevel(logging.WARNING)
+
+
+def top_per_class(labels: torch.Tensor, scores: torch.Tensor, k: int) -> torch.Tensor:
+    """Sorted indices of the k highest-scoring entries of each class."""
+    order = torch.argsort(scores, descending=True, stable=True)
+    lab = labels[order]
+    rank = torch.empty_like(lab)
+    for c in lab.unique():
+        m = lab == c
+        rank[m] = torch.arange(int(m.sum()), device=lab.device)
+    return order[rank < k].sort().values
 
 
 def match_instances(ious, pred_labels, gt_labels, iou_thresh):
@@ -392,7 +403,8 @@ class Validator:
     def _kpt_metrics(self) -> Dict[str, float]:
         """Keypoint quality of the conf-filtered preds:
         - f1/precision/recall_kpt: instance matching at OKS >= iou_thresh. Like COCO, GT
-          without labeled points are ignored, and so are preds whose box matches one of them.
+          without labeled points are ignored, and so are preds that match no labeled GT by
+          OKS but box-match an unlabeled GT of their class.
         - oks_kpt: mean OKS (0 for FPs/FNs), the keypoint counterpart of "iou".
         - kpt_px_err, pck_kpt: mean pixel error and PCK@0.05 * GT box diagonal over labeled
           points of box-matched (IoU >= iou_thresh, same class) instances.
@@ -401,22 +413,46 @@ class Validator:
         - visible_acc: visible score >= 0.5 vs v == 2 on labeled points (with [K, 3] labels).
         """
         sigmas = torch.tensor(self.kpt_sigmas)
+
+        def oks_fn(pred, gt):
+            if not len(pred["labels"]) or not len(gt["labels"]):
+                return torch.zeros((len(pred["labels"]), len(gt["labels"])))
+            vis = gt["kpts"][..., 2] > 0
+            return kpt_oks(
+                pred["kpts"][:, None, :, :2].float(),
+                gt["kpts"][None, ..., :2].float(),
+                vis[None],
+                gt["areas"][None],
+                sigmas,
+            )
+
         kpt_preds, kpt_gts = [], []
         px_err, pck, pres_tp, pres_fp, pres_fn, vis_ok, vis_n = [], [], 0, 0, 0, 0, 0
         for pred, gt in zip(self.preds, self.gt):
             labeled = gt["kpts"][..., 2] > 0  # [G, K]
             ignored = ~labeled.any(-1)
+            kpt_gt = {k: gt[k][~ignored] for k in ("labels", "boxes", "kpts")} | {
+                "areas": self._kpt_areas(gt)[~ignored]
+            }
+            # labeled GT claim preds by OKS first, so an overlapping unlabeled GT can't steal one
+            _, unmatched, _ = match_instances(
+                oks_fn(pred, kpt_gt), pred["labels"], kpt_gt["labels"], self.iou_thresh
+            )
+            keep_p = torch.ones(len(pred["labels"]), dtype=torch.bool)
+            if unmatched and ignored.any():
+                u = torch.tensor(unmatched)
+                ign_ious = box_iou(pred["boxes"][u], gt["boxes"][ignored])
+                ign_ious[pred["labels"][u][:, None] != gt["labels"][ignored][None]] = 0
+                ign, _, _ = match_instances(
+                    ign_ious, pred["labels"][u], gt["labels"][ignored], self.iou_thresh
+                )
+                keep_p[u[[p for p, _, _ in ign]]] = False
+            kpt_preds.append({k: pred[k][keep_p] for k in ("labels", "boxes", "kpts")})
+            kpt_gts.append(kpt_gt)
+
             matches, _, _ = match_instances(
                 self._box_ious(pred, gt), pred["labels"], gt["labels"], self.iou_thresh
             )
-            drop = {p for p, g, _ in matches if ignored[g]}
-            keep_p = torch.tensor([i not in drop for i in range(len(pred["labels"]))], dtype=bool)
-            kpt_preds.append({k: pred[k][keep_p] for k in ("labels", "boxes", "kpts")})
-            kpt_gts.append(
-                {k: gt[k][~ignored] for k in ("labels", "boxes", "kpts")}
-                | {"areas": self._kpt_areas(gt)[~ignored]}
-            )
-
             for p, g, _ in matches:
                 if pred["labels"][p] != gt["labels"][g]:
                     continue
@@ -434,18 +470,6 @@ class Validator:
                 if self.kpt_visibility:
                     vis_ok += int(((pk[lab, 3] >= 0.5) == (gk[lab, 2] == 2)).sum())
                     vis_n += int(lab.sum())
-
-        def oks_fn(pred, gt):
-            if not len(pred["labels"]) or not len(gt["labels"]):
-                return torch.zeros((len(pred["labels"]), len(gt["labels"])))
-            vis = gt["kpts"][..., 2] > 0
-            return kpt_oks(
-                pred["kpts"][:, None, :, :2].float(),
-                gt["kpts"][None, ..., :2].float(),
-                vis[None],
-                gt["areas"][None],
-                sigmas,
-            )
 
         per_class = self._instance_metrics(kpt_preds, oks_fn, gts=kpt_gts)[0]
         tps = sum(v["TPs"] for v in per_class.values())
@@ -471,9 +495,10 @@ class Validator:
             out["visible_acc"] = vis_ok / vis_n if vis_n else 0
         return out
 
-    def _kpt_coco_ap(self, max_dets: int = KPT_MAX_DETS) -> tuple:
-        """COCO keypoint (AP50, AP50:95) on the unfiltered top-`max_dets` preds per image (the
-        COCO keypoint protocol). Returns zeros when nothing can be scored."""
+    def _kpt_coco_ap(self) -> tuple:
+        """COCO keypoint (AP50, AP50:95) on the unfiltered preds; the scorer keeps the top
+        KPT_MAX_DETS per image and class (the COCO keypoint protocol). Returns zeros when
+        nothing can be scored."""
         images, gt_anns, dt_anns, cats = [], [], [], set()
         for img_id, (pred, gt) in enumerate(zip(self.preds, self.gt)):
             images.append({"id": img_id})
@@ -493,11 +518,11 @@ class Validator:
                         "num_keypoints": int((kp[:, 2] > 0).sum()),
                     }
                 )
-            src = "all_" if "all_kpts" in pred else ""
-            kpts = pred[f"{src}kpts"][:max_dets]
-            for label, box, score, kp in zip(
-                pred[f"{src}labels"], pred[f"{src}boxes"], pred[f"{src}scores"], kpts
-            ):
+            dets = [pred[k] for k in ("labels", "boxes", "scores")]
+            if "all_kpts" in pred:  # unfiltered rows; all_kpts covers all_kpts_idx of them
+                idx = pred["all_kpts_idx"]
+                dets = [pred[f"all_{k}"][idx] for k in ("labels", "boxes", "scores")]
+            for label, box, score, kp in zip(*dets, pred.get("all_kpts", pred["kpts"])):
                 x1, y1, x2, y2 = box.tolist()
                 dt_kp = torch.cat([kp[:, :2], torch.ones_like(kp[:, :1])], -1)
                 dt_anns.append(

@@ -46,7 +46,7 @@ from dfine_seg.dl.utils import (
     visualize_sem_seg,
     wandb_logger,
 )
-from dfine_seg.dl.validator import KPT_MAX_DETS, SemSegValidator, Validator
+from dfine_seg.dl.validator import KPT_MAX_DETS, SemSegValidator, Validator, top_per_class
 from dfine_seg.model.dfine import (
     build_loss,
     build_model,
@@ -512,8 +512,9 @@ class Trainer:
     ) -> List[Dict[str, torch.Tensor]]:
         """
         returns List with BS length. Each element is a dict {"labels", "boxes", "scores"}
-        (+ "kpts" [N, K, 4] abs x, y, presence, visible for task=kpts, and "all_kpts"
-        for the top KPT_MAX_DETS of the all_* arrays - COCO keypoint AP scores only those)
+        (+ "kpts" [N, K, 4] abs x, y, presence, visible for task=kpts, and "all_kpts" for
+        the top KPT_MAX_DETS per class of the all_* arrays, at positions "all_kpts_idx" -
+        COCO keypoint AP scores only those)
         """
         logits, boxes = outputs["pred_logits"], outputs["pred_boxes"]
         has_masks = ("pred_masks" in outputs) and (outputs["pred_masks"] is not None)
@@ -573,7 +574,11 @@ class Trainer:
             }
             if kpts is not None:
                 out["kpts"] = kpts[b, qb].cpu()
-                out["all_kpts"] = kpts[b, topk_qidx[b][:KPT_MAX_DETS]].cpu()
+                # COCO keypoint AP scores the top KPT_MAX_DETS per image *and class*; keep only
+                # those rows (memory) and their positions in the all_* arrays
+                sel = top_per_class(topk_labels[b], topk_scores[b], KPT_MAX_DETS)
+                out["all_kpts"] = kpts[b, topk_qidx[b][sel]].cpu()
+                out["all_kpts_idx"] = sel.cpu()
 
             if has_masks and qb.numel() > 0:
                 # gather only kept masks, cast to half to save mem during resizing
