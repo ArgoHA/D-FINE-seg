@@ -1,0 +1,148 @@
+name: Codex PR review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  request:
+    # Check the immutable account ID as well as who starts or re-runs the workflow.
+    if: >-
+      github.repository == 'ArgoHA/D-FINE-seg' &&
+      github.event.issue.pull_request &&
+      github.event.comment.user.id == 43640256 &&
+      github.actor_id == '43640256' &&
+      github.triggering_actor == 'ArgoHA' &&
+      github.event.comment.body == '@codex review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      open: ${{ steps.pr.outputs.open }}
+      base: ${{ steps.pr.outputs.base }}
+      head: ${{ steps.pr.outputs.head }}
+    steps:
+      - name: Resolve the pull request
+        id: pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+            if (pr.state !== 'open') {
+              core.notice('Codex reviews only open pull requests.');
+              return;
+            }
+            for (const sha of [pr.base.sha, pr.head.sha]) {
+              if (!/^[0-9a-f]{40}$/.test(sha)) {
+                throw new Error('Unexpected pull request commit SHA.');
+              }
+            }
+            core.setOutput('open', 'true');
+            core.setOutput('base', pr.base.sha);
+            core.setOutput('head', pr.head.sha);
+
+  review:
+    needs: request
+    if: needs.request.outputs.open == 'true' && github.triggering_actor == 'ArgoHA'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: codex-review-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      review: ${{ steps.codex.outputs.final-message }}
+    steps:
+      # Keep prompts, AGENTS.md, and Codex configuration on the trusted default branch.
+      # PR contents are fetched as Git objects; never check them out or execute them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the commits to review
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+          BASE_SHA: ${{ needs.request.outputs.base }}
+          HEAD_SHA: ${{ needs.request.outputs.head }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "$BASE_SHA:refs/remotes/origin/codex-base" \
+            "refs/pull/$PR_NUMBER/head:refs/remotes/origin/codex-head"
+          if [ "$(git rev-parse refs/remotes/origin/codex-head)" != "$HEAD_SHA" ]; then
+            echo '::error::The PR changed before review started. Request a new review.'
+            exit 1
+          fi
+          git merge-base refs/remotes/origin/codex-base refs/remotes/origin/codex-head
+
+      - name: Check API key configuration
+        env:
+          HAS_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: |
+          if [ "$HAS_API_KEY" != 'true' ]; then
+            echo '::error::Add the OPENAI_API_KEY repository secret before requesting a review.'
+            exit 1
+          fi
+
+      # Last step: only the action's protected API proxy receives the API key.
+      - name: Review with GPT-6.1 Sol
+        id: codex
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-6.1-sol
+          effort: high
+          permission-profile: ':read-only'
+          safety-strategy: drop-sudo
+          allow-users: ArgoHA
+          allow-bots: 'false'
+          prompt-file: .github/codex/review.md
+
+  publish:
+    needs: [request, review]
+    if: github.triggering_actor == 'ArgoHA'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post the review
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          REVIEW: ${{ needs.review.outputs.review }}
+          REVIEWED_HEAD: ${{ needs.request.outputs.head }}
+        with:
+          script: |
+            const review = process.env.REVIEW.trim();
+            if (!review) {
+              throw new Error('Codex returned no review. Check the review job logs.');
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+            if (pr.state !== 'open' || pr.head.sha !== process.env.REVIEWED_HEAD) {
+              core.notice('The PR changed or closed during review. Request a new review.');
+              return;
+            }
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const result = review.length > 60000
+              ? `${review.slice(0, 60000)}\n\nReview truncated; see the workflow logs.`
+              : review;
+            await github.rest.pulls.createReview({
+              ...context.repo,
+              pull_number: context.issue.number,
+              commit_id: process.env.REVIEWED_HEAD,
+              event: 'COMMENT',
+              body: `### Codex review · GPT-6.1 Sol\n\n${result}\n\n[Workflow run](${runUrl}) · Requested by @ArgoHA.`,
+            });
