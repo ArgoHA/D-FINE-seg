@@ -22,7 +22,7 @@ def find_config() -> Path | None:
     against a config other than the one you pointed at is worse than an error.
     """
     if env := os.environ.get(ENV_VAR):
-        p = Path(env) / f"{CONFIG_NAME}.yaml"
+        p = Path(env).absolute() / f"{CONFIG_NAME}.yaml"  # Hydra reads relative as a module
         if not p.is_file():
             raise FileNotFoundError(f"${ENV_VAR}={env} holds no {CONFIG_NAME}.yaml")
         return p

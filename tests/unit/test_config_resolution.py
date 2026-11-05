@@ -32,6 +32,14 @@ def test_env_var_wins_over_cwd(isolated, tmp_path_factory, monkeypatch):
     assert find_config() == elsewhere / "config.yaml"
 
 
+def test_relative_env_var_is_made_absolute(isolated, monkeypatch):
+    """Hydra treats a relative config_path as a module path relative to the caller."""
+    (isolated / "cfg").mkdir()
+    (isolated / "cfg" / "config.yaml").write_text("task: kpts\n")
+    monkeypatch.setenv(ENV_VAR, "cfg")
+    assert resolve.config_dir() == str(isolated / "cfg")
+
+
 def test_env_var_pointing_nowhere_raises(isolated, tmp_path_factory, monkeypatch):
     """Falling through to cwd would train against a different config than the one asked for."""
     empty = tmp_path_factory.mktemp("empty")

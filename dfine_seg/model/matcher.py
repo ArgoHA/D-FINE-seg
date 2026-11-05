@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 
 from .arch.utils import box_cxcywh_to_xyxy, generalized_box_iou
+from .kpts import BOX_AREA_FACTOR, kpt_oks
 
 
 def dice_cost(pred_masks: torch.Tensor, gt_masks: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -83,7 +84,15 @@ class HungarianMatcher(nn.Module):
         "use_focal_loss",
     ]
 
-    def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0):
+    def __init__(
+        self,
+        weight_dict,
+        use_focal_loss=False,
+        alpha=0.25,
+        gamma=2.0,
+        kpt_sigmas=None,
+        kpt_aspect: float = 1.0,
+    ):
         """Creates the matcher
 
         Params:
@@ -91,6 +100,9 @@ class HungarianMatcher(nn.Module):
             cost_bbox: This is the relative weight of the L1 error of the bounding box coordinates in the matching cost
             cost_giou: This is the relative weight of the giou loss of the bounding box in the matching cost
             cost_mask: (optional) weight for mask dice cost in matching
+            cost_kpt_l1 / cost_kpt_oks: keypoint costs, used when kpt_sigmas is set and the
+                outputs carry keypoints (decoder layers; pre/encoder outputs match on boxes)
+            kpt_aspect: input W / H, so the OKS cost is the pixel-space one
         """
         super().__init__()
         self.cost_class = weight_dict["cost_class"]
@@ -98,6 +110,10 @@ class HungarianMatcher(nn.Module):
         self.cost_giou = weight_dict["cost_giou"]
         self.cost_mask = weight_dict.get("cost_mask", 0)  # Optional mask cost
         self.cost_mask_dice = weight_dict.get("cost_mask_dice", 0)  # Optional dice cost
+        self.kpt_sigmas = kpt_sigmas
+        self.cost_kpt_l1 = weight_dict.get("cost_kpt_l1", 0)
+        self.cost_kpt_oks = weight_dict.get("cost_kpt_oks", 0)
+        self.kpt_aspect = kpt_aspect
 
         self.use_focal_loss = use_focal_loss
         self.alpha = alpha
@@ -170,6 +186,14 @@ class HungarianMatcher(nn.Module):
 
         # Reshape to [bs, num_queries, total_targets] before adding mask cost
         C = C.view(bs, num_queries, -1)
+
+        # keypoint cost per image: matching only reads each image's own [Q, T_b] block
+        if self.kpt_sigmas is not None and "pred_kpts" in outputs and len(tgt_bbox):
+            offset = 0
+            for b, t in enumerate(targets):
+                n_tgt = len(t["boxes"])
+                C[b, :, offset : offset + n_tgt] += self._kpt_cost(outputs["pred_kpts"][b], t)
+                offset += n_tgt
 
         # Add mask cost if masks are available and cost weight > 0
         if (self.cost_mask > 0 or self.cost_mask_dice > 0) and "pred_masks" in outputs:
@@ -255,6 +279,21 @@ class HungarianMatcher(nn.Module):
             }
 
         return {"indices": indices}  # , 'indices_o2m': C.min(-1)[1]}
+
+    def _kpt_cost(self, pred_kpts, target) -> torch.Tensor:
+        """[Q, T] keypoint cost of one image over labeled points; GT without labeled points
+        cost nothing."""
+        pred = pred_kpts[..., :2].float()[:, None]  # [Q, 1, K, 2]
+        tgt = target["kpts"].float()  # [T, K, 3]
+        tgt_bbox = target["boxes"]
+        vis = tgt[..., 2] > 0
+        n_vis = vis.sum(-1).clamp(min=1)
+        # mean |dx| + |dy| per labeled point, image-normalized like the box L1 cost
+        l1 = ((pred - tgt[None, ..., :2]).abs().sum(-1) * vis).sum(-1) / n_vis
+        area = tgt_bbox[:, 2].float() * tgt_bbox[:, 3].float() * BOX_AREA_FACTOR
+        sigmas = torch.as_tensor(self.kpt_sigmas, device=pred.device)
+        oks = kpt_oks(pred, tgt[None, ..., :2], vis[None], area[None], sigmas, self.kpt_aspect)
+        return self.cost_kpt_l1 * l1 + self.cost_kpt_oks * (1 - oks) * vis.any(-1)
 
     def get_top_k_matches(self, C, sizes, k=1, initial_indices=None):
         indices_list = []

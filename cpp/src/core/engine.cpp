@@ -42,6 +42,7 @@ TrtEngine::TrtEngine(const std::string& path) {
     std::string s = n;
     if (s == "labels") { k = d.d[1]; labels_i64 = engine_->getTensorDataType(n) == nvinfer1::DataType::kINT64; }
     if (s == "masks" && d.nbDims == 4) { has_masks = true; mask_h = d.d[2]; mask_w = d.d[3]; }
+    if (s == "kpts" && d.nbDims == 4 && d.d[3] == 4) n_kpts = d.d[2];
     // sem_seg: fused-argmax label map. An export.sem_seg_probs output is bound but unused.
     if (s == "sem_seg" && d.nbDims == 3 && engine_->getTensorDataType(n) == nvinfer1::DataType::kINT32) {
       sem_seg = true; sem_h = d.d[1]; sem_w = d.d[2];
@@ -50,6 +51,8 @@ TrtEngine::TrtEngine(const std::string& path) {
   if (!sem_seg && k == 0) throw std::runtime_error("unexpected engine IO: no labels output");
   if (has_masks && engine_->getTensorDataType("masks") != nvinfer1::DataType::kFLOAT)
     throw std::runtime_error("masks output must be fp32");
+  if (n_kpts && engine_->getTensorDataType("kpts") != nvinfer1::DataType::kFLOAT)
+    throw std::runtime_error("kpts output must be fp32");
 }
 
 TrtContext::TrtContext(TrtEngine& eng, cudaStream_t s) {
@@ -73,8 +76,11 @@ TrtContext::TrtContext(TrtEngine& eng, cudaStream_t s) {
     else if (name == "scores") scores = (float*)p;
     else if (name == "masks") masks = (float*)p;
     else if (name == "sem_seg") sem = (int32_t*)p;
+    else if (name == "kpts") kpts = (float*)p;
   }
-  if (!input || (eng.sem_seg ? !sem : (!labels || !boxes || !scores || (eng.has_masks && !masks))))
+  if (!input || (eng.sem_seg ? !sem
+                             : (!labels || !boxes || !scores || (eng.has_masks && !masks) ||
+                                (eng.n_kpts && !kpts))))
     throw std::runtime_error("unexpected engine IO");
   for (int i = 0; i < 3; ++i)  // warm-up so kernels/algos are selected before capture
     if (!ctx_->enqueueV3(s)) throw std::runtime_error("enqueueV3 failed");

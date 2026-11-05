@@ -10,20 +10,22 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
 import pandas as pd
 import torch
 import wandb
+from albumentations import CoarseDropout, HorizontalFlip, VerticalFlip
 from albumentations.core.transforms_interface import DualTransform
 from faster_coco_eval.core import mask as mask_utils
 from loguru import logger
 from omegaconf import OmegaConf
 from tabulate import tabulate
 
-from dfine_seg.viz import overlay_sem_seg, sem_seg_palette
+from dfine_seg.model.kpts import resolve_sigmas
+from dfine_seg.viz import draw_kpts, overlay_sem_seg, sem_seg_palette
 
 logging.getLogger("faster_coco_eval").setLevel(logging.WARNING)
 
@@ -77,6 +79,20 @@ def log_metrics_locally(
 
     if "mIoU" in metrics_df.columns:  # sem_seg
         metrics_list = ["mIoU", "pixel_acc"]
+    elif "f1_kpt" in metrics_df.columns:  # kpts: keypoint metrics first, then the box ones
+        metrics_list = [
+            m
+            for m in (
+                "f1_kpt",
+                "mAP_50_95_kpt",
+                "kpt_px_err",
+                "presence_f1",
+                "visible_acc",
+                "mAP_50_95",
+                "f1",
+            )
+            if m in metrics_df.columns
+        ]
     else:
         metrics_list = [
             "mAP_50",
@@ -132,6 +148,33 @@ def calculate_remaining_time(
     hours, remainder = divmod(time_for_remaining_epochs - current_epoch_progress, 3600)
     minutes, _ = divmod(remainder, 60)
     return f"{int(hours):02}:{int(minutes):02}"
+
+
+def num_kpts(cfg) -> int:
+    """K of train.kpts.shape for task=kpts, else 0 (no keypoint head)."""
+    return int(cfg.train.kpts.shape[0]) if cfg.task == "kpts" else 0
+
+
+def kpts_meta(cfg) -> Optional[Dict]:
+    """train.kpts as plain python: what inference needs to draw and score the points.
+    None unless task=kpts."""
+    if cfg.task != "kpts":
+        return None
+    kc = cfg.train.kpts
+    k = num_kpts(cfg)
+
+    def plain(value):
+        return OmegaConf.to_container(value) if OmegaConf.is_config(value) else value
+
+    return {
+        "shape": [int(v) for v in kc.shape],
+        "flip_idx": plain(kc.get("flip_idx")),
+        "sigmas": resolve_sigmas(k, plain(kc.get("sigmas"))),
+        "names": plain(kc.get("names")),
+        "skeleton": plain(kc.get("skeleton")),
+        "conf_thresh": float(kc.get("conf_thresh", 0.5)),
+        "visible_thresh": float(kc.get("visible_thresh", 0.5)),
+    }
 
 
 def get_vram_usage():
@@ -279,17 +322,22 @@ def get_transform_matrix(img_shape, new_shape, degrees, scale, shear, translate)
     return M, s
 
 
-def random_affine(img, targets, segments, target_size, degrees, translate, scales, shear):
+def random_affine(
+    img, targets, segments, target_size, degrees, translate, scales, shear, kpts=None
+):
     """
     Args:
       img: (Hbig, Wbig, 3)
       targets: (N, 5) -> [cls, x1, y1, x2, y2] ABS on the mosaic canvas
       segments: list of length N; entry i is that object's list of (K,2) ABS polygon parts
                 (islands) on the mosaic canvas - empty list for a bbox-only annotation.
+      kpts: optional (N, K, 3) [x, y, v] ABS on the mosaic canvas
     Returns:
       img_aff: final (target_h, target_w, 3)
       targets_aff: (M, 5) filtered + transformed
       segments_aff: list length=M of transformed part lists
+      kpts_aff: (M, K, 3) transformed (v unchanged; the caller drops off-canvas points),
+                     or None
     """
     M, scale = get_transform_matrix(img.shape[:2], target_size, degrees, scales, shear, translate)
 
@@ -348,29 +396,33 @@ def random_affine(img, targets, segments, target_size, degrees, translate, scale
         targets[:, 1:5] = new[i]
         segs_out = [segs_out[k] for k, keep in enumerate(i) if keep]
 
+        if kpts is not None:
+            kpts = kpts[i].copy()
+            xy = kpts[..., :2].reshape(-1, 2)
+            xy = np.concatenate([xy, np.ones((len(xy), 1), dtype=xy.dtype)], axis=1) @ M.T
+            kpts[..., :2] = xy[:, :2].reshape(*kpts.shape[:2], 2)
+
     else:
         segs_out = []
 
-    return img, targets, segs_out
+    return img, targets, segs_out, kpts
 
 
-def get_mosaic_coordinate(mosaic_image, mosaic_index, xc, yc, w, h, target_h, target_w):
-    # TODO update doc
-    # index0 to top left part of image
+def get_mosaic_coordinate(mosaic_index, xc, yc, w, h, target_h, target_w):
+    """Placement of an (h, w) image as tile mosaic_index (0 top-left, 1 top-right, 2 bottom-left,
+    3 bottom-right) around (xc, yc) of a (2 * target_h, 2 * target_w) canvas, clipped to it.
+    -> (canvas x1, y1, x2, y2), (image x1, y1, x2, y2)"""
     if mosaic_index == 0:
         x1, y1, x2, y2 = max(xc - w, 0), max(yc - h, 0), xc, yc
         small_coord = w - (x2 - x1), h - (y2 - y1), w, h
-    # index1 to top right part of image
     elif mosaic_index == 1:
         x1, y1, x2, y2 = xc, max(yc - h, 0), min(xc + w, target_w * 2), yc
         small_coord = 0, h - (y2 - y1), min(w, x2 - x1), h
-    # index2 to bottom left part of image
     elif mosaic_index == 2:
         x1, y1, x2, y2 = max(xc - w, 0), yc, xc, min(target_h * 2, yc + h)
         small_coord = w - (x2 - x1), 0, w, min(y2 - y1, h)
-    # index2 to bottom right part of image
     elif mosaic_index == 3:
-        x1, y1, x2, y2 = xc, yc, min(xc + w, target_w * 2), min(target_h * 2, yc + h)  # noqa
+        x1, y1, x2, y2 = xc, yc, min(xc + w, target_w * 2), min(target_h * 2, yc + h)
         small_coord = 0, 0, min(w, x2 - x1), min(y2 - y1, h)
     return (x1, y1, x2, y2), small_coord
 
@@ -537,12 +589,14 @@ def visualize(
     label_to_name,
     mask_alpha_gt: float = 0.35,
     mask_alpha_pred: float = 0.40,
+    kpts_meta: Dict = None,
 ):
     """
     Saves images with:
-      - GT: green boxes + optional green masks
-      - Preds: brown boxes + colored masks per class
-    Expects pred dicts possibly containing "masks" (uint8)
+      - GT: green boxes + optional green masks (+ green keypoints)
+      - Preds: brown boxes + colored masks per class (+ keypoints in the class color)
+    Expects pred dicts possibly containing "masks" (uint8) and "kpts"; kpts_meta (skeleton,
+    conf_thresh, visible_thresh) is the task=kpts checkpoint meta.
     """
     from dfine_seg.dl.dataset import read_image_hwc  # local to avoid circular import
 
@@ -577,6 +631,22 @@ def visualize(
         # Draw GT boxes (green)
         for box, label in zip(gt_dict["boxes"], gt_dict["labels"]):
             vis_one_box(img, box, label, mode="gt", label_to_name=label_to_name)
+
+        if kpts_meta:
+            skeleton = kpts_meta.get("skeleton") or []
+            for kp in gt_dict.get("kpts", []):
+                v = kp[:, 2].numpy()
+                draw_kpts(img, kp[:, :2].numpy(), v > 0, v == 2, (46, 153, 60), skeleton)
+            for kp, lab in zip(pred_dict.get("kpts", []), pred_dict["labels"]):
+                kp = kp.float().numpy()
+                draw_kpts(
+                    img,
+                    kp[:, :2],
+                    kp[:, 2] >= kpts_meta["conf_thresh"],
+                    kp[:, 3] >= kpts_meta["visible_thresh"],
+                    label_color(int(lab)),
+                    skeleton,
+                )
 
         # Prepare predicted masks
         pred_masks_to_draw = None
@@ -699,6 +769,25 @@ def process_boxes(boxes, processed_size, orig_sizes, keep_ratio, device):
                 processed_sizes[i],
             )
     return torch.tensor(final_boxes).to(device)
+
+
+def process_kpts(kpts, processed_size, orig_sizes, keep_ratio) -> torch.Tensor:
+    """[B, N, K, C] keypoints with (x, y) normalized to the network input -> (x, y) absolute at
+    the original image size (letterbox pad removed if keep_ratio, same math as the boxes). Other
+    columns are kept. Points are not clipped: they may lie outside the image."""
+    kpts = kpts.float().clone()
+    proc_h, proc_w = float(processed_size[0]), float(processed_size[1])
+    for b in range(kpts.shape[0]):
+        h0, w0 = float(orig_sizes[b][0]), float(orig_sizes[b][1])
+        x, y = kpts[b, ..., 0] * proc_w, kpts[b, ..., 1] * proc_h
+        if keep_ratio:
+            gain = min(proc_h / h0, proc_w / w0)
+            x = (x - round((proc_w - w0 * gain) / 2 - 0.1)) / gain
+            y = (y - round((proc_h - h0 * gain) / 2 - 0.1)) / gain
+        else:
+            x, y = x * w0 / proc_w, y * h0 / proc_h
+        kpts[b, ..., 0], kpts[b, ..., 1] = x, y
+    return kpts
 
 
 def process_masks(
@@ -1020,6 +1109,64 @@ class LetterboxRect(DualTransform):
 
         return b
 
+    # Keypoints transform (abs xy, extra columns untouched)
+    def apply_to_keypoints(
+        self, keypoints, ratio_x=1.0, ratio_y=1.0, pad_left=0, pad_top=0, **kwargs
+    ):
+        keypoints = np.array(keypoints, dtype=np.float32)
+        keypoints[:, 0] = keypoints[:, 0] * ratio_x + pad_left
+        keypoints[:, 1] = keypoints[:, 1] * ratio_y + pad_top
+        return keypoints
+
+
+def swap_kpt_slots(keypoints: np.ndarray, flip_idx: np.ndarray) -> np.ndarray:
+    """Reorder a flat (N*K, C) keypoint array's slots per instance: after a reflection the
+    point in the left-ankle slot is a right ankle."""
+    k = len(flip_idx)
+    grouped = keypoints.reshape(len(keypoints) // k, k, keypoints.shape[1])
+    return grouped[:, flip_idx].reshape(keypoints.shape)
+
+
+class KptHorizontalFlip(HorizontalFlip):
+    """HorizontalFlip with flip_idx slot swap. Mirrors points as continuous coords, x -> W - x
+    like boxes; Albumentations uses pixel indices (W - 1 - x), a 1 px shift on every flip."""
+
+    def __init__(self, flip_idx, p: float = 0.5):
+        super().__init__(p=p)
+        self.flip_idx = np.asarray(flip_idx)
+
+    def apply_to_keypoints(self, keypoints, **params):
+        keypoints = keypoints.copy()
+        keypoints[:, 0] = params["shape"][1] - keypoints[:, 0]
+        return swap_kpt_slots(keypoints, self.flip_idx)
+
+
+class KptVerticalFlip(VerticalFlip):
+    """VerticalFlip counterpart of KptHorizontalFlip (y -> H - y + slot swap)."""
+
+    def __init__(self, flip_idx, p: float = 0.5):
+        super().__init__(p=p)
+        self.flip_idx = np.asarray(flip_idx)
+
+    def apply_to_keypoints(self, keypoints, **params):
+        keypoints = keypoints.copy()
+        keypoints[:, 1] = params["shape"][0] - keypoints[:, 1]
+        return swap_kpt_slots(keypoints, self.flip_idx)
+
+
+class KptCoarseDropout(CoarseDropout):
+    """CoarseDropout that marks visible points under a hole occluded (v 2 -> 1): the part is still
+    there, only hidden. Expects the flag v as the last keypoint column."""
+
+    def apply_to_keypoints(self, keypoints, holes, **params):
+        if holes.size == 0:
+            return keypoints
+        x, y = keypoints[:, :1], keypoints[:, 1:2]
+        inside = (x >= holes[:, 0]) & (x < holes[:, 2]) & (y >= holes[:, 1]) & (y < holes[:, 3])
+        keypoints = keypoints.copy()
+        keypoints[inside.any(1) & (keypoints[:, -1] == 2), -1] = 1
+        return keypoints
+
 
 def norm_poly_to_abs(poly_norm_flat: np.ndarray, H: int, W: int) -> np.ndarray:
     """poly_norm_flat: [x1,y1,x2,y2,...] normalized -> (K,2) absolute"""
@@ -1238,7 +1385,7 @@ def _probe(cfg, device, target_fraction):
         training_optimizer,
     )
     from dfine_seg.dl.utils import set_seeds
-    from dfine_seg.model.dfine import build_loss, build_model, freeze_except_mask
+    from dfine_seg.model.dfine import build_loss, build_model, freeze_except_kpt, freeze_except_mask
 
     torch.cuda.set_device(device.index if device.index is not None else 0)
     set_seeds(cfg.train.seed, cfg.train.cudnn_fixed)
@@ -1255,11 +1402,15 @@ def _probe(cfg, device, target_fraction):
         pretrained_model_path=cfg.train.pretrained_model_path,
         pretrained_backbone=cfg.train.get("imagenet_backbone", False),
         task=cfg.task,
+        num_kpts=num_kpts(cfg),
     ).train()
     if cfg.train.get("freeze_except_mask", False):
         if cfg.task != "segment":
             raise ValueError("train.freeze_except_mask requires task=segment")
         for module in freeze_except_mask(model):
+            module.eval()
+    elif cfg.task == "kpts" and cfg.train.kpts.get("freeze_except_kpt", False):
+        for module in freeze_except_kpt(model):
             module.eval()
     kd = cfg.train.get("kd")
     teacher = KDTeacher(cfg, device) if kd and kd.get("teacher") else None
@@ -1274,6 +1425,8 @@ def _probe(cfg, device, target_fraction):
         ignore_index=int(cfg.train.sem_seg.ignore_index) if cfg.task == "sem_seg" else 255,
         class_weights=cfg.train.sem_seg.class_weights if cfg.task == "sem_seg" else None,
         kd=OmegaConf.to_container(kd) if teacher is not None else None,
+        kpts_meta=kpts_meta(cfg),
+        img_size=tuple(cfg.train.img_size),
     ).train()
     optimizer = training_optimizer(model, cfg)
     ema = ModelEMA(model, cfg.train.ema_momentum) if cfg.train.use_ema else None

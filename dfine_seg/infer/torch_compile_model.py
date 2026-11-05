@@ -70,7 +70,8 @@ class TorchCompileModel:
         mask_threshold: float = 0.5,
         device: str = None,
         channels: int = 3,
-        task: str = None,  # detect | segment | sem_seg; overrides enable_mask_head
+        task: str = None,  # detect | segment | sem_seg | kpts; overrides enable_mask_head
+        num_kpts: int = 0,  # K for task=kpts; 0 = read from the weights
         sem_seg_probs: bool = False,  # sem_seg: also return the 1/4-scale softmax
         # --- compile / AMP knobs (the only additions over TorchModel) ---
         compile_mode: str = "max-autotune",  # None -> eager; "reduce-overhead", "default"
@@ -90,6 +91,7 @@ class TorchCompileModel:
         self.labels_to_use = labels_to_use or []
         self.task = task or ("segment" if enable_mask_head else "detect")
         self.enable_mask_head = self.task == "segment"
+        self.num_kpts = num_kpts if self.task == "kpts" else 0
         self.sem_seg_probs = sem_seg_probs
         if sem_seg_probs and self.task != "sem_seg":
             raise ValueError(f"sem_seg_probs=True needs a sem_seg model, got task={self.task}")
@@ -142,6 +144,16 @@ class TorchCompileModel:
         return float(conf_thresh)
 
     def _load_model(self):
+        state = torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))
+        state = unwrap_checkpoint(state)[0]
+        if self.task == "kpts" and not self.num_kpts:
+            # per point: dx, dy, presence, visible
+            head = state.get("decoder.kpt_head.0.layers.2.weight")
+            if head is None:
+                raise ValueError(f"{self.model_path} has no keypoint head (task=kpts)")
+            self.num_kpts = head.shape[0] // 4
+        # keypoint decoder depth from the weights (0 for checkpoints without one)
+        layers = {k.split(".")[3] for k in state if k.startswith("decoder.kpt_decoder.layers.")}
         self.model = build_model(
             self.model_name,
             self.n_outputs,
@@ -150,9 +162,10 @@ class TorchCompileModel:
             img_size=None,
             in_channels=self.channels,
             task=self.task,
+            num_kpts=self.num_kpts,
+            num_kpt_layers=len(layers) if self.num_kpts else None,
         )
-        state = torch.load(self.model_path, weights_only=True, map_location=torch.device("cpu"))
-        self.model.load_state_dict(unwrap_checkpoint(state)[0], strict=False)
+        self.model.load_state_dict(state, strict=False)
         if self.task == "sem_seg":  # sem_seg_probs reads the 1/4 logits
             self.model.decoder.return_quarter_logits = self.sem_seg_probs
         self.model.eval()
@@ -204,6 +217,24 @@ class TorchCompileModel:
             else:
                 final_boxes[i] = scale_boxes(final_boxes[i], orig_sizes[i], processed_sizes[i])
         return final_boxes
+
+    @staticmethod
+    def process_kpts(kpts, processed_sizes, orig_sizes, keep_ratio):
+        """[B, Q, K, 4] (x, y normalized) -> x, y absolute in the original image, like the boxes.
+        Not clipped: a point may lie outside the image."""
+        kpts = kpts.float().clone()
+        for i in range(len(orig_sizes)):
+            proc_h, proc_w = processed_sizes[i]
+            h0, w0 = orig_sizes[i]
+            x, y = kpts[i, ..., 0] * proc_w, kpts[i, ..., 1] * proc_h
+            if keep_ratio:
+                gain = min(proc_h / h0, proc_w / w0)
+                x = (x - round((proc_w - w0 * gain) / 2 - 0.1)) / gain
+                y = (y - round((proc_h - h0 * gain) / 2 - 0.1)) / gain
+            else:
+                x, y = x * w0 / proc_w, y * h0 / proc_h
+            kpts[i, ..., 0], kpts[i, ..., 1] = x, y
+        return kpts
 
     @staticmethod
     def process_masks(
@@ -322,6 +353,9 @@ class TorchCompileModel:
         boxes = self.process_boxes(
             boxes, processed_sizes, original_sizes, self.keep_ratio
         )  # B x TopQ x 4
+        kpts = outputs.get("pred_kpts")  # [B, Q, K, 4]
+        if kpts is not None:
+            kpts = self.process_kpts(kpts, processed_sizes, original_sizes, self.keep_ratio)
 
         # scores/labels and preliminary topK over all Q*C
         if use_focal_loss:
@@ -367,6 +401,8 @@ class TorchCompileModel:
                 qb = qb[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
+            if kpts is not None:
+                out["kpts"] = kpts[b, qb]
 
             if has_masks and qb.numel() > 0:
                 # gather only kept masks

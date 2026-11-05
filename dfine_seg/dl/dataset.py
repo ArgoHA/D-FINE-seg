@@ -20,6 +20,9 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from dfine_seg.dl.utils import (
+    KptCoarseDropout,
+    KptHorizontalFlip,
+    KptVerticalFlip,
     LetterboxRect,
     abs_xyxy_to_norm_xywh,
     clip_polygon_to_rect,
@@ -33,7 +36,8 @@ from dfine_seg.dl.utils import (
     vis_one_box,
 )
 from dfine_seg.model.dist_utils import is_main_process
-from dfine_seg.viz import overlay_sem_seg, sem_seg_palette
+from dfine_seg.model.kpts import BOX_AREA_FACTOR
+from dfine_seg.viz import draw_kpts, overlay_sem_seg, sem_seg_palette
 
 
 def read_image_hwc(path) -> Optional[np.ndarray]:
@@ -126,7 +130,43 @@ def parse_yolo_label_file(path: Path):
     return boxes_norm, polys_norm
 
 
-def load_coco_split(json_path: Path, use_one_class: bool = False):
+def parse_yolo_pose_file(path: Path, kpt_shape) -> Tuple[np.ndarray, np.ndarray]:
+    """YOLO-pose lines: `cls xc yc w h x1 y1 [v1] ... xK yK [vK]`, normalized.
+
+    Returns:
+      boxes_norm: (N, 5) [cls, xc, yc, w, h]
+      kpts_norm: (N, K, 3) [x, y, v]; v: 0 unlabeled, 1 occluded, 2 visible. [K, 2] labels carry
+                 no flags: (0, 0) is unlabeled, every other point is visible.
+    """
+    k, d = kpt_shape
+    boxes, kpts = [], []
+    with open(path, "r") as f:
+        for ln, raw in enumerate(f, 1):
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            nums = np.asarray(s.split(), dtype=np.float32)
+            if len(nums) != 5 + k * d:
+                raise ValueError(
+                    f"{path}:{ln}: train.kpts.shape [{k}, {d}] expects {5 + k * d} values "
+                    f"(class, box, {k}x{d} keypoints), got {len(nums)}"
+                )
+            kp = nums[5:].reshape(k, d)
+            if d == 2:
+                kp = np.concatenate([kp, np.where((kp == 0).all(1), 0, 2)[:, None]], 1)
+            elif not np.isin(kp[:, 2], (0, 1, 2)).all():
+                raise ValueError(f"{path}:{ln}: keypoint flags must be 0, 1 or 2")
+            boxes.append(nums[:5])
+            kpts.append(kp)
+
+    if not boxes:
+        return np.zeros((0, 5), dtype=np.float32), np.zeros((0, k, 3), dtype=np.float32)
+    kpts = np.stack(kpts).astype(np.float32)
+    kpts[kpts[..., 2] == 0, :2] = 0
+    return np.stack(boxes), kpts
+
+
+def load_coco_split(json_path: Path, use_one_class: bool = False, num_kpts: int = 0):
     """
     Load a COCO-format JSON annotation file and pre-parse all annotations.
 
@@ -136,6 +176,8 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
           'targets': np.ndarray (N, 5) [class_id, x1, y1, x2, y2] absolute
           'polys_abs': list of length N; entry i is that instance's list of (K, 2) absolute
                        polygon parts (a COCO instance may be split into several islands)
+          'kpts_abs': (N, num_kpts, 3) [x, y, v] absolute (only if num_kpts)
+          'areas': (N,) annotation areas, the OKS scale (only if num_kpts)
       cat_id_to_class_id: dict mapping COCO category_id -> 0-based contiguous class_id
     """
     with open(json_path, "r") as f:
@@ -157,6 +199,8 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
 
         targets = []
         polys_abs = []
+        kpts_abs = []
+        areas = []
 
         for ann in anns:
             if ann.get("iscrowd", 0):
@@ -170,6 +214,17 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
 
             bx, by, bw, bh = ann["bbox"]
             targets.append([class_id, bx, by, bx + bw, by + bh])
+
+            if num_kpts:
+                # anns without "keypoints" (e.g. classes that have none) get all-unlabeled slots
+                kp = np.asarray(ann.get("keypoints") or [0] * 3 * num_kpts, np.float32)
+                if kp.size != 3 * num_kpts:
+                    raise ValueError(
+                        f"{json_path}: ann {ann.get('id')} has {kp.size // 3} keypoints, "
+                        f"train.kpts.shape expects {num_kpts}"
+                    )
+                kpts_abs.append(kp.reshape(num_kpts, 3))
+                areas.append(float(ann.get("area") or bw * bh * BOX_AREA_FACTOR))
 
             seg = ann.get("segmentation")
             if isinstance(seg, dict):
@@ -197,13 +252,13 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
         else:
             targets_arr = np.array(targets, dtype=np.float32)
 
-        entries.append(
-            {
-                "file_name": file_name,
-                "targets": targets_arr,
-                "polys_abs": polys_abs,
-            }
-        )
+        entry = {"file_name": file_name, "targets": targets_arr, "polys_abs": polys_abs}
+        if num_kpts:
+            entry["kpts_abs"] = (
+                np.stack(kpts_abs) if kpts_abs else np.zeros((0, num_kpts, 3), np.float32)
+            )
+            entry["areas"] = np.asarray(areas, dtype=np.float32)
+        entries.append(entry)
 
     if escaped_box and is_main_process():
         # inference crops each mask to its own box (cleanup_masks), so mask area outside
@@ -215,6 +270,40 @@ def load_coco_split(json_path: Path, use_one_class: bool = False):
         )
 
     return entries, cat_id_to_class_id
+
+
+def kpt_config(cfg) -> Tuple[Tuple[int, int], List[int]]:
+    """-> ((K, D), flip_idx) from train.kpts, validated against the reflection augs."""
+    kc = cfg.train.kpts
+    k, d = (int(v) for v in kc.shape)
+    if k < 1 or d not in (2, 3):
+        raise ValueError(f"train.kpts.shape must be [K, 2] or [K, 3] with K >= 1, got {kc.shape}")
+    flip_idx = kc.get("flip_idx")
+    if flip_idx is None and k == 1:
+        flip_idx = [0]
+    augs = cfg.train.augs
+    reflects = augs.get("left_right_flip", 0) > 0 or augs.get("up_down_flip", 0) > 0
+    if flip_idx is None and reflects:
+        raise ValueError(
+            "train.kpts.flip_idx is required when left_right_flip or up_down_flip > 0: a "
+            "reflection turns a left point into a right one, flip_idx says which slots swap"
+        )
+    if flip_idx is not None:
+        flip_idx = [int(i) for i in flip_idx]
+        if sorted(flip_idx) != list(range(k)):
+            raise ValueError(f"train.kpts.flip_idx must be a permutation of 0..{k - 1}")
+    return (k, d), flip_idx
+
+
+def kpts_to_canvas(kpts: np.ndarray, h: int, w: int) -> np.ndarray:
+    """Abs (N, K, 3) keypoints -> normalized to an (h, w) canvas; points outside it get v=0."""
+    kpts = kpts.copy()
+    x, y = kpts[..., 0], kpts[..., 1]
+    kpts[(x < 0) | (x > w) | (y < 0) | (y > h), 2] = 0
+    kpts[..., 0] /= w
+    kpts[..., 1] /= h
+    kpts[kpts[..., 2] == 0, :2] = 0
+    return kpts
 
 
 def resolve_mosaic_prob(cfg) -> float:
@@ -258,6 +347,10 @@ class CustomDataset(Dataset):
         self.return_masks = str(cfg.task).lower() == "segment"
         if self.return_masks:
             self._assert_has_polygons()
+        self.kpt_shape, self.flip_idx = None, None
+        if str(cfg.task).lower() == "kpts":
+            self.kpt_shape, self.flip_idx = kpt_config(cfg)
+            self.skeleton = cfg.train.kpts.get("skeleton") or []
 
         self.mosaic_prob = resolve_mosaic_prob(cfg)
         self.mosaic_scale = cfg.train.mosaic_augs.mosaic_scale
@@ -280,11 +373,18 @@ class CustomDataset(Dataset):
         for img_path in self.split.iloc[:, 0]:
             labels_path = self.root_path / "labels" / f"{Path(img_path).stem}.txt"
             if labels_path.exists() and labels_path.stat().st_size > 1:
-                boxes = parse_yolo_label_file(labels_path)[0].reshape(-1, 5)
+                boxes = self._parse_labels(labels_path)[0].reshape(-1, 5)
                 out.append(boxes[:, 0].astype(int))
             else:
                 out.append(np.zeros(0, dtype=int))
         return [np.zeros_like(c) for c in out] if self.use_one_class else out
+
+    def _parse_labels(self, labels_path: Path):
+        """-> (boxes_norm (N, 5), polys_norm, kpts_norm (N, K, 3) or None)"""
+        if self.kpt_shape:
+            boxes_norm, kpts_norm = parse_yolo_pose_file(labels_path, self.kpt_shape)
+            return boxes_norm, [[] for _ in boxes_norm], kpts_norm
+        return (*parse_yolo_label_file(labels_path), None)
 
     def _assert_has_polygons(self) -> None:
         """bbox-only labels parse to empty polygons, so masks would silently be all-zero."""
@@ -351,9 +451,21 @@ class CustomDataset(Dataset):
             ToTensorV2(),
         ]
 
+        # remove_invisible=False keeps the flat N*K list aligned; v=0 is set afterwards
+        keypoint_params = None
+        if self.kpt_shape:
+            keypoint_params = A.KeypointParams(format="xy", remove_invisible=False)
+
         if self.mode == "train":
+            hflip = A.HorizontalFlip(p=cfg.train.augs.left_right_flip)
+            vflip = A.VerticalFlip(p=cfg.train.augs.up_down_flip)
+            dropout = A.CoarseDropout
+            if self.kpt_shape:
+                hflip = KptHorizontalFlip(self.flip_idx, p=cfg.train.augs.left_right_flip)
+                vflip = KptVerticalFlip(self.flip_idx, p=cfg.train.augs.up_down_flip)
+                dropout = KptCoarseDropout
             augs = [
-                A.CoarseDropout(
+                dropout(
                     num_holes_range=(1, 2),
                     hole_height_range=(0.05, 0.15),
                     hole_width_range=(0.05, 0.15),
@@ -369,8 +481,8 @@ class CustomDataset(Dataset):
                     fit_output=True,
                     mask_interpolation=cv2.INTER_LINEAR,
                 ),
-                A.HorizontalFlip(p=cfg.train.augs.left_right_flip),
-                A.VerticalFlip(p=cfg.train.augs.up_down_flip),
+                hflip,
+                vflip,
                 A.Rotate(
                     limit=cfg.train.augs.rotation_degree,
                     p=cfg.train.augs.rotation_p,
@@ -389,6 +501,7 @@ class CustomDataset(Dataset):
                 bbox_params=A.BboxParams(
                     format="pascal_voc", label_fields=["class_labels", "box_indices"]
                 ),
+                keypoint_params=keypoint_params,
                 mask_interpolation=cv2.INTER_LINEAR,
             )
         elif self.mode in ["val", "test", "bench"]:
@@ -398,6 +511,7 @@ class CustomDataset(Dataset):
                 bbox_params=A.BboxParams(
                     format="pascal_voc", label_fields=["class_labels", "box_indices"]
                 ),
+                keypoint_params=keypoint_params,
                 mask_interpolation=cv2.INTER_LINEAR,
             )
         else:
@@ -415,6 +529,7 @@ class CustomDataset(Dataset):
         classes: torch.Tensor,
         img_path: Path,
         masks=None,
+        kpts=None,
     ) -> None:
         # Unnormalize the image
         mean = np.array(self.norm[0]).reshape(-1, 1, 1)
@@ -447,6 +562,11 @@ class CustomDataset(Dataset):
         classes_np = classes.cpu().numpy()
         for box, class_id in zip(boxes_np, classes_np):
             vis_one_box(image_np, box, class_id, mode="gt", label_to_name=self.label_to_name)
+
+        if kpts is not None:  # abs [x, y, v] on this image
+            for kp in kpts.cpu().numpy():
+                v = kp[:, 2]
+                draw_kpts(image_np, kp[:, :2], v > 0, v == 2, (255, 64, 64), self.skeleton)
 
         # Save the image
         save_dir = self.debug_img_path / self.mode
@@ -486,9 +606,10 @@ class CustomDataset(Dataset):
         labels_path = self.root_path / "labels" / f"{image_path.stem}.txt"
         targets = np.zeros((0, 5), dtype=np.float32)
         polys_abs = []  # per target row: list of (K, 2) abs polygon parts; may be []
+        kpts_abs = np.zeros((0, self.kpt_shape[0], 3), np.float32) if self.kpt_shape else None
 
         if labels_path.exists() and labels_path.stat().st_size > 1:
-            boxes_norm, polys_norm = parse_yolo_label_file(labels_path)
+            boxes_norm, polys_norm, kpts_norm = self._parse_labels(labels_path)
 
             if boxes_norm.shape[0] and self.use_one_class:
                 boxes_norm[:, 0] = 0
@@ -498,7 +619,10 @@ class CustomDataset(Dataset):
             polys_abs = [
                 [norm_poly_to_abs(p, height, width) for p in parts] for parts in polys_norm
             ]
-        return image, targets, orig_size, polys_abs
+            if kpts_norm is not None:
+                kpts_abs = kpts_norm * np.array([width, height, 1], dtype=np.float32)
+        # areas: the OKS scale, only COCO json carries it (None -> derived from the box)
+        return image, targets, orig_size, polys_abs, kpts_abs, None
 
     def _get_data_coco(self, idx) -> Tuple[np.ndarray, np.ndarray, torch.Tensor, list]:
         """Load image and annotations from pre-parsed COCO entries."""
@@ -521,11 +645,15 @@ class CustomDataset(Dataset):
 
         targets = entry["targets"].copy()
         polys_abs = [[p.copy() for p in parts] for parts in entry["polys_abs"]]
-        return image, targets, orig_size, polys_abs
+        kpts_abs, areas = None, None
+        if self.kpt_shape:
+            kpts_abs, areas = entry["kpts_abs"].copy(), entry["areas"].copy()
+        return image, targets, orig_size, polys_abs, kpts_abs, areas
 
     def _load_mosaic(self, idx):
         mosaic_targets = []
         mosaic_segments = []
+        mosaic_kpts = []
         yc = int(random.uniform(self.target_h * 0.6, self.target_h * 1.4))
         xc = int(random.uniform(self.target_w * 0.6, self.target_w * 1.4))
         indices = [idx] + [random.randint(0, self.__len__() - 1) for _ in range(3)]
@@ -541,7 +669,7 @@ class CustomDataset(Dataset):
                 retries += 1
             if result is None:
                 return None
-            img, targets, _, polys_abs = result
+            img, targets, _, polys_abs, kpts_abs, _ = result
             (h, w, c) = img.shape[:3]
 
             if self.keep_ratio:
@@ -559,7 +687,7 @@ class CustomDataset(Dataset):
                 mosaic_img = np.full((self.target_h * 2, self.target_w * 2, c), 114, dtype=np.uint8)
 
             (l_x1, l_y1, l_x2, l_y2), (s_x1, s_y1, s_x2, s_y2) = get_mosaic_coordinate(
-                mosaic_img, i_mosaic, xc, yc, w, h, self.target_h, self.target_w
+                i_mosaic, xc, yc, w, h, self.target_h, self.target_w
             )
 
             mosaic_img[l_y1:l_y2, l_x1:l_x2] = img[s_y1:s_y2, s_x1:s_x2]
@@ -572,6 +700,11 @@ class CustomDataset(Dataset):
                 targets[:, 3] = scale_w * targets[:, 3] + padw
                 targets[:, 4] = scale_h * targets[:, 4] + padh
             mosaic_targets.append(targets)
+            if kpts_abs is not None:
+                kpts_abs = kpts_abs.copy()
+                kpts_abs[..., 0] = kpts_abs[..., 0] * scale_w + padw
+                kpts_abs[..., 1] = kpts_abs[..., 1] * scale_h + padh
+                mosaic_kpts.append(kpts_abs)
 
             # adjust polygons 1:1 with targets rows (each row = list of parts)
             for parts in polys_abs:
@@ -612,6 +745,13 @@ class CustomDataset(Dataset):
             # keep only rows whose polygon survived clipping (det-only rows always kept)
             mosaic_targets = mosaic_targets[valid_indices]
             mosaic_segments = clipped_segments
+            if mosaic_kpts:
+                mosaic_kpts = np.concatenate(mosaic_kpts, 0)[valid_indices]
+                # points of a tile's cropped-off part: the affine view can show gray border
+                # there, so they must not stay labeled
+                x, y = mosaic_kpts[..., 0], mosaic_kpts[..., 1]
+                off = (x < 0) | (x > canvas_w) | (y < 0) | (y > canvas_h)
+                mosaic_kpts[off, 2] = 0
 
             # Clip bboxes (for detection-only annotations that don't have polygons)
             np.clip(mosaic_targets[:, 1], 0, canvas_w, out=mosaic_targets[:, 1])
@@ -619,7 +759,12 @@ class CustomDataset(Dataset):
             np.clip(mosaic_targets[:, 3], 0, canvas_w, out=mosaic_targets[:, 3])
             np.clip(mosaic_targets[:, 4], 0, canvas_h, out=mosaic_targets[:, 4])
 
-        mosaic_img, mosaic_targets, mosaic_segs = random_affine(
+        mosaic_kpts = (
+            np.asarray(mosaic_kpts, np.float32).reshape(len(mosaic_targets), self.kpt_shape[0], 3)
+            if self.kpt_shape
+            else None
+        )
+        mosaic_img, mosaic_targets, mosaic_segs, mosaic_kpts = random_affine(
             mosaic_img,
             mosaic_targets if len(mosaic_targets) else np.zeros((0, 5), dtype=np.float32),
             mosaic_segments if len(mosaic_segments) else [],
@@ -628,6 +773,7 @@ class CustomDataset(Dataset):
             translate=self.translate,
             scales=self.mosaic_scale,
             shear=self.shear,
+            kpts=mosaic_kpts,
         )
 
         # remove tiny boxes after affine
@@ -637,8 +783,12 @@ class CustomDataset(Dataset):
             keep = np.minimum(box_heights, box_widths) > 1
             mosaic_targets = mosaic_targets[keep]
             mosaic_segs = [p for p, k in zip(mosaic_segs, keep) if k]
+            if mosaic_kpts is not None:
+                mosaic_kpts = mosaic_kpts[keep]
         else:
             mosaic_segs = []
+        if mosaic_kpts is not None:
+            mosaic_kpts = kpts_to_canvas(mosaic_kpts, self.target_h, self.target_w)
 
         image = self.mosaic_transform(image=mosaic_img)["image"]
         labels = torch.tensor(mosaic_targets[:, 0], dtype=torch.int64)
@@ -651,7 +801,7 @@ class CustomDataset(Dataset):
             masks_t = torch.from_numpy(np.stack(masks, 0)).to(torch.uint8)
         else:
             masks_t = torch.zeros((0, self.target_h, self.target_w), dtype=torch.uint8)
-        return image, labels, boxes, masks_t, (self.target_h, self.target_w)
+        return image, labels, boxes, masks_t, (self.target_h, self.target_w), mosaic_kpts
 
     def close_mosaic(self):
         self.mosaic_prob = 0.0
@@ -669,20 +819,24 @@ class CustomDataset(Dataset):
             orig_size: torch.tensor([H, W])
             polys_out: per row, list of (K,2) absolute polygon parts at ORIGINAL resolution,
                 aligned with labels/boxes - only for val/test segmentation eval, else None.
+            kpts: (N,K,3) [x, y, v], x/y normalized to the returned image - task=kpts, else None
+            areas: (N,) COCO annotation areas at ORIGINAL resolution (OKS scale) - only for
+                val/test COCO json, else None.
         """
         image_path = Path(self.split.iloc[idx].values[0])
         # Original-resolution GT polygons, for val/test eval.
         polys_out = None
+        kpts, areas_out = None, None
         if random.random() < self.mosaic_prob:
             mosaic_result = self._load_mosaic(idx)
             if mosaic_result is None:
                 return None
-            image, labels, boxes, masks_t, orig_size = mosaic_result
+            image, labels, boxes, masks_t, orig_size, kpts = mosaic_result
         else:
             result = self._get_data(idx)  # boxes in abs xyxy format
             if result is None:
                 return None
-            image, targets, orig_size, polys_abs = result
+            image, targets, orig_size, polys_abs, kpts_abs, areas = result
 
             if self.ignore_background and np.all(targets == 0) and self.mode == "train":
                 return None
@@ -694,6 +848,8 @@ class CustomDataset(Dataset):
                 keep = np.minimum(box_heights, box_widths) > 0
                 targets = targets[keep]
                 polys_abs = [p for p, k in zip(polys_abs, keep) if k]
+                kpts_abs = kpts_abs[keep] if kpts_abs is not None else None
+                areas = areas[keep] if areas is not None else None
             else:
                 polys_abs = []
 
@@ -703,16 +859,26 @@ class CustomDataset(Dataset):
                 masks_list = [poly_abs_to_mask(parts, H, W) for parts in polys_abs]  # orig shape
 
             # Apply transformations
+            extra = {"masks": masks_list} if self.return_masks else {}
+            if self.kpt_shape:  # flat N*K list; v rides along as an extra column
+                extra["keypoints"] = kpts_abs.reshape(-1, 3)
+            transformed = self.transform(
+                image=image,
+                bboxes=targets[:, 1:],
+                class_labels=targets[:, 0],
+                box_indices=list(range(len(targets))),
+                **extra,
+            )
+            surviving_indices = [int(i) for i in transformed.get("box_indices", [])]
+            if self.kpt_shape:
+                kpts_abs = np.asarray(transformed["keypoints"], np.float32)[:, :3]
+                kpts_abs = kpts_abs.reshape(len(targets), self.kpt_shape[0], 3)[surviving_indices]
+                kpts = kpts_to_canvas(kpts_abs, *transformed["image"].shape[1:])
+                if areas is not None and self.mode != "train":
+                    areas_out = torch.from_numpy(areas[surviving_indices])
+
             if self.return_masks:
-                transformed = self.transform(
-                    image=image,
-                    bboxes=targets[:, 1:],
-                    class_labels=targets[:, 0],
-                    masks=masks_list,
-                    box_indices=list(range(len(targets))),
-                )
                 masks_all = transformed.get("masks", [])
-                surviving_indices = transformed.get("box_indices", [])
 
                 # Albumentations filters bboxes (and label_fields) but NOT masks.
                 # Use surviving_indices to select only masks corresponding to surviving boxes.
@@ -730,12 +896,6 @@ class CustomDataset(Dataset):
                 if self.mode != "train":
                     polys_out = surviving_polys
             else:
-                transformed = self.transform(
-                    image=image,
-                    bboxes=targets[:, 1:],
-                    class_labels=targets[:, 0],
-                    box_indices=list(range(len(targets))),
-                )
                 masks_t = torch.zeros(
                     (0, transformed["image"].shape[1], transformed["image"].shape[2]),
                     dtype=torch.uint8,
@@ -747,14 +907,19 @@ class CustomDataset(Dataset):
             )  # abs xyxy
             labels = torch.as_tensor(np.array(transformed["class_labels"]), dtype=torch.int64)
 
+        if kpts is not None:
+            kpts = torch.from_numpy(kpts)
         if self.debug_img_processing and idx <= self.cases_to_debug:
-            self._debug_image(idx, image, boxes, labels, image_path, masks=masks_t)
+            kpts_abs = None
+            if kpts is not None:
+                kpts_abs = kpts * torch.tensor([image.shape[2], image.shape[1], 1])
+            self._debug_image(idx, image, boxes, labels, image_path, masks=masks_t, kpts=kpts_abs)
 
         # return back to normalized format for model
         boxes = torch.tensor(
             abs_xyxy_to_norm_xywh(boxes, image.shape[1], image.shape[2]), dtype=torch.float32
         )
-        return image, labels, boxes, masks_t, image_path, orig_size, polys_out
+        return image, labels, boxes, masks_t, image_path, orig_size, polys_out, kpts, areas_out
 
     def __len__(self):
         return len(self.split)
@@ -956,7 +1121,7 @@ class SemSegDataset(Dataset):
             img = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
             mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
             (lx1, ly1, lx2, ly2), (sx1, sy1, sx2, sy2) = get_mosaic_coordinate(
-                img4, i, xc, yc, W, H, H, W
+                i, xc, yc, W, H, H, W
             )
             img4[ly1:ly2, lx1:lx2] = img[sy1:sy2, sx1:sx2]
             mask4[ly1:ly2, lx1:lx2] = mask[sy1:sy2, sx1:sx2]
@@ -1101,6 +1266,7 @@ class Loader:
         if self.task == "sem_seg" and self.coco_dataset:
             raise ValueError("task=sem_seg expects PNG masks (labels/), not COCO JSON")
         self.debug_img_processing = debug_img_processing
+        self.kpt_shape = kpt_config(cfg)[0] if self.task == "kpts" else None
         self.coco_annotations = {"train": None, "val": None, "test": None}
         self._get_splits()
         self.class_names = list(cfg.train.label_to_name.values())
@@ -1130,7 +1296,11 @@ class Loader:
         for split_name in self.splits:
             json_path = self.root_path / f"{split_name}.json"
             if json_path.exists():
-                entries, _ = load_coco_split(json_path, use_one_class=self.use_one_class)
+                entries, _ = load_coco_split(
+                    json_path,
+                    use_one_class=self.use_one_class,
+                    num_kpts=self.kpt_shape[0] if self.kpt_shape else 0,
+                )
                 self.splits[split_name] = pd.DataFrame([e["file_name"] for e in entries])
                 self.coco_annotations[split_name] = entries
                 if is_main_process():
@@ -1158,14 +1328,20 @@ class Loader:
                         else:
                             classes[self.class_names[int(class_id)]] += 1
         else:
-            for split in self.splits.values():
+            self._train_kpt_flags = []  # for _check_kpt_flags, saves a second parse
+            for split_name, split in self.splits.items():
                 if not np.any(split):
                     continue
                 for image_path in split.iloc[:, 0]:
                     labels_path = self.root_path / "labels" / f"{Path(image_path).stem}.txt"
                     if not (labels_path.exists() and labels_path.stat().st_size > 1):
                         continue
-                    targets, _ = parse_yolo_label_file(labels_path)
+                    if self.kpt_shape:
+                        targets, kpts = parse_yolo_pose_file(labels_path, self.kpt_shape)
+                        if split_name == "train":
+                            self._train_kpt_flags.append(kpts[..., 2])
+                    else:
+                        targets, _ = parse_yolo_label_file(labels_path)
                     if targets.ndim == 1:
                         targets = targets.reshape(1, -1)
                     labels = targets[:, 0]
@@ -1341,7 +1517,25 @@ class Loader:
                     f"Objects count: {', '.join(f'{key}: {value}' for key, value in sorted_obj_stats.items())}"
                 )
                 logger.info(f"Background images: {self._get_amount_of_background()}")
+            if self.kpt_shape and self.kpt_shape[1] == 3:
+                self._check_kpt_flags()
         return train_loader, val_loader, test_loader
+
+    def _check_kpt_flags(self) -> None:
+        """The visible head learns occlusion only from v=1 points - say so when there are none.
+        YOLO flags come from the _get_label_stats pass."""
+        if self.coco_dataset:
+            flags = [e["kpts_abs"][..., 2] for e in self.coco_annotations["train"]]
+        else:
+            flags = self._train_kpt_flags
+        flags = np.concatenate([f.reshape(-1) for f in flags]) if flags else np.zeros(0)
+        n_occluded, n_labeled = int((flags == 1).sum()), int((flags > 0).sum())
+        logger.info(f"Train keypoints: {n_labeled} labeled, {n_occluded} occluded (v=1)")
+        if n_labeled and not n_occluded:
+            logger.warning(
+                "No occluded (v=1) keypoints in the train split: the visible score can't learn "
+                "occlusion and will stay ~1"
+            )
 
     def _collate_fn(self, batch) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
         """
@@ -1362,6 +1556,8 @@ class Loader:
                 "masks": item[3],
                 "orig_size": item[5],
                 "polys": item[6],
+                "kpts": item[7],
+                "areas": item[8],
             }
             images.append(item[0])
             targets.append(target_dict)

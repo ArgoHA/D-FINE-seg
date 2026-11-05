@@ -75,14 +75,16 @@ class TRTModel:
         self.channels = int(inp_shape[1])
         self.input_size = (inp_shape[2], inp_shape[3])  # (H, W)
 
-        n_bindings = 0  # engine output tensors, not classes
+        # engine output tensors (same order as the buffers in _setup_io_buffers)
+        self.output_names = []
         for i in range(self.engine.num_io_tensors):
             name = self.engine.get_tensor_name(i)
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
-                n_bindings += 1
+                self.output_names.append(name)
         # sem_seg engine = label map [+ probs]; fused detection engines have >= 3 outputs
-        self.sem_seg = n_bindings <= 2
-        self.has_masks = n_bindings > 3
+        self.sem_seg = len(self.output_names) <= 2
+        self.has_masks = "masks" in self.output_names
+        self.has_kpts = "kpts" in self.output_names
 
     @staticmethod
     def _torch_dtype_from_trt(trt_dtype):
@@ -205,6 +207,23 @@ class TRTModel:
                 out[i] = scale_boxes_ratio_kept(out[i], processed_sizes[i], orig_sizes[i])
             else:
                 out[i] = scale_boxes(out[i], orig_sizes[i], processed_sizes[i])
+        return out
+
+    @staticmethod
+    def rescale_kpts(kpts, processed_sizes, orig_sizes, keep_ratio):
+        """[B, K, N, 4] keypoints, x/y absolute in input-size space -> original image size.
+        Not clipped: a point may lie outside the image."""
+        out = kpts.clone()
+        for i in range(kpts.shape[0]):
+            proc_h, proc_w = processed_sizes[i]
+            h0, w0 = orig_sizes[i]
+            if keep_ratio:
+                gain = min(proc_h / h0, proc_w / w0)
+                out[i, ..., 0] = (out[i, ..., 0] - round((proc_w - w0 * gain) / 2 - 0.1)) / gain
+                out[i, ..., 1] = (out[i, ..., 1] - round((proc_h - h0 * gain) / 2 - 0.1)) / gain
+            else:
+                out[i, ..., 0] *= w0 / proc_w
+                out[i, ..., 1] *= h0 / proc_h
         return out
 
     @staticmethod
@@ -454,7 +473,12 @@ class TRTModel:
         labels = outputs[0]  # [B, K]
         boxes = outputs[1]  # [B, K, 4], absolute xyxy in input_size space
         scores = outputs[2]  # [B, K]
-        pred_masks = outputs[3] if self.has_masks else None  # [B, K, Hm, Wm]
+        named = dict(zip(self.output_names, outputs))
+        pred_masks = named["masks"] if self.has_masks else None  # [B, K, Hm, Wm]
+        kpts = None
+        if self.has_kpts:  # [B, K, N, 4]
+            kpts = named["kpts"].float()
+            kpts = self.rescale_kpts(kpts, processed_sizes, original_sizes, self.keep_ratio)
         B = labels.shape[0]
 
         boxes = self.rescale_boxes(boxes, processed_sizes, original_sizes, self.keep_ratio)
@@ -478,6 +502,8 @@ class TRTModel:
                 keep_indices = keep_indices[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
+            if kpts is not None:
+                out["kpts"] = kpts[b][keep_indices]
 
             if pred_masks is not None and lb.numel() > 0:
                 mb = pred_masks[b][keep_indices]  # [K, Hm, Wm] - already gathered for top-K
@@ -519,6 +545,8 @@ class TRTModel:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype uint8. N = number of objects
+            kpts (kpts engines): torch.Tensor of shape (N, K, 4), dtype float32: x, y (abs),
+                presence score, visible score. All K points are returned
             sem_seg engines instead return {"sem_seg": uint8 (H, W) dense label map} per image,
             + "sem_seg_probs" float32 (C, h, w): softmax at 1/4 of the model input, letterbox
             pads included, and "sem_seg_probs_tf" float32 (3, 3) mapping original-image
@@ -569,7 +597,7 @@ class TRTModel:
 
         Returns:
             ``(results, done_event)``. ``results`` is the usual list of B
-            ``{labels, boxes, scores, optional masks}`` dicts. ``done_event``
+            ``{labels, boxes, scores, optional masks or kpts}`` dicts. ``done_event``
             is recorded on ``self._stream`` after postprocess - wait on it
             from your own stream (``my_stream.wait_event(done_event)``)
             before reading the result tensors. Postprocess syncs once per image

@@ -8,6 +8,7 @@ across tasks - verified on every released checkpoint. `meta` carries what weight
 class names and the preprocessing the model was trained with.
 """
 
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -30,6 +31,8 @@ _ENC_PROJ = "encoder.input_proj.0"
 _DET_HEAD = "decoder.enc_score_head.weight"
 _SEM_HEAD = "decoder.classifier.weight"
 _MASK_PREFIX = "decoder.mask_decoder."
+_KPT_HEAD = "decoder.kpt_head.0.layers.2.weight"  # [K * 4, hidden]: per point dx, dy, 2 scores
+_KPT_DEC_LAYER = re.compile(r"decoder\.kpt_decoder\.layers\.(\d+)\.")
 
 
 def _size_from(sd: Dict[str, torch.Tensor], meta: Dict[str, Any]) -> str:
@@ -69,9 +72,14 @@ def describe(sd: Dict[str, torch.Tensor], meta: Optional[Dict[str, Any]] = None)
     `load_and_describe` fills them from the checkpoint's meta or the sidecar config.
     """
     meta = meta or {}
+    num_kpts = num_kpt_layers = 0
     if _DET_HEAD in sd:  # a mask decoder over the detection head = instance segmentation
         task = "segment" if any(k.startswith(_MASK_PREFIX) for k in sd) else "detect"
         num_classes = sd[_DET_HEAD].shape[0]
+        if _KPT_HEAD in sd:
+            task, num_kpts = "kpts", sd[_KPT_HEAD].shape[0] // 4
+            layers = [int(m.group(1)) for k in sd if (m := _KPT_DEC_LAYER.match(k))]
+            num_kpt_layers = max(layers) + 1 if layers else 0
     elif _SEM_HEAD in sd:
         task, num_classes = "sem_seg", sd[_SEM_HEAD].shape[0]
     else:
@@ -81,6 +89,8 @@ def describe(sd: Dict[str, torch.Tensor], meta: Optional[Dict[str, Any]] = None)
         "model_name": _size_from(sd, meta),
         "task": task,
         "num_classes": num_classes,
+        "num_kpts": num_kpts,
+        "num_kpt_layers": num_kpt_layers,
         "names": None,
         "in_channels": _in_channels(sd),
         "img_size": None,
@@ -101,11 +111,32 @@ def load_and_describe(path: str | Path) -> Tuple[Dict[str, torch.Tensor], Dict[s
     size = meta.get("img_size") or cfg.get("img_size")
     info["img_size"] = (int(size[0]), int(size[1])) if size else None
     info["keep_ratio"] = meta.get("keep_ratio", cfg.get("keep_ratio"))
+    info["kpts"] = meta.get("kpts") or _kpts_from_config(cfg, info["num_kpts"])
     return sd, info
 
 
+def _kpts_from_config(train_cfg: Dict[str, Any], num_kpts: int) -> Optional[Dict[str, Any]]:
+    """Keypoint drawing/scoring settings from a sidecar config, when the checkpoint has no meta."""
+    kc = train_cfg.get("kpts")
+    if not num_kpts or not kc:
+        return None
+    return {
+        k: kc.get(k)
+        for k in (
+            "shape",
+            "flip_idx",
+            "sigmas",
+            "names",
+            "skeleton",
+            "conf_thresh",
+            "visible_thresh",
+        )
+    }
+
+
 def inspect(path: str | Path) -> Dict[str, Any]:
-    """-> {model_name, task, num_classes, names, in_channels, img_size, keep_ratio}."""
+    """-> {model_name, task, num_classes, num_kpts, names, in_channels, img_size,
+    keep_ratio, kpts}."""
     return load_and_describe(path)[1]
 
 

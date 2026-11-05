@@ -136,3 +136,21 @@ The last decoder layer's denoising queries now get class/box supervision in inst
 ## 2026-10-31 - Semantic segmentation probability output
 
 `export.sem_seg_probs: True` adds a second output to the sem_seg graph: the per-class softmax at 1/4 of the model input, next to the unchanged int32 label map. Every wrapper then also returns `sem_seg_probs` `[C, h, w]` and `sem_seg_probs_tf` (3x3 original-pixel -> probs-pixel transform, exact under letterbox; `K' = tf @ K` for camera projection). For `.pt`: `TorchModel(..., sem_seg_probs=True)`. Intended for consumers that fuse per-class confidence (traversability, lidar painting, BEV). The C++ core accepts these engines and ignores the extra output. Measured on TensorRT fp16 (RTX 5070 Ti, Cityscapes val at 1024x2048): the engine gets ~0.02 ms slower and end-to-end latency stays within run-to-run noise (S 6.66 -> 6.69 ms, X 14.87 -> 14.77-14.98 ms); the label map and mIoU are unchanged.
+
+## 2026-11-05 - Adding Keypoint estimation (`task: kpts`)
+
+- New task: every detection also predicts K points (YOLO-pose labels `class xc yc w h x1 y1 v1 ...` or COCO `keypoints`, `train.kpts` config block). Architecture: [docs/arch.md](docs/arch.md)
+- Metrics: `f1_kpt` (OKS >= 0.5), COCO keypoint `mAP_50_95_kpt`, `kpt_px_err`, `presence_f1`, `visible_acc` (more in `extended_metrics.csv`); best checkpoint = mean of `mAP_50_95_kpt` and box `mAP_50_95`.
+- `train.kpts.freeze_except_kpt` trains only the keypoint modules (per-query head and keypoint decoder).
+- Export to every backend and the C++ core (`dfine_kpts` / `dfine_copy_kpts`), same as the other tasks.
+
+#### Released COCO person keypoint weights (S only for now)
+
+`dfine_kpts_s_coco.pt` auto-downloads with `load_model("s", task="kpts")`; it can also be the init for your own keypoint data (`train.pretrained_model_path`). Apache-2.0, like the other COCO weights.
+
+COCO val2017 at 640, official COCO AP; latency is end-to-end with each framework's own pipeline, TensorRT fp16, batch 1, RTX 5070 Ti.
+
+| Model | keypoint AP | AP50 / AP75 | person box AP | TensorRT fp16 latency |
+|-------|-------------|-------------|---------------|-----------------------|
+| D-FINE-seg S, 40 epochs | **65.4** | **88.0 / 71.1** | **64.2** | **2.10 ms** |
+| YOLO26s-pose (released, 300 epochs, Objects365 init) | 62.7 | 85.8 / 68.8 | 54.3 | 2.16 ms |

@@ -78,15 +78,24 @@ class CoreMLModel:
         else:
             raise ValueError(f"Unexpected input shape: {list(shape)}")
 
-        # Fused model outputs: labels, boxes, scores, [masks]; sem_seg: label map [+ probs]
+        # Fused model outputs: labels, boxes, scores, [masks | keypoints]; sem_seg = label map
+        # [+ probs]. Traced outputs carry no names: _test_pred tells masks from keypoints.
         self.sem_seg = len(self._output_names) <= 2
-        self.has_masks = len(self._output_names) > 3
+        self.has_masks = self.has_kpts = False
 
     def _test_pred(self) -> None:
         random_image = np.random.randint(0, 255, size=(1100, 1000, self.channels), dtype=np.uint8)
         processed_inputs, processed_sizes, original_sizes = self._prepare_inputs(random_image)
         preds = self._predict(processed_inputs)
+        if not self.sem_seg:
+            self.has_kpts = any(self._is_kpts(p) for p in preds[3:])
+            self.has_masks = any(not self._is_kpts(p) for p in preds[3:])
         self._postprocess(preds, processed_sizes, original_sizes)
+
+    @staticmethod
+    def _is_kpts(output) -> bool:
+        """keypoints [B, K, N, 4] vs masks [B, K, Hm, Wm]: a mask is never 4 px wide."""
+        return output.ndim == 4 and output.shape[-1] == 4
 
     @staticmethod
     def rescale_boxes(boxes, processed_sizes, orig_sizes, keep_ratio):
@@ -97,6 +106,23 @@ class CoreMLModel:
                 out[i] = scale_boxes_ratio_kept(out[i], processed_sizes[i], orig_sizes[i])
             else:
                 out[i] = scale_boxes(out[i], orig_sizes[i], processed_sizes[i])
+        return out
+
+    @staticmethod
+    def rescale_kpts(kpts, processed_sizes, orig_sizes, keep_ratio):
+        """[B, K, N, 4] keypoints, x/y absolute in input-size space -> original image size.
+        Not clipped: a point may lie outside the image."""
+        out = kpts.clone()
+        for i in range(kpts.shape[0]):
+            proc_h, proc_w = processed_sizes[i]
+            h0, w0 = orig_sizes[i]
+            if keep_ratio:
+                gain = min(proc_h / h0, proc_w / w0)
+                out[i, ..., 0] = (out[i, ..., 0] - round((proc_w - w0 * gain) / 2 - 0.1)) / gain
+                out[i, ..., 1] = (out[i, ..., 1] - round((proc_h - h0 * gain) / 2 - 0.1)) / gain
+            else:
+                out[i, ..., 0] *= w0 / proc_w
+                out[i, ..., 1] *= h0 / proc_h
         return out
 
     @staticmethod
@@ -254,9 +280,13 @@ class CoreMLModel:
         labels = torch.from_numpy(outputs[0]).long()  # [B, K]
         boxes = torch.from_numpy(outputs[1]).float()  # [B, K, 4], absolute xyxy in input_size space
         scores = torch.from_numpy(outputs[2]).float()  # [B, K]
-        pred_masks = (
-            torch.from_numpy(outputs[3]).float() if self.has_masks else None
-        )  # [B, K, Hm, Wm]
+        pred_masks, kpts = None, None
+        for extra in outputs[3:]:
+            extra = torch.from_numpy(extra).float()
+            if self._is_kpts(extra):
+                kpts = self.rescale_kpts(extra, processed_sizes, original_sizes, self.keep_ratio)
+            else:
+                pred_masks = extra
         B = labels.shape[0]
 
         boxes = self.rescale_boxes(boxes, processed_sizes, original_sizes, self.keep_ratio)
@@ -280,6 +310,8 @@ class CoreMLModel:
                 keep_indices = keep_indices[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
+            if kpts is not None:
+                out["kpts"] = kpts[b][keep_indices]
 
             if pred_masks is not None and lb.numel() > 0:
                 mb = pred_masks[b][keep_indices]  # [K, Hm, Wm]

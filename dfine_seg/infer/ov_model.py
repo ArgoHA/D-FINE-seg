@@ -116,12 +116,17 @@ class OVModel:
 
     def _read_model_metadata(self):
         """Detect graph type, mask presence and num classes from the compiled model."""
-        # sem_seg graph = label map [+ probs]; the raw detection head has 2-3 outputs too,
-        # so match by name
-        self.sem_seg = "sem_seg" in self.model.outputs[0].get_names()
-        self.has_masks = (not self.sem_seg) and len(
-            self.model.outputs
-        ) > 2  # logits, boxes, [masks]
+        # sem_seg graph = label map [+ probs]; the raw detection head has 2-4 outputs too
+        # (logits, boxes, [masks], [keypoints]), so match by name.
+        # an output can carry several names (the mask one is {"einsum", "masks"}): match any
+        names = [o.get_names() for o in self.model.outputs]
+        self.output_names = [
+            next((n for n in ("masks", "kpts") if n in ns), o.get_any_name())
+            for o, ns in zip(self.model.outputs, names)
+        ]
+        self.sem_seg = "sem_seg" in names[0]
+        self.has_masks = "masks" in self.output_names
+        self.has_kpts = "kpts" in self.output_names
         if self.sem_seg:
             self.n_outputs = 1  # classes are baked into the fused argmax
         else:
@@ -149,6 +154,24 @@ class OVModel:
             else:
                 final_boxes[i] = scale_boxes(final_boxes[i], orig_sizes[i], processed_sizes[i])
         return final_boxes
+
+    @staticmethod
+    def process_kpts(kpts, processed_sizes, orig_sizes, keep_ratio):
+        """[B, Q, K, 4] (x, y normalized) -> x, y absolute in the original image, like the boxes.
+        Not clipped: a point may lie outside the image."""
+        kpts = kpts.float().clone()
+        for i in range(len(orig_sizes)):
+            proc_h, proc_w = processed_sizes[i]
+            h0, w0 = orig_sizes[i]
+            x, y = kpts[i, ..., 0] * proc_w, kpts[i, ..., 1] * proc_h
+            if keep_ratio:
+                gain = min(proc_h / h0, proc_w / w0)
+                x = (x - round((proc_w - w0 * gain) / 2 - 0.1)) / gain
+                y = (y - round((proc_h - h0 * gain) / 2 - 0.1)) / gain
+            else:
+                x, y = x * w0 / proc_w, y * h0 / proc_h
+            kpts[i, ..., 0], kpts[i, ..., 1] = x, y
+        return kpts
 
     @staticmethod
     def process_masks(
@@ -305,15 +328,18 @@ class OVModel:
         if self.sem_seg:
             return self._postprocess_sem_seg(outputs, processed_sizes, original_sizes)
         logits, boxes = torch.from_numpy(outputs[0]), torch.from_numpy(outputs[1])
-        has_masks = False
-        if len(outputs) == 3:
-            has_masks = True
-        pred_masks = torch.from_numpy(outputs[2]) if has_masks else None  # [B,Q,Hm,Wm]
+        named = dict(zip(self.output_names, outputs))
+        has_masks = self.has_masks
+        pred_masks = torch.from_numpy(named["masks"]) if has_masks else None  # [B,Q,Hm,Wm]
         B, Q = logits.shape[:2]
 
         boxes = self.process_boxes(
             boxes, processed_sizes, original_sizes, self.keep_ratio
         )  # B x TopQ x 4
+        kpts = None
+        if self.has_kpts:  # [B, Q, K, 4]
+            kpts = torch.from_numpy(named["kpts"])
+            kpts = self.process_kpts(kpts, processed_sizes, original_sizes, self.keep_ratio)
 
         # scores/labels and preliminary topK over all Q*C
         if use_focal_loss:
@@ -359,6 +385,8 @@ class OVModel:
                 qb = qb[nms_keep]
 
             out = {"labels": lb, "boxes": bb, "scores": sb}
+            if kpts is not None:
+                out["kpts"] = kpts[b, qb]
 
             if has_masks and qb.numel() > 0:
                 # gather only kept masks
@@ -401,6 +429,8 @@ class OVModel:
             boxes: torch.Tensor of shape (N, 4), dtype float32, abs values
             scores: torch.Tensor of shape (N,), dtype float32
             masks: torch.Tensor of shape (N, H, W), dtype float32. N = number of objects
+            kpts (kpts models): torch.Tensor of shape (N, K, 4), dtype float32: x, y (abs),
+                presence score, visible score. All K points are returned
             sem_seg models instead return {"sem_seg": uint8 (H, W) dense label map} per image,
             + "sem_seg_probs" float32 (C, h, w): softmax at 1/4 of the model input, letterbox
             pads included, and "sem_seg_probs_tf" float32 (3, 3) mapping original-image

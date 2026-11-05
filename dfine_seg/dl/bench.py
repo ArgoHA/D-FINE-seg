@@ -21,8 +21,10 @@ from dfine_seg.dl.dataset import Loader, read_image_hwc
 from dfine_seg.dl.utils import (
     encode_sample_masks_to_rle,
     get_latest_experiment_name,
+    kpts_meta,
     poly_abs_to_mask,
     process_boxes,
+    process_kpts,
     visualize,
     visualize_sem_seg,
 )
@@ -126,6 +128,7 @@ def test_model(
     label_to_name: Dict[int, str],
     compute_maps: bool,
     to_draw_gt: bool,
+    kpts_meta: Dict = None,
 ):
     logger.info(f"Testing {name} model")
     latency = []
@@ -179,6 +182,12 @@ def test_model(
             gt_dict = {"boxes": gt_boxes, "labels": gt_labels.int()}
             if "masks" in target:
                 gt_dict["masks"] = gt_masks
+            if kpts_meta:
+                kp = process_kpts(
+                    target["kpts"][None], processed_size, target["orig_size"][None], keep_ratio
+                )[0]
+                kp[kp[..., 2] == 0, :2] = 0
+                gt_dict["kpts"], gt_dict["areas"] = kp, target.get("areas")
             all_gt.append(gt_dict)
 
             # inference with CUDA synchronization for accurate timing
@@ -198,6 +207,8 @@ def test_model(
             }
             if "masks" in model_preds[batch]:
                 pred_dict["masks"] = model_preds[batch]["masks"].cpu()
+            if "kpts" in model_preds[batch]:
+                pred_dict["kpts"] = model_preds[batch]["kpts"].float().cpu()
 
             all_preds.append(pred_dict)
 
@@ -213,6 +224,7 @@ def test_model(
                     dataset_path=data_path / "images",
                     path_to_save=output_path,
                     label_to_name=label_to_name,
+                    kpts_meta=kpts_meta,
                 )
 
             # RLE-encode masks (no-op for detect) so whole-dataset accumulation stays small
@@ -226,6 +238,7 @@ def test_model(
         iou_thresh=iou_thresh,
         label_to_name=label_to_name,
         compute_maps=compute_maps,  # as inference done with a conf threshold, mAPs don't make much sense
+        kpts_meta=kpts_meta,
     )
 
     metrics = validator.compute_metrics(extended=False)
@@ -456,6 +469,7 @@ def main(cfg: DictConfig):
                 label_to_name=cfg.train.label_to_name,
                 compute_maps=compute_maps,
                 to_draw_gt=to_draw_gt,
+                kpts_meta=kpts_meta(cfg),
             )
         del model
         gc.collect()

@@ -26,7 +26,7 @@ def classes_from_model(model) -> Tuple[int, Dict[int, str]]:
 
 
 class Visualizer:
-    """Draws detection / segmentation results with consistent per-class colors for inference."""
+    """Draws detection / segmentation / keypoint results with consistent per-class colors."""
 
     def __init__(
         self,
@@ -35,20 +35,35 @@ class Visualizer:
         n_classes: int = None,
         class_names: Dict[int, str] = None,
         ignore_index: int = 255,
+        skeleton: List[List[int]] = None,
+        kpt_conf_thresh: float = None,
+        kpt_visible_thresh: float = None,
     ):
         """*model*: a wrapper from `load_model` (class count and names read off it), or an int
-        class count. Falls back to 80 (COCO) when a graph artifact carries neither."""
+        class count. Falls back to 80 (COCO) when a graph artifact carries neither.
+        Keypoints: points with presence below kpt_conf_thresh are hidden, visible score below
+        kpt_visible_thresh draws a hollow (occluded) marker, skeleton is zero-based [[i, j], ...].
+        A .pt checkpoint supplies all three (train.kpts); explicit arguments win, else 0.5 / none."""
+        kpts_meta = {}
         if isinstance(model, int):
             n_classes = model
         elif model is not None:
             known, names = classes_from_model(model)
             n_classes = n_classes or known or 80
             class_names = class_names or names or None
+            kpts_meta = getattr(model, "kpts", None) or {}
         self.n_classes = n_classes = max(n_classes or 80, 1)
         self.class_names = class_names or {i: str(i) for i in range(n_classes)}
         self.colors = self.generate_colors(n_classes)
         self.ignore_index = ignore_index
         self._palette = None
+        self.skeleton = skeleton if skeleton is not None else kpts_meta.get("skeleton") or []
+        self.kpt_conf_thresh = next(
+            v for v in (kpt_conf_thresh, kpts_meta.get("conf_thresh"), 0.5) if v is not None
+        )
+        self.kpt_visible_thresh = next(
+            v for v in (kpt_visible_thresh, kpts_meta.get("visible_thresh"), 0.5) if v is not None
+        )
 
     @staticmethod
     def generate_colors(n: int) -> List[tuple]:
@@ -104,7 +119,7 @@ class Visualizer:
 
         Args:
             results: dict with keys ``labels``, ``boxes``, ``scores``,
-                     and optionally ``masks`` and ``track_ids``. When
+                     and optionally ``masks``, ``kpts`` and ``track_ids``. When
                      ``track_ids`` is present the label is prefixed with
                      ``id=N``.
             alpha: opacity of bbox outlines and label background rectangles
@@ -149,6 +164,22 @@ class Visualizer:
             x1, y1, x2, y2 = self._box_coords(boxes[i])
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, box_thick)
         cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, dst=img)
+
+        kpts = results.get("kpts")  # [N, K, 4]: x, y, presence, visible
+        if kpts is not None:
+            if isinstance(kpts, torch.Tensor):
+                kpts = kpts.float().cpu().numpy()
+            for i in range(min(len(labels), len(kpts))):
+                draw_kpts(
+                    img,
+                    kpts[i, :, :2],
+                    kpts[i, :, 2] >= self.kpt_conf_thresh,
+                    kpts[i, :, 3] >= self.kpt_visible_thresh,
+                    self.colors[self._as_int(labels[i]) % len(self.colors)],
+                    self.skeleton,
+                    radius=max(2, int(ref / 300)),
+                    thickness=box_thick,
+                )
 
         if minimize:
             return img
@@ -245,6 +276,30 @@ class Visualizer:
             cv2.drawContours(edge_mask, contours, -1, 1, edge_thickness)
             e = edge_mask.astype(bool)
             img[e] = (img[e] * (1 - edge_alpha) + color_arr * edge_alpha).astype(np.uint8)
+
+
+def draw_kpts(
+    img: np.ndarray,
+    xy: np.ndarray,
+    present: np.ndarray,
+    visible: np.ndarray,
+    color: tuple,
+    skeleton=(),
+    radius: int = 3,
+    thickness: int = 1,
+) -> None:
+    """Draw one instance's points in place: filled = visible, hollow = occluded.
+    Absent points and the skeleton edges touching them are skipped.
+
+    xy [K, 2] abs pixels, present / visible [K] bool, skeleton zero-based [[i, j], ...].
+    """
+    pts = [tuple(int(round(v)) for v in p) for p in np.asarray(xy, dtype=np.float32)]
+    for i, j in skeleton:
+        if present[i] and present[j]:
+            cv2.line(img, pts[i], pts[j], color, thickness, cv2.LINE_AA)
+    for p, is_present, is_visible in zip(pts, present, visible):
+        if is_present:
+            cv2.circle(img, p, radius, color, -1 if is_visible else thickness, cv2.LINE_AA)
 
 
 def sem_seg_palette(n_classes: int) -> np.ndarray:

@@ -9,7 +9,8 @@
 // Results stay in DEVICE memory and are never copied to the host for you - if you only need
 // boxes, dfine_copy_dets() is ~8 KB; masks stay on the GPU unless you ask for them. Same rule
 // for resolution: masks come back on the engine's own grid, and dfine_upsample_masks() is
-// opt-in, because a full-res upsample the caller does not want is pure waste.
+// opt-in, because a full-res upsample the caller does not want is pure waste. Keypoints are
+// small and already in image pixels; dfine_copy_kpts() brings them over when you want them.
 //
 // Engines must be exported with keep_ratio=False (the preprocess kernel squishes, it has no
 // letterbox path), which is also what dfine export produces by default.
@@ -25,7 +26,7 @@ extern "C" {
 
 #define DFINE_MAX_DET 300  // engine top-K ceiling; dfine_info() reports the engine's actual K
 
-typedef enum { DFINE_DETECT = 0, DFINE_SEGMENT = 1, DFINE_SEM_SEG = 2 } DfineTask;
+typedef enum { DFINE_DETECT = 0, DFINE_SEGMENT = 1, DFINE_SEM_SEG = 2, DFINE_KPTS = 3 } DfineTask;
 typedef enum { DFINE_RGB8 = 0, DFINE_BGR8 = 1 } DfineFormat;  // uint8 HWC, 3 channels
 
 typedef enum {
@@ -51,6 +52,7 @@ typedef struct {
   int mask_h, mask_w;     // DFINE_SEGMENT: per-instance mask grid
   int sem_h, sem_w;       // DFINE_SEM_SEG: label-map size
   DfineTask task;         // follows the engine, not a setting
+  int num_kpts;           // DFINE_KPTS: points per detection (0 otherwise)
 } DfineInfo;
 
 typedef struct DfineModel DfineModel;
@@ -85,20 +87,27 @@ void dfine_slot_destroy(DfineSlot* s);
 DfineStatus dfine_infer_async(DfineModel* m, DfineSlot* s, const void* img, int w, int h,
                               int pitch, DfineFormat fmt, int on_device, cudaStream_t stream);
 // Blocking convenience: infer_async on the slot's own stream, sync, and (if `dets` is
-// non-NULL, detect/segment only) copy the detections out. This is the "just give me the
+// non-NULL, not sem_seg) copy the detections out. This is the "just give me the
 // answer" path - it costs one sync per frame, so prefer the async form when throughput matters.
 DfineStatus dfine_infer(DfineModel* m, DfineSlot* s, const void* img, int w, int h, int pitch,
                         DfineFormat fmt, int on_device, DfineDets* dets);
 
 // ---- results (DEVICE pointers, valid once dfine_event has fired) --------------------------
-const DfineDets* dfine_dets(const DfineSlot* s);   // detect + segment
+const DfineDets* dfine_dets(const DfineSlot* s);   // detect, segment, kpts
 const float* dfine_masks(const DfineSlot* s);      // segment: [max_det, mask_h, mask_w] fp32
 const int32_t* dfine_sem(const DfineSlot* s);      // sem_seg: [sem_h, sem_w] int32
+// kpts: [max_det, num_kpts, 4] fp32, row i = detection i of dfine_dets (first `count` rows
+// valid): x, y in the pixel space of the image you passed, presence, visible (sigmoid scores).
+// All points are kept - threshold presence yourself, e.g. kpts[..., 2] >= 0.5.
+const float* dfine_kpts(const DfineSlot* s);
 cudaEvent_t dfine_event(const DfineSlot* s);       // recorded after postprocess
 
 // ---- opt-in transfers / work -------------------------------------------------------------
 // Detections to host (~8 KB). Waits for the slot's work on `stream`, then copies and syncs.
 DfineStatus dfine_copy_dets(const DfineSlot* s, DfineDets* dst, cudaStream_t stream);
+// Keypoints of the first n detections to host: dst holds n * num_kpts * 4 floats (n = the
+// count from dfine_copy_dets / dfine_infer). Waits for the slot's work on `stream`, copies, syncs.
+DfineStatus dfine_copy_kpts(const DfineSlot* s, float* dst, int n, cudaStream_t stream);
 // Per-instance masks upsampled to (h, w) and binarized at `thresh`, cropped to each box:
 // dst is a device buffer of at least cap * h * w bytes, written as uint8 [min(count, cap), h, w].
 // Mirrors TRTModel.process_masks + cleanup_masks (fp16 bilinear, >= threshold, box crop).

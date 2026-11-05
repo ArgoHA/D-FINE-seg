@@ -102,6 +102,7 @@ def test_malformed_sibling_config_is_ignored(tmp_path):
         ("detect", "dfine_{size}_coco", 80),
         ("segment", "dfine_seg_{size}_coco", 80),
         ("sem_seg", "dfine_sem_{size}_cityscapes", 19),
+        ("kpts", "dfine_kpts_{size}_coco", 1),
     ],
 )
 def test_fingerprints_match_released_checkpoints(size, task, stem, classes):
@@ -114,6 +115,8 @@ def test_fingerprints_match_released_checkpoints(size, task, stem, classes):
     assert info["task"] == task
     assert info["num_classes"] == classes
     assert info["in_channels"] == 3
+    if task == "kpts":
+        assert info["num_kpts"] == 17
 
 
 # ---- preprocessing recovered from the sidecar config -------------------------

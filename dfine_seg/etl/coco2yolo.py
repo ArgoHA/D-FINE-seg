@@ -5,13 +5,15 @@ import numpy as np
 from tqdm import tqdm
 
 
-def convert_coco_json(json_dir="../coco/annotations/", use_segments=False):
+def convert_coco_json(json_dir="../coco/annotations/", use_segments=False, use_kpts=False):
     """
     Convert COCO format annotations to YOLO format.
 
     Args:
         json_dir: Directory containing COCO JSON annotation files
         use_segments: If True, output polygon segmentations; if False, output bounding boxes
+        use_kpts: If True, output YOLO-pose lines (box + ann["keypoints"] as normalized
+            `x y v` triplets, unlabeled points as `0 0 0`) for task=kpts
 
     COCO bbox format: [top-left x, top-left y, width, height] (absolute pixels)
     YOLO bbox format: [center x, center y, width, height] (normalized 0-1)
@@ -44,6 +46,8 @@ def convert_coco_json(json_dir="../coco/annotations/", use_segments=False):
 
         # Create image dict
         images = {"%g" % x["id"]: x for x in data["images"]}
+        # every pose line needs all K slots: anns without keypoints are padded with 0 0 0
+        n_kpts = max((len(x.get("keypoints") or []) // 3 for x in data["annotations"]), default=0)
 
         # Write labels file
         for x in tqdm(data["annotations"], desc=f"Annotations {json_file}"):
@@ -69,8 +73,19 @@ def convert_coco_json(json_dir="../coco/annotations/", use_segments=False):
                 continue
             cls = cat_id_to_yolo_cls[coco_cat_id]
 
+            if use_kpts:
+                kpts = np.zeros((n_kpts, 3))
+                if x.get("keypoints"):
+                    kpts = np.array(x["keypoints"], dtype=np.float64).reshape(-1, 3)
+                kpts[:, :2] /= np.array([w, h])
+                kpts[kpts[:, 2] == 0, :2] = 0
+                if box[2] > 0 and box[3] > 0:
+                    line = (cls, *box, *kpts.reshape(-1))
+                    fname = f.split("/")[-1]
+                    with open((fn / fname).with_suffix(".txt"), "a") as file:
+                        file.write(("%g " * len(line)).rstrip() % line + "\n")
             # Segments
-            if use_segments and "segmentation" in x and x["segmentation"]:
+            elif use_segments and "segmentation" in x and x["segmentation"]:
                 # Handle each polygon separately (COCO can have multiple disjoint polygons)
                 # Write each polygon as a separate line
                 segmentation = x["segmentation"]

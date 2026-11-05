@@ -56,6 +56,7 @@ training, export, accuracy or inference latency, follow the module guide in `scr
 ## Working rules
 
 - Prefer the smallest clear implementation and short comments that explain only non-obvious choices.
+- `docs/arch.md` describes the model architecture; update it with any change to the backbone, encoder, decoders or heads (including their training and inference behavior).
 - Do not commit, push, create branches, or open pull requests unless explicitly requested. Leave
   changes uncommitted for review.
 - In Markdown files (README, CHANGELOG, docs) never hard-wrap lines: write each paragraph or bullet as one line, however long. The 100-column limit is Python-only (ruff).

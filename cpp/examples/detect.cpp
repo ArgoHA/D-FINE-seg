@@ -1,4 +1,5 @@
-// Minimal consumer of the core API: load an engine, run one image, print the detections.
+// Minimal consumer of the core API: load an engine, run one image, print the detections
+// (+ mask stats for segment, keypoints for kpts, class histogram for sem_seg).
 //   dfine_example model.engine frame.ppm [conf]
 // PPM (P6) only, so the example needs no image library; produce one with
 //   ffmpeg -i frame.jpg -pix_fmt rgb24 frame.ppm
@@ -44,8 +45,10 @@ int main(int argc, char** argv) {
     return 1;
   }
   const DfineInfo* info = dfine_info(m);
-  const char* task = info->task == DFINE_SEM_SEG ? "sem_seg"
-                     : info->task == DFINE_SEGMENT ? "segment" : "detect";
+  const char* task = info->task == DFINE_SEM_SEG   ? "sem_seg"
+                     : info->task == DFINE_SEGMENT ? "segment"
+                     : info->task == DFINE_KPTS    ? "kpts"
+                                                   : "detect";
   std::printf("engine: %s, input %dx%d, top-K %d | image %dx%d\n", task, info->in_w, info->in_h,
               info->max_det, w, h);
   if (argc > 3) dfine_set_conf(m, (float)atof(argv[3]));
@@ -94,6 +97,18 @@ int main(int argc, char** argv) {
       for (uint8_t v : mask) on += v;
       std::printf("  instance 0 mask: %zu/%zu px set at %dx%d\n", on, mask.size(), w, h);
       cudaFree(dev);
+    }
+    // Keypoints are already in image pixels; all points come back, presence is ours to judge.
+    if (info->task == DFINE_KPTS && d.count > 0) {
+      const int nk = info->num_kpts;
+      std::vector<float> kp((size_t)d.count * nk * 4);
+      dfine_copy_kpts(s, kp.data(), d.count, 0);
+      std::printf("  instance 0 keypoints (presence >= 0.5; * = occluded):\n   ");
+      for (int j = 0; j < nk; ++j) {
+        const float* p = &kp[(size_t)j * 4];
+        if (p[2] >= 0.5f) std::printf(" %d:(%.1f,%.1f)%s", j, p[0], p[1], p[3] < 0.5f ? "*" : "");
+      }
+      std::printf("\n");
     }
   }
 

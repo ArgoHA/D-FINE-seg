@@ -11,7 +11,13 @@ from torchvision.ops import box_iou
 from tqdm import tqdm
 
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
-from dfine_seg.dl.dataset import Loader, parse_yolo_label_file, read_image_hwc
+from dfine_seg.dl.dataset import (
+    Loader,
+    kpt_config,
+    parse_yolo_label_file,
+    parse_yolo_pose_file,
+    read_image_hwc,
+)
 from dfine_seg.dl.utils import (
     abs_xyxy_to_norm_xywh,
     get_latest_experiment_name,
@@ -230,7 +236,10 @@ def run(model, train_loader, val_loader, cfg: DictConfig) -> None:
             label_path = Path(cfg.train.data_path) / "labels" / paths[0].with_suffix(".txt")
             targets = [{"boxes": [], "labels": []}]
             if label_path.exists() and label_path.stat().st_size > 1:
-                targets_raw, _ = parse_yolo_label_file(label_path)
+                if cfg.task == "kpts":  # pose lines would misparse as polygons
+                    targets_raw, _ = parse_yolo_pose_file(label_path, kpt_config(cfg)[0])
+                else:
+                    targets_raw, _ = parse_yolo_label_file(label_path)
                 targets = [
                     {
                         "boxes": np.array(targets_raw[:, 1:5], dtype=np.float32),

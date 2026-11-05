@@ -1,16 +1,20 @@
-"""Cityscapes regression test for D-FINE-seg: train -> TRT export -> bench, per task, vs the
+"""Regression test for D-FINE-seg: train -> TRT export -> bench, per task, vs the
 reference in `regression_reference.json` (`--bless --bless-sources TASK=PATH` rewrites it).
-Needs a GPU box: gitignored `configs/` presets, Cityscapes under `train.root`, TensorRT GPU.
+Needs a GPU box: gitignored `configs/` presets, Cityscapes under `train.root` (det/seg/sem),
+COCO person keypoints (kpts), TensorRT GPU.
 
 Compared per task (margins per check, abs; latency is a ratio):
 
     check                      metrics                                      margin
     bench(torch) >= train      det/seg f1 iou | sem mIoU pxacc               0.01  --tol-bench
+                               | kpts f1_kpt presence_f1
     |bench(trt) - bench(torch)| same                                         0.01  --tol-trt
     best-over-shared-epochs    det f1 mAP_50 iou | seg f1 mAP_50_mask iou    0.05  --tol-traj
-      vs the reference        | sem mIoU pixel_acc
+      vs the reference        | sem mIoU pixel_acc | kpts f1_kpt mAP_50_95_kpt
+                              | presence_f1 mAP_50_95
     TRT latency vs reference   ms                                            1.05x --tol-lat
-    bench(trt) vs reference    det/seg f1 | sem mIoU (the prod number)       0.02  --tol-prod
+    bench(trt) vs reference    det/seg f1 | sem mIoU | kpts f1_kpt           0.02  --tol-prod
+                               (the prod number)
 
 Bench sits slightly above train (training eval has no NMS) - below means the export/infer
 path broke. NMS/postprocess changes show up only in the bench(trt)-vs-reference check, so
@@ -18,13 +22,14 @@ the epoch trajectory can look fine while the number prod serves silently moved. 
 latency is INFO-only (host load). seg latency includes mask postprocess, so an under-trained
 seg model reads *faster*.
 
-uv run python scripts/regression_test.py --notify --tasks det sem seg
+uv run python scripts/regression_test.py --notify --tasks det sem seg kpts
 
 Wall clock on a 5070 Ti (train + TRT export + bench):
 
     det   1.4 h + 5.4 m + 2.5 m  ~=  1.6 h   (55 epochs)
     sem   1.7 h + 5.3 m + 2.2 m  ~=  1.9 h   (75 epochs)
     seg   8.5 h + 6 m   + 20 m   ~=  9.0 h   (55 epochs)
+    kpts  6.9 h + 5.4 m + 1.8 m  ~=  7.0 h   (20 epochs)
 """
 
 import argparse
@@ -72,6 +77,14 @@ TASKS = {
         "metrics": ["mIoU", "pixel_acc"],
         "bench_metrics": ["mIoU", "pixel_acc"],
         "headline": "mIoU",
+    },
+    # COCO person keypoints (56599 / 2346 images with labeled people), S from a COCO-person
+    # detector (box head trained on the person class only)
+    "kpts": {
+        "config": "config_coco_kpts",
+        "metrics": ["f1_kpt", "mAP_50_95_kpt", "presence_f1", "mAP_50_95"],
+        "bench_metrics": ["f1_kpt", "presence_f1"],  # no mAPs at bench's fixed conf thresh
+        "headline": "f1_kpt",
     },
 }
 

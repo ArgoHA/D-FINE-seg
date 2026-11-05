@@ -15,7 +15,8 @@ SIZES = [(64, 64)]
 def _onnx(conf_thresh):
     m = ONNXModel.__new__(ONNXModel)
     m.conf_thresh = m._prep_conf(conf_thresh)
-    m.sem_seg, m.has_masks, m.keep_ratio = False, False, False
+    m.sem_seg, m.has_masks, m.has_kpts, m.keep_ratio = False, False, False, False
+    m.output_names = ["labels", "boxes", "scores"]
     m.labels_to_use, m.apply_nms = [], False
     boxes = np.array([[[i * 10, 0, i * 10 + 5, 5] for i in range(4)]], dtype=np.float32)
     outputs = [np.array([LABELS]), boxes, np.array([SCORES], dtype=np.float32)]
