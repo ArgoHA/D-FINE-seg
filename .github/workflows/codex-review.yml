@@ -19,8 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      issues: write # react to the request comment
-      pull-requests: read
+      # Reacting to a PR comment needs pull-requests: write; issues: write alone returns 403.
+      issues: write
+      pull-requests: write
     outputs:
       reaction: ${{ steps.ack.outputs.reaction }}
       open: ${{ steps.pr.outputs.open }}
@@ -29,6 +30,7 @@ jobs:
     steps:
       - name: Acknowledge the request
         id: ack
+        continue-on-error: true # the reaction is cosmetic; never block the review on it
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
