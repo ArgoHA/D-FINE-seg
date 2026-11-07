@@ -310,7 +310,7 @@ Output contract: detection / instance segmentation wrappers return `labels`, `bo
 Also provided:
 
 - `Bytetrack` - simple implementation of object tracker
-- `SAM3` - text-promptable zero-shot segmentation for auto-labeling (multi-class: repeat `--prompt` or pass `"car, person"`)
+- `SAM3` - text-promptable zero-shot segmentation for auto-labeling (multi-class: repeat `--prompt` or pass `"car, person"`; `--classes FILE` maps each class to several synonym prompts; `--task sem_seg` writes dense class-id masks for semantic segmentation)
 - C++ core (`libdfine.so`) for TensorRT engines, plus an NVDEC -> NVENC video app: [cpp/README.md](https://github.com/ArgoHA/D-FINE-seg/blob/main/cpp/README.md)
 
 ### Multi-Object Tracking

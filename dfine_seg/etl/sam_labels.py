@@ -11,6 +11,9 @@ and writes one of four dataset shapes:
     --format yolo --task segment   `<stem>.txt` per image, `cls x1 y1 x2 y2 …`
                                    normalized, one line per instance
     --format yolo --task detect    `<stem>.txt` per image, `cls cx cy w h` normalized
+    --task sem_seg                 `labels/<stem>.png` class ids (`--min-score` marks
+                                   uncertain pixels 255) + `scores/<stem>.png` (score x 255),
+                                   the dense layout `task: sem_seg` training reads
 
 `detect` labels the boxes SAM3's box head predicts; `segment` measures its boxes off the
 polygons it writes, so every box contains its own segmentation.
@@ -23,7 +26,12 @@ Output lands in `~/data/frames_labels` unless `--out` says otherwise; the COCO f
 named `coco.json` so `make split` can consume it directly. Repeat `--prompt` for a
 multi-class dataset (one comma-separated flag works too): COCO category ids and YOLO
 class indices follow the order the prompts are given in, and the YOLO output records
-the names in `labels.txt`.
+the names in `labels.txt`. `--classes FILE` takes a YAML of class name -> list of prompts
+instead, merging synonyms into one class (`vegetation: [tree, bush, tall grass]`).
+
+`--task sem_seg` writes each image as soon as it is labeled and skips images whose label and
+score files already exist, so an interrupted run resumes; `--overwrite` redoes them. Keeping
+the scores lets the ignore threshold be changed later without rerunning SAM3.
 
 Needs `transformers`, which the project venv does not carry - run it with an interpreter
 that has it. `facebook/sam3` is gated, so without a token that has access the processor's
@@ -41,6 +49,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import yaml
 from tqdm import tqdm
 
 from dfine_seg.infer.sam3_model import SAM3Model
@@ -175,15 +184,15 @@ def build_instances(res: dict, width: int, height: int, options: Options) -> lis
 def annotate_image(model: SAM3Model, path: Path, name: str, options: Options) -> ImageRecord:
     """Segment one image against every prompt and collect the instances found.
 
-    The wrapper runs one forward per prompt (SAM3 takes a single text) and merges the
-    detections, tagging each instance with its prompt index.
+    The wrapper encodes the image once, runs the prompts in batches and merges the
+    detections, tagging each instance with its class index.
     """
     image = cv2.imread(str(path))
     if image is None:
         raise ValueError(f"unreadable image: {path}")
     height, width = image.shape[:2]
 
-    instances = build_instances(model(image, prompts=options.prompts)[0], width, height, options)
+    instances = build_instances(model(image)[0], width, height, options)
     return ImageRecord(file_name=name, width=width, height=height, instances=instances)
 
 
@@ -278,6 +287,63 @@ def default_out(images: Path) -> Path:
     return resolved.parent / f"{resolved.name}_labels"
 
 
+def write_sem_seg(out: Path, name: str, res: dict, min_score: float) -> None:
+    """One image's class-id PNG (255 = below `min_score`) and its uint8 score PNG."""
+    labels = res["sem_seg"].numpy().astype(np.uint8)
+    scores = res["scores"].numpy()
+    labels[scores < min_score] = 255
+    stem = Path(name).with_suffix(".png")
+    for sub, arr in (("labels", labels), ("scores", np.round(scores * 255).astype(np.uint8))):
+        path = out / sub / stem
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(path), arr)
+
+
+def draw_sem_seg(image: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Class-colored overlay; ignore (255) pixels stay uncolored."""
+    rng = np.random.default_rng(0)
+    palette = rng.integers(0, 255, (256, 3), dtype=np.uint8)
+    color = palette[labels]
+    vis = cv2.addWeighted(image, 1 - MASK_ALPHA, color, MASK_ALPHA, 0)
+    vis[labels == 255] = image[labels == 255]
+    return vis
+
+
+def run_sem_seg(model: SAM3Model, paths: list[Path], args, class_names: list[str]) -> int:
+    out = args.out
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "labels.txt").write_text("\n".join(class_names) + "\n")
+    failures = 0
+    for path in tqdm(paths, unit="img"):
+        name = path.relative_to(args.images).as_posix()
+        stem = Path(name).with_suffix(".png")
+        done = all((out / sub / stem).exists() for sub in ("labels", "scores"))
+        if done and not args.overwrite:
+            continue
+        image = cv2.imread(str(path))
+        if image is None:
+            print(f"FAILED {path}: unreadable image", file=sys.stderr)
+            failures += 1
+            continue
+        res = model(image)[0]
+        write_sem_seg(out, name, res, args.min_score)
+        if args.visualize:
+            vis_path = (out / "vis" / name).with_suffix(".jpg")
+            vis_path.parent.mkdir(parents=True, exist_ok=True)
+            labels = cv2.imread(str(out / "labels" / stem), cv2.IMREAD_GRAYSCALE)
+            cv2.imwrite(str(vis_path), draw_sem_seg(image, labels))
+    print(f"wrote sem_seg labels for {len(paths) - failures} image(s) -> {out}")
+    return 1 if failures else 0
+
+
+def load_classes(path: Path) -> dict[str, list[str]]:
+    """YAML mapping class name -> prompt or list of prompts."""
+    classes = yaml.safe_load(path.read_text())
+    if not isinstance(classes, dict) or not classes:
+        raise ValueError(f"{path}: expected a mapping of class name -> prompts")
+    return {str(k): v if isinstance(v, list) else [v] for k, v in classes.items()}
+
+
 def write_output(
     out: Path,
     records: list[ImageRecord],
@@ -324,9 +390,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--prompt",
         dest="prompts",
         action="append",
-        required=True,
         metavar="TEXT",
         help="SAM3 text prompt; repeat for a multi-class dataset (order sets class ids)",
+    )
+    parser.add_argument(
+        "--classes",
+        type=Path,
+        help="YAML of class name -> prompts (synonyms merge into one class); replaces --prompt",
     )
     parser.add_argument(
         "-o",
@@ -337,9 +407,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--format", choices=("coco", "yolo"), default="coco")
     parser.add_argument(
         "--task",
-        choices=("segment", "detect"),
+        choices=("segment", "detect", "sem_seg"),
         default="segment",
-        help="segment writes polygons, detect writes bboxes only",
+        help="segment writes polygons, detect writes bboxes only, sem_seg writes class-id PNGs",
     )
     parser.add_argument("--recursive", action="store_true", help="descend into subfolders")
     parser.add_argument("--limit", type=int, help="annotate only the first N images")
@@ -349,6 +419,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--conf", type=float, default=0.5, help="presence x per-object confidence threshold"
     )
     parser.add_argument("--mask-thresh", type=float, default=0.5, help="mask binarization cutoff")
+    parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.0,
+        help="sem_seg only: pixels scoring below this are labeled 255 (ignore)",
+    )
+    parser.add_argument(
+        "--tiles", type=int, help="sem_seg only: tiles along the long side (default: aspect)"
+    )
+    parser.add_argument("--overwrite", action="store_true", help="sem_seg: redo labeled images")
+    parser.add_argument("--prompt-batch", type=int, default=20, help="prompts per SAM3 forward")
+    parser.add_argument(
+        "--compile", action="store_true", help="torch.compile SAM3 (~1.6x, ~1 min warmup)"
+    )
     parser.add_argument(
         "--min-island-px",
         type=int,
@@ -373,18 +457,44 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no images under {args.images}", file=sys.stderr)
         return 1
 
+    if bool(args.prompts) == bool(args.classes):
+        print("pass exactly one of --prompt or --classes", file=sys.stderr)
+        return 2
+    if args.classes:
+        prompt = load_classes(args.classes)
+    else:
+        prompt = [p for value in args.prompts for p in SAM3Model.parse_prompts(value)]
+    class_names = SAM3Model.parse_classes(prompt)[0]
+    if args.task == "sem_seg" and len(class_names) > 255:
+        print(
+            "sem_seg stores class ids as uint8 with 255 = ignore: <= 255 classes", file=sys.stderr
+        )
+        return 2
+    args.out = args.out or default_out(args.images)
+    model = SAM3Model(
+        model_path=args.model,
+        prompt=prompt,
+        conf_thresh=args.conf,
+        mask_threshold=args.mask_thresh,
+        task=args.task,
+        prompt_batch=args.prompt_batch,
+        tiles=args.tiles,
+        compile=args.compile,
+    )
+    if args.task == "sem_seg":
+        print(f"{len(paths)} image(s) -> {args.out} [{', '.join(class_names)}]")
+        return run_sem_seg(model, paths, args, class_names)
+
     options = Options(
-        prompts=[p for value in args.prompts for p in SAM3Model.parse_prompts(value)],
+        prompts=class_names,
         task=args.task,
         format=args.format,
         min_island_px=args.min_island_px,
         polygon_epsilon=args.polygon_epsilon,
     )
-    out = args.out or default_out(args.images)
+    out = args.out
     vis_dir = out / "vis" if args.visualize else None
     print(f"{len(paths)} image(s) -> {out} [{', '.join(options.prompts)}]")
-
-    model = SAM3Model(model_path=args.model, conf_thresh=args.conf, mask_threshold=args.mask_thresh)
 
     records: list[ImageRecord] = []
     failures: list[tuple[Path, Exception]] = []
