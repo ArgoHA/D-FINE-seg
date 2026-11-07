@@ -10,10 +10,9 @@ authors:
     email: argo.cve@gmail.com
     orcid: "https://orcid.org/0009-0009-7577-715X"
 abstract: >-
-  A framework for real-time object detection, instance segmentation, semantic
-  segmentation and keypoint estimation, with training, export, and optimized
-  inference across PyTorch, ONNX, TensorRT, OpenVINO, CoreML and LiteRT
-  backends.
+  A framework for real-time object detection, keypoint estimation, instance and
+  semantic segmentation, with training, export, and optimized inference across
+  PyTorch, ONNX, TensorRT, OpenVINO, CoreML and LiteRT backends.
 keywords:
   - object detection
   - instance segmentation

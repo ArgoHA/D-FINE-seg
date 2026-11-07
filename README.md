@@ -31,7 +31,7 @@
 
 ---
 
-D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, **semantic segmentation** and **keypoint estimation** - one codebase, one config flag (`task: detect | segment | sem_seg | kpts`), five model sizes (N -> X).
+D-FINE-seg is a framework for real-time **object detection**, **keypoint estimation**, **instance** and **semantic segmentation** - one codebase, one config flag (`task: detect | segment | sem_seg | kpts`), five model sizes (N -> X).
 
 **See it run:** [dfine-seg.argoai.space](https://dfine-seg.argoai.space) - demos of all four tasks on real footage (off-road driving, mining, reefs, crowds, thermal cameras, radio astronomy), with the benchmarks behind them.
 
