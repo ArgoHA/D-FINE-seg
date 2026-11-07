@@ -2,27 +2,29 @@ cff-version: 1.2.0
 message: "If you use D-FINE-seg, please cite the software and its paper."
 title: "D-FINE-seg"
 type: software
-version: 0.6.2
-date-released: "2026-10-24"
+version: 0.7.0
+date-released: "2026-11-05"
 authors:
   - given-names: Argo
     family-names: Saakyan
     email: argo.cve@gmail.com
     orcid: "https://orcid.org/0009-0009-7577-715X"
 abstract: >-
-  A framework for real-time object detection, instance segmentation, and
-  semantic segmentation, with training, export, and optimized inference across
-  PyTorch, ONNX, TensorRT, OpenVINO and CoreML backends.
+  A framework for real-time object detection, instance segmentation, semantic
+  segmentation and keypoint estimation, with training, export, and optimized
+  inference across PyTorch, ONNX, TensorRT, OpenVINO, CoreML and LiteRT
+  backends.
 keywords:
   - object detection
   - instance segmentation
   - semantic segmentation
+  - keypoint estimation
   - deep learning
   - PyTorch
   - TensorRT
 license: Apache-2.0
 repository-code: "https://github.com/ArgoHA/D-FINE-seg"
-url: "https://github.com/ArgoHA/D-FINE-seg"
+url: "https://dfine-seg.argoai.space"
 preferred-citation:
   type: article
   title: "D-FINE-seg: Object Detection and Instance Segmentation Framework with multi-backend deployment"

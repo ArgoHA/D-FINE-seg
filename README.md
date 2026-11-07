@@ -6,9 +6,10 @@
     </picture>
   </h1>
   <p align="center">
-    <strong>Real-Time Object Detection, Instance and Semantic Segmentation</strong>
+    <strong>Real-Time Object Detection, Keypoint Estimation, Instance and Semantic Segmentation</strong>
   </p>
   <p align="center">
+    <a href="https://dfine-seg.argoai.space">Demos</a> •
     <a href="#quick-start">Quick Start</a> •
     <a href="#usage">Usage</a> •
     <a href="#export">Export</a> •
@@ -31,6 +32,8 @@
 ---
 
 D-FINE-seg is a framework for real-time **object detection**, **instance segmentation**, **semantic segmentation** and **keypoint estimation** - one codebase, one config flag (`task: detect | segment | sem_seg | kpts`), five model sizes (N -> X).
+
+**See it run:** [dfine-seg.argoai.space](https://dfine-seg.argoai.space) - demos of all four tasks on real footage (off-road driving, mining, reefs, crowds, thermal cameras, radio astronomy), with the benchmarks behind them.
 
 - End-to-end workflow - dataset prep -> training (DDP, EMA, AMP, mosaic) -> export (ONNX, TensorRT, OpenVINO, CoreML) -> benchmarked multi-backend inference
 - Accuracy - Cityscapes semantic segmentation at native 1024x2048: D-FINE-seg-X reaches 84.84 mIoU at 14.6 ms end-to-end, the highest of [28 models](https://github.com/ArgoHA/cityscapes-benchmark/blob/main/results/RESULTS_SEMSEG_NATIVE.csv) - +1.26 mIoU over YOLO26-x, and +1.5 mIoU over Mask2Former Swin-L with 6.4x lower latency and a quarter of the params - and D-FINE-seg-L matches or beats YOLO26-x on every axis; also beats YOLO26 and RF-DETR on 640 Cityscapes detection & instance-seg F1, YOLO26 on TACO and VisDrone, and YOLO26s-pose on COCO person keypoints with S - 65.4 vs 62.7 AP at the same latency (TensorRT FP16, end-to-end protocol)
