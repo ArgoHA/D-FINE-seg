@@ -32,11 +32,12 @@ class SAM3Model:
       threshold on a 4K frame costs seconds and gigabytes. Boxes and scores are unaffected.
     - ``sem_seg``: ``sem_seg`` (H, W) class ids and ``scores`` (H, W). A pixel's class score is
       the max over the class's prompts and queries of ``query score * mask probability``, so
-      every pixel gets a class; threshold ``scores`` to mark uncertain pixels as ignore. SAM3
-      squashes its input to a square, so wide or tall images are split along the long side
-      into ``tiles`` near-square tiles (default: long / short side, rounded). Measured on
-      GOOSE 2048x1000: instance scores beat SAM3's own semantic head by ~0.06 mIoU, and 2
-      tiles beat the squashed full frame by ~0.06.
+      every pixel gets a class; threshold ``scores`` to mark uncertain pixels as ignore.
+      Measured on GOOSE 2048x1000: instance scores beat SAM3's own semantic head by ~0.06 mIoU.
+
+    Like the official SAM3 inference, the whole image is resized to SAM3's square input.
+    ``tiles > 1`` (sem_seg only, opt-in) instead splits it along the long side into that many
+    tiles, each resized to the square; on GOOSE 2048x1000, 2 tiles gave ~+0.06 mIoU.
     """
 
     def __init__(
@@ -48,7 +49,7 @@ class SAM3Model:
         device: str = None,
         task: str = "segment",  # segment | detect | sem_seg
         prompt_batch: int = 20,  # prompts per forward; ~11 GB peak at 20 on a 16 GB GPU
-        tiles: int = None,  # sem_seg only, None = from the aspect ratio
+        tiles: int = 1,  # sem_seg only: >1 splits the long side, not official SAM3 inference
         compile: bool = False,
     ):
         # Same fallback chain as the D-FINE wrappers: cuda -> mps -> cpu.
@@ -269,10 +270,12 @@ class SAM3Model:
         return F.interpolate(acc[None], size=size, mode="bilinear", align_corners=False)[0]
 
     def _sem_seg(self, rgb: NDArray[np.uint8]) -> Dict[str, torch.Tensor]:
+        if self.tiles <= 1:
+            scores, labels = self._class_scores(rgb).max(0)
+            return {"sem_seg": labels.cpu(), "scores": scores.cpu()}
         h, w = rgb.shape[:2]
-        tiles = self.tiles or max(1, round(max(h, w) / min(h, w)))
         axis = 1 if w >= h else 0
-        edges = np.linspace(0, rgb.shape[axis], tiles + 1).round().astype(int)
+        edges = np.linspace(0, rgb.shape[axis], self.tiles + 1).round().astype(int)
         parts = []
         for a, b in zip(edges[:-1], edges[1:]):
             tile = rgb[:, a:b] if axis == 1 else rgb[a:b]

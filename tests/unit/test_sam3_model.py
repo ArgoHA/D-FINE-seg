@@ -115,7 +115,7 @@ class _Net:
 def _model(prompts, hits=(), task="segment", prompt_batch=20, net=None):
     m = SAM3Model.__new__(SAM3Model)
     m.device, m.conf_thresh, m.mask_threshold = "cpu", 0.5, 0.5
-    m.task, m.prompt_batch, m.tiles = task, prompt_batch, None
+    m.task, m.prompt_batch, m.tiles = task, prompt_batch, 1
     m.prompts = prompts
     m.processor = _Processor(hits)
     m.model = net or _Net()
@@ -163,10 +163,21 @@ def _sem_out(ids):
     return out
 
 
+def test_sem_seg_whole_image_by_default():
+    """Official SAM3 inference: one encode of the whole (squashed) image, no tiling."""
+    net = _Net(_sem_out)
+    m = _model({"x": ["p0", "p2"], "y": ["p1"], "z": ["p3"]}, task="sem_seg", net=net)
+    res = m(np.zeros((40, 80, 3), np.uint8))[0]
+    assert res["sem_seg"].shape == (40, 80)
+    assert len(net.batches) == 1
+    assert res["sem_seg"][20, 10::20].tolist() == [0, 0, 1, 2]  # 4 mask columns of 20 px
+
+
 def test_sem_seg_max_over_class_prompts_and_tiles():
     net = _Net(_sem_out)
     m = _model({"x": ["p0", "p2"], "y": ["p1"], "z": ["p3"]}, task="sem_seg", net=net)
-    img = np.zeros((40, 80, 3), np.uint8)  # 2:1 -> two 40x40 tiles, one encode each
+    m.tiles = 2
+    img = np.zeros((40, 80, 3), np.uint8)  # two 40x40 tiles, one encode each
     res = m(img)[0]
     assert res["sem_seg"].shape == res["scores"].shape == (40, 80)
     assert len(net.batches) == 2

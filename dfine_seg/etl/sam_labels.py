@@ -426,7 +426,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="sem_seg only: pixels scoring below this are labeled 255 (ignore)",
     )
     parser.add_argument(
-        "--tiles", type=int, help="sem_seg only: tiles along the long side (default: aspect)"
+        "--tiles",
+        type=int,
+        default=1,
+        help="sem_seg only: split the long side into N tiles (default 1 = official SAM3 inference)",
     )
     parser.add_argument("--overwrite", action="store_true", help="sem_seg: redo labeled images")
     parser.add_argument("--prompt-batch", type=int, default=20, help="prompts per SAM3 forward")
