@@ -232,6 +232,11 @@ def prepare_model(cfg, device, dynamic: bool = False):
             f"unexpected checkpoint mismatch: missing={missing}, unexpected={unexpected}"
         )
     model.eval()
+    # Fold each RepVGG 3x3 + 1x1 pair into one conv (same math). Exporters fold BN on their own
+    # but keep the two branches: 3 kernels per block instead of 1 in TensorRT.
+    for m in model.encoder.modules():
+        if hasattr(m, "convert_to_deploy"):
+            m.convert_to_deploy()
     return model
 
 
