@@ -28,7 +28,6 @@ from dfine_seg.dl.export import DFINEPostProcessor
 from dfine_seg.dl.utils import KptCoarseDropout, process_boxes, process_kpts
 from dfine_seg.dl.validator import KPT_MAX_DETS, Validator, top_per_class
 from dfine_seg.infer.torch_model import TorchModel
-from dfine_seg.model.arch import dfine_decoder
 from dfine_seg.model.dfine import build_loss, build_model
 from dfine_seg.model.dfine_criterion import DFINECriterion
 from dfine_seg.model.kpts import COCO_SIGMAS, DEFAULT_SIGMA, kpt_oks, resolve_sigmas
@@ -389,24 +388,6 @@ def test_describe_infers_kpts():
 
 
 # ── keypoint decoder ─────────────────────────────────────────────────────
-
-
-def test_kpt_decoder_chunked_cross_attention_is_exact(monkeypatch):
-    """The TensorRT GridSample workaround splits tokens into chunks; results must not change."""
-    torch.manual_seed(0)
-    model = build_model("n", 1, False, "cpu", img_size=[320, 320], num_kpts=17).eval()
-    for p in model.decoder.kpt_decoder.reg_head.parameters():  # zero-init = attention-blind
-        p.data.normal_(0, 0.1)
-    x = torch.rand(1, 3, 320, 320)
-    with torch.no_grad():
-        ref = model(x)["pred_kpts"]
-        monkeypatch.setattr(dfine_decoder, "TRT_GRID_SAMPLE_MAX_ROWS", 7)
-        monkeypatch.setattr(torch.onnx, "is_in_onnx_export", lambda: True)  # chunks: export only
-        chunked = model(x)["pred_kpts"]
-        monkeypatch.setattr(model.decoder.kpt_decoder, "ref_scale", 0.5)
-        moved = model(x)["pred_kpts"]
-    torch.testing.assert_close(chunked, ref)
-    assert not torch.allclose(moved, ref)  # the points do depend on what is sampled
 
 
 def test_rescore_only_touches_refined_queries():

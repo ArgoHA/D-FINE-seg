@@ -190,6 +190,43 @@ def weighting_function(reg_max, up, reg_scale, deploy=False):
         return torch.cat(values, 0)
 
 
+def bilinear_gather(value: Tensor, locations: Tensor, h: int, w: int) -> Tensor:
+    """Bilinear sampling of value [N, C, H*W] at locations [N, Lq, P, 2] ((x, y) in [0, 1])
+    -> [N, C, Lq, P], built from four gathers.
+
+    Equals F.grid_sample(value, 2 * locations - 1, "bilinear", "zeros", align_corners=False).
+    Exported graphs use it in place of GridSample, which TensorRT (10.13 - 11.4) mis-executes
+    in the deformable attention: results depend on the batch slot and scores drift at batch 1.
+    """
+    n, c, hw = value.shape
+    lq, p = locations.shape[1:3]
+    x = locations[..., 0].flatten(1) * w - 0.5
+    y = locations[..., 1].flatten(1) * h - 0.5
+    x0, y0 = x.floor(), y.floor()
+    fx, fy = x - x0, y - y0
+
+    def axis(i, weight, size):
+        # Zeros padding: a position outside the map (or NaN) gets weight 0 and index 0.
+        # where() rather than clamp() (the dynamo exporter emits a broken Clip when one tensor
+        # is clamped twice) or a bool -> float cast (fp16 graph converters leave it fp32).
+        inside = (i >= 0) & (i <= size - 1)
+        return torch.where(inside, i, 0).long(), torch.where(inside, weight, 0)
+
+    xs = (axis(x0, 1 - fx, w), axis(x0 + 1, fx, w))
+    ys = (axis(y0, 1 - fy, h), axis(y0 + 1, fy, h))
+    # Whole channel rows per index (exports as one GatherND per corner): as fast as GridSample
+    # in TensorRT and within 5% of it in OpenVINO / ONNX Runtime on CPU. Per-element gathers
+    # and gathers merged over corners or levels were all slower somewhere.
+    rows = value.transpose(1, 2).reshape(n * hw, c)
+    first_row = torch.arange(n, device=value.device)[:, None] * hw
+    out = 0
+    for yi, wy in ys:
+        for xi, wx in xs:
+            index = yi * w + xi + first_row  # integer math: fp16 is exact only up to 2048
+            out = out + rows[index] * (wy * wx)[..., None]
+    return out.transpose(1, 2).reshape(n, c, lq, p)
+
+
 def deformable_attention_core_func_v2(
     value: torch.Tensor,
     value_spatial_shapes,
@@ -213,13 +250,7 @@ def deformable_attention_core_func_v2(
     _, Len_q, _, _, _ = sampling_locations.shape
 
     # sampling_offsets [8, 480, 8, 12, 2]
-    if method == "default":
-        sampling_grids = 2 * sampling_locations - 1
-
-    elif method == "discrete":
-        sampling_grids = sampling_locations
-
-    sampling_grids = sampling_grids.permute(0, 2, 1, 3, 4).flatten(0, 1)
+    sampling_grids = sampling_locations.permute(0, 2, 1, 3, 4).flatten(0, 1)
     sampling_locations_list = sampling_grids.split(num_points_list, dim=-2)
 
     sampling_value_list = []
@@ -227,9 +258,17 @@ def deformable_attention_core_func_v2(
         value_l = value[level].reshape(bs * n_head, c, h, w)
         sampling_grid_l: torch.Tensor = sampling_locations_list[level]
 
-        if method == "default":
+        if method == "default" and torch.onnx.is_in_onnx_export():
+            # exported graphs sample with gathers instead of GridSample, see bilinear_gather
+            sampling_value_l = bilinear_gather(value_l.flatten(2), sampling_grid_l, h, w)
+
+        elif method == "default":
             sampling_value_l = F.grid_sample(
-                value_l, sampling_grid_l, mode="bilinear", padding_mode="zeros", align_corners=False
+                value_l,
+                2 * sampling_grid_l - 1,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=False,
             )
 
         elif method == "discrete":

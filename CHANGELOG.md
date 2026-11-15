@@ -154,3 +154,19 @@ COCO val2017 at 640, official COCO AP; latency is end-to-end with each framework
 |-------|-------------|-------------|---------------|-----------------------|
 | D-FINE-seg S, 40 epochs | **65.4** | **88.0 / 71.1** | **64.2** | **2.10 ms** |
 | YOLO26s-pose (released, 300 epochs, Objects365 init) | 62.7 | 85.8 / 68.8 | 54.3 | 2.16 ms |
+
+## 2026-11-15 - TensorRT accuracy and batching fix
+
+- Exported graphs sample the deformable attention with gathers instead of `GridSample`, which TensorRT mis-executes ([NVIDIA/TensorRT#4813](https://github.com/NVIDIA/TensorRT/issues/4813)). PyTorch inference and training are unchanged. Re-export to get the fix.
+- TensorRT engines now match PyTorch at the same latency, and batched engines (`export.max_batch_size > 1`) give the same result in every batch slot and at every batch size.
+- The `task: kpts` TensorRT workarounds are removed.
+
+COCO val2017 (first 1000 images), S detect, TensorRT fp16, box mAP 50-95 (PyTorch: 0.501):
+
+| Engine | Before | After |
+|--------|--------|-------|
+| static batch 1 | 0.484 | 0.501 |
+| `max_batch_size: 4`, run at batch 1 | 0.380 | 0.501 |
+| `max_batch_size: 4`, run at batch 4 | 0.486 | 0.501 |
+
+The fix resulted in a slight CPU backends slowdown: S detect at 640 went from 52.1 to 53.7 ms on OpenVINO (+3%) and from 77.4 to 80.2 ms on ONNX Runtime (+4%).

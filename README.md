@@ -285,7 +285,7 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 > **Tip**: FP16 is the best latency/accuracy trade-off for GPU (TensorRT) and CPU (OpenVINO). For Apple Silicon (CoreML), FP32 is faster.
 
-> **Warning**: run TensorRT engines at **batch 1**. On TRT 10.13.3.9 a batched engine does not compute batch elements independently - feeding four identical images through a single `execute_async_v3` call returns four different results (score spread up to 0.20, and different labels), so a detection's score depends on what it happened to be batched with. Batch 1 is exact, and reproduces in raw TensorRT for FP16 and FP32 and for every optimization-profile shape, while torch and ONNX Runtime stay identical across slots ([NVIDIA/TensorRT#4813](https://github.com/NVIDIA/TensorRT/issues/4813)).
+> **Note**: exported graphs compute the deformable attention's bilinear sampling with gathers instead of `GridSample`. TensorRT (10.13 to 11.4) mis-executes `GridSample` in this attention ([NVIDIA/TensorRT#4813](https://github.com/NVIDIA/TensorRT/issues/4813)): engines lost accuracy even at batch 1, and a batched engine returned different results per batch slot for identical images. With the gather graph a batched engine (`export.max_batch_size > 1`) is identical across slots and to batch 1. Engines exported before this change keep the problem - re-export them.
 
 After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend - over the sorted top-K detection scores vs torch - to `parity.csv` next to the weights.
 

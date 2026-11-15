@@ -500,7 +500,6 @@ def export_to_tensorrt(
     half: bool,
     max_batch_size: int,
     opt_bs: int = 1,
-    fp32_grid_sample: bool = False,
 ) -> None:
     import onnx
     import tensorrt as trt
@@ -524,17 +523,6 @@ def export_to_tensorrt(
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)  # 2GB
     if half:
         config.set_flag(trt.BuilderFlag.FP16)
-        if fp32_grid_sample:
-            # The keypoint decoder's deformable attention is mis-fused in fp16 (TRT 10.13):
-            # kpt AP 0.19 vs 0.29 in torch; fp32 GridSample matches torch at the same latency.
-            # Pins the box decoder's GridSamples too: keypoint-decoder-only gave the same AP
-            # and latency, and the simplified graph carries no module names to select by.
-            config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
-            for i in range(network.num_layers):
-                layer = network.get_layer(i)
-                if layer.type == trt.LayerType.GRID_SAMPLE:
-                    layer.precision = trt.float32
-                    layer.set_output_type(0, trt.float32)
 
     if max_batch_size > 1:
         profile = builder.create_optimization_profile()
@@ -933,7 +921,6 @@ def main(cfg: DictConfig):
                 cfg.export.half,
                 cfg.export.max_batch_size,
                 opt_bs=cfg.export.get("opt_batch_size", 1) or 1,
-                fp32_grid_sample=cfg.task == "kpts",
             )
     if want("onnx") and cfg.export.dynamic_input:
         export_to_onnx(

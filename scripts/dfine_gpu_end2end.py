@@ -44,14 +44,15 @@ IGNORE_INDEX = 255  # sem_seg void id; these pixels are left unblended
 DRAW_LABELS = False  # "<class> <score>" tags above each box
 BATCH_WINDOW_S = 0.004  # how long the server waits to fill a batch before firing
 MAX_CONCURRENT_CLIPS = 4  # pool width < NVENC session cap on GeForce (8)
-# there is a bug in TensorRT with batcehd inferece, so use 1. Check readme for more details
+# 1 is the fastest here (engine instances overlap instead). Engines exported before the
+# GridSample fix are also slot-dependent when batched - see the README export notes.
 MAX_TRT_BATCH = 1  # engine's optimization-profile max batch (independent of pool width)
 # Concurrent engine instances. Each owns an engine + execution context + stream, so
 # inferences overlap instead of serializing on one stream. Tune on the pipeline, NOT on the
 # engine alone: isolated, 4 instances is the peak (1.8x detect / 1.56x segment), but in the
 # full pipeline 8 clips measured 490 fps at 1, 591 at 2, 481 at 4 - past 2 the extra server
 # threads starve the GPU (util drops to ~77%) instead of feeding it. Instances are
-# independent: 4 running the same input are bit-identical, unlike batch slots.
+# independent: 4 running the same input are bit-identical.
 N_ENGINE_INSTANCES = 2
 GPU_ENCODE_INPUT = True  # True: feed NVENC the device NV12 buffer; False: host-copy fallback
 

@@ -41,7 +41,7 @@ training, export, accuracy or inference latency, follow the module guide in `scr
 
 ## Export constraints
 
-- TensorRT 10.13.3.9 batched engines are slot-dependent. Run exported TensorRT engines at batch 1.
+- Exported graphs must not contain GridSample: TensorRT (10.13 to 11.4) mis-executes it in the deformable attention (batch-slot-dependent results, accuracy loss even at batch 1). `bilinear_gather` replaces it during ONNX export. Its layout (one row gather per corner and level) is the measured best across TensorRT, OpenVINO and ONNX Runtime; per-element gathers and gathers merged over corners or levels were slower.
 - Do not retry the rejected segment TensorRT graph fusions (mask-feature output, fp16 mask output,
   in-graph NMS). The measured wins are already in the client wrappers.
 - Semantic segmentation intentionally uses argmax followed by nearest-neighbor resize. Upsampling

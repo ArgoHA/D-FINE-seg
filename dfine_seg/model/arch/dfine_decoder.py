@@ -271,9 +271,6 @@ class TransformerDecoderLayer(nn.Module):
         return target
 
 
-TRT_GRID_SAMPLE_MAX_ROWS = 1024
-
-
 class KeypointDecoderLayer(TransformerDecoderLayer):
     """Decoder layer over keypoint tokens [B, N, K, C]: self-attention among the K points of
     one instance, deformable cross-attention around each point's own reference."""
@@ -291,22 +288,9 @@ class KeypointDecoderLayer(TransformerDecoderLayer):
         target2, _ = self.self_attn(q, q, value=target.reshape(b * n, k, c))
         target = self.norm1(target + target2.reshape(b, n, k, c))
 
-        # TensorRT 10.13 mis-executes chained GridSamples on a shared value tensor (layer 2's
-        # grid depends on layer 1's output, wrong even in fp32); splitting the tokens into
-        # >= 2 chunks avoids it. Exported graphs only: eager / compiled runs keep one call.
-        # The count must divide n * k: uneven torch splits export as even ONNX Splits. Each
-        # query samples independently, so the result is unchanged.
         q = (target + query_pos_embed).reshape(b, n * k, c)
         ref = reference_points.reshape(b, n * k, 1, 4)
-        num_chunks = 1
-        if torch.onnx.is_in_onnx_export():
-            min_chunks = max(2, -(-n * k // TRT_GRID_SAMPLE_MAX_ROWS))
-            divisors = (i for i in range(min_chunks, n * k + 1) if n * k % i == 0)
-            num_chunks = next(divisors, 1)
-        chunks = zip(q.chunk(num_chunks, 1), ref.chunk(num_chunks, 1))
-        target2 = torch.cat(
-            [self.cross_attn(q_i, r_i, value, spatial_shapes) for q_i, r_i in chunks], 1
-        )
+        target2 = self.cross_attn(q, ref, value, spatial_shapes)
         target = self.gateway(target, target2.reshape(b, n, k, c))
         target = target + self.forward_ffn(target)
         return self.norm3(target.clamp(min=-65504, max=65504))
