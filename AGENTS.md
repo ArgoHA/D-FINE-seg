@@ -33,6 +33,7 @@ training, export, accuracy or inference latency, follow the module guide in `scr
   must prepare `.npy` RGB(+extra) inputs before drawing.
 - Standalone modules under `dfine_seg/infer/` are intentionally self-contained because users copy
   them independently. Do not consolidate their shared-looking code.
+- `dfine_seg.export` (`dl/export.py`, exposed lazily through `dfine_seg.__getattr__`) is the only export path; `dfine export` just maps the config onto its arguments. Add export options as `export()` arguments, never as config reads inside it.
 - Save checkpoints with `save_checkpoint` and read them only through `unwrap_checkpoint`. Metadata
   must contain plain Python values compatible with `torch.load(..., weights_only=True)`.
 - Infer architecture from weight shapes, not checkpoint metadata. Preprocessing precedence is:

@@ -1,6 +1,9 @@
 import copy
 import platform
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, Iterable, Optional, Tuple
 
 import hydra
 import numpy as np
@@ -12,16 +15,21 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from torch import nn
 
-from dfine_seg.api.ckpt import describe
+from dfine_seg.api.ckpt import describe, load_and_describe
+from dfine_seg.api.loader import read_image
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.dl.utils import get_latest_experiment_name, num_kpts
 from dfine_seg.model.configs import base_cfg
 from dfine_seg.model.dfine import build_model
-from dfine_seg.model.utils import (
-    ensure_pretrained,
-    load_tuning_state,
-    unwrap_checkpoint,
-)
+from dfine_seg.model.utils import ensure_pretrained, unwrap_checkpoint
+
+# litert is paused (litert-torch caps torch<2.13), so it is built only when asked for by name.
+DEFAULT_FORMATS = ("onnx", "tensorrt", "openvino", "coreml")
+FORMATS = (*DEFAULT_FORMATS, "litert")
+
+# decoder regenerates these from img_size; dropped so re-export at another resolution works
+_SIZE_BUFFERS = ("decoder.anchors", "decoder.valid_mask")
+_MASK_HEAD = ("decoder.mask_decoder.", "decoder.mask_head.")
 
 
 class DFINEPostProcessor(nn.Module):
@@ -147,89 +155,91 @@ class SemSegExportWrapper(nn.Module):
         return self
 
 
-def _check_pretrained(ckpt: str, task: str, n_config: int, img_size, n_kpts: int = 0) -> None:
-    """Refuse to export pretrained weights that would produce a broken artifact.
+def _task_ok(ckpt_task: str, task: str) -> bool:
+    # Segment weights are a superset of detect (same det heads plus an unused mask head), so
+    # exporting detect from them is fine; any other task needs heads the weights don't have.
+    return task == ckpt_task or (ckpt_task, task) == ("segment", "detect")
 
-    `load_tuning_state` loads non-strictly, so a class-count mismatch drops every score head
-    and a task mismatch leaves the other task's heads at random init - and parity then
-    compares that corrupt model against graphs exported from it, so the export "passes".
-    Straight from `dfine init` (2 template classes) this produced a green check on a broken
-    model.
+
+def _check_config(
+    ckpt: str,
+    task: str,
+    n_config: int,
+    img_size,
+    n_kpts: int = 0,
+    in_channels: int = 3,
+    pretrained: bool = True,
+) -> None:
+    """Refuse to export weights that don't match the config.
+
+    Export builds what the weights are, so a mismatch here would ship an artifact that
+    disagrees with the config bench and infer read (class names, task, input channels).
+    Straight from `dfine init` (2 template classes) this used to export a broken model with a
+    green parity check.
     """
     state = torch.load(ckpt, map_location="cpu", weights_only=True)
     sd, meta = unwrap_checkpoint(state)
     info = describe(sd, meta)
-    # Segment weights are a superset of detect (same det heads plus an unused fuser), so
-    # exporting detect from them is fine; every other mismatch exports random heads.
-    if info["task"] != task and not (info["task"] == "segment" and task == "detect"):
-        raise ValueError(
-            f"{Path(ckpt).name} is a {info['task']} checkpoint but task is {task}. "
-            "export.from_pretrained exports the released weights as-is, so the other task's "
-            "heads would be random init and parity would still pass. Point "
-            "train.pretrained_model_path at a matching release, or train first and export "
-            "with export.from_pretrained=False."
+    name = Path(ckpt).name
+    if pretrained:
+        fix = (
+            "export.from_pretrained exports the released weights as-is. Point "
+            "train.pretrained_model_path at a matching release (class lists: "
+            "dfine_seg.api.coco_names.COCO_NAMES for the COCO detect / segment releases, "
+            "{0: person} for the keypoint releases, the Cityscapes sem-seg releases carry "
+            "their own), or train first and export with export.from_pretrained=False."
         )
+    else:
+        fix = f"Export with the config {name} was trained with (the run's frozen config.yaml)."
+    if not _task_ok(info["task"], task):
+        raise ValueError(f"{name} is a {info['task']} checkpoint but task is {task}. {fix}")
     if info["num_classes"] != n_config:
         raise ValueError(
-            f"{Path(ckpt).name} has {info['num_classes']} classes but train.label_to_name has "
-            f"{n_config}. export.from_pretrained cannot reconcile that: the mismatched heads "
-            "would be dropped and exported at random init. Either list the checkpoint's "
-            "classes (dfine_seg.api.coco_names.COCO_NAMES for the COCO detect / segment "
-            "releases; {0: person} for the keypoint releases; the Cityscapes sem-seg releases "
-            "carry their own label_to_name), or train on your own "
-            "classes first and export with export.from_pretrained=False."
+            f"{name} has {info['num_classes']} classes but train.label_to_name has {n_config}, "
+            f"so bench and infer would name the wrong classes. {fix}"
         )
     if info["num_kpts"] != n_kpts:
         raise ValueError(
-            f"{Path(ckpt).name} has {info['num_kpts']} keypoints but train.kpts.shape "
-            f"asks for {n_kpts}; the keypoint head would be exported at random init."
+            f"{name} has {info['num_kpts']} keypoints but train.kpts.shape asks for {n_kpts}. {fix}"
+        )
+    if info["in_channels"] != in_channels:
+        raise ValueError(
+            f"{name} takes {info['in_channels']}-channel input but train.in_channels is "
+            f"{in_channels}. {fix}"
         )
     meta_img = meta.get("img_size")
     if meta_img and tuple(meta_img) != tuple(img_size):
         logger.warning(
-            f"{Path(ckpt).name} was trained at {meta_img[0]}x{meta_img[1]} but exports at "
+            f"{name} was trained at {meta_img[0]}x{meta_img[1]} but exports at "
             f"{img_size[0]}x{img_size[1]} - the graph adapts, expect some accuracy drop."
         )
 
 
-def prepare_model(cfg, device, dynamic: bool = False):
+def prepare_model(spec: Dict, state_dict: Dict[str, torch.Tensor], device, dynamic: bool = False):
+    """Build the architecture `spec` describes (`api.ckpt.describe` keys, with the export's
+    task and img_size) and load `state_dict` into it strictly."""
     # dynamic H/W graphs need the img_size=None (per-input) anchor / pos-embed path: a fixed
     # eval_spatial_size bakes its cached constants into the graph and locks it to that size
     model = build_model(
-        cfg.model_name,
-        len(cfg.train.label_to_name),
-        enable_mask_head=cfg.task == "segment",
+        spec["model_name"],
+        spec["num_classes"],
+        enable_mask_head=spec["task"] == "segment",
         device=device,
-        img_size=None if dynamic else cfg.train.img_size,
-        in_channels=cfg.train.in_channels,
-        task=cfg.task,
-        num_kpts=num_kpts(cfg),
+        img_size=None if dynamic else spec["img_size"],
+        in_channels=spec["in_channels"],
+        task=spec["task"],
+        num_kpts=spec["num_kpts"],
+        num_kpt_layers=spec["num_kpt_layers"],
     )
-    if cfg.export.from_pretrained:
-        # Export a released checkpoint directly (no trained model.pt).
-        ckpt = ensure_pretrained(cfg.train.pretrained_model_path)
-        _check_pretrained(
-            ckpt,
-            cfg.task,
-            len(cfg.train.label_to_name),
-            cfg.train.img_size,
-            n_kpts=num_kpts(cfg),
-        )
-        load_tuning_state(model, ckpt)
-    else:
-        ckpt = Path(cfg.train.path_to_save) / "model.pt"
-        if not ckpt.exists():
-            raise FileNotFoundError(
-                f"{ckpt} not found. Train first, or set export.from_pretrained=True "
-                "to export pretrained weights directly."
-            )
-        state = unwrap_checkpoint(torch.load(ckpt, weights_only=True))[0]
-        # decoder regenerates these from img_size; drop so re-export at another resolution works
-        for k in ("decoder.anchors", "decoder.valid_mask"):
-            state.pop(k, None)
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        assert not unexpected and set(missing) <= {"decoder.anchors", "decoder.valid_mask"}, (
-            f"unexpected checkpoint mismatch: missing={missing}, unexpected={unexpected}"
+    state = {k: v for k, v in state_dict.items() if k not in _SIZE_BUFFERS}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if spec["task"] == "detect":  # detect from segment weights: the mask head stays behind
+        unexpected = [k for k in unexpected if not k.startswith(_MASK_HEAD)]
+    missing = sorted(set(missing) - set(_SIZE_BUFFERS))
+    if missing or unexpected:
+        raise ValueError(
+            f"checkpoint does not match its {spec['model_name']} {spec['task']} architecture: "
+            f"missing={missing[:5]}, unexpected={unexpected[:5]}"
         )
     model.eval()
     # Fold each RepVGG 3x3 + 1x1 pair into one conv (same math). Exporters fold BN on their own
@@ -240,19 +250,30 @@ def prepare_model(cfg, device, dynamic: bool = False):
     return model
 
 
-def prepare_export_models(cfg, device, dynamic: bool = False) -> tuple[nn.Module, nn.Module]:
+def prepare_export_models(
+    spec: Dict,
+    state_dict: Dict[str, torch.Tensor],
+    device,
+    sem_seg_probs: bool = False,
+    dynamic: bool = False,
+) -> tuple[nn.Module, nn.Module]:
     """(raw model, fused export wrapper), both in eval mode."""
-    raw_model = prepare_model(cfg, device, dynamic=dynamic)
-    if cfg.task == "sem_seg":
-        model = SemSegExportWrapper(raw_model, probs=cfg.export.get("sem_seg_probs", False))
+    raw_model = prepare_model(spec, state_dict, device, dynamic=dynamic)
+    if spec["task"] == "sem_seg":
+        model = SemSegExportWrapper(raw_model, probs=sem_seg_probs)
     else:
         postprocessor = DFINEPostProcessor(
-            num_classes=len(cfg.train.label_to_name),
+            num_classes=spec["num_classes"],
             num_top_queries=base_cfg["DFINETransformer"]["num_queries"],
             use_focal_loss=base_cfg["matcher"]["use_focal_loss"],
         )
         model = ExportWrapper(raw_model, postprocessor)
     return raw_model.eval(), model.eval()
+
+
+def _int8_path(out: Path, suffix: str) -> Path:
+    """`out/model.pt` -> `out/model_int8<suffix>`: where the INT8 variants live."""
+    return out.with_name(f"{out.stem}_int8{suffix}")
 
 
 def export_to_onnx(
@@ -264,9 +285,8 @@ def export_to_onnx(
     dynamic_input: bool,
     input_name: str,
     output_names: list[str],
-) -> None:
+) -> Path:
     import onnx
-    import onnxsim
     from onnxconverter_common import float16
     from onnxscript.function_libs.torch_lib.ops import core as onnx_core
 
@@ -305,6 +325,8 @@ def export_to_onnx(
         onnx_model = float16.convert_float_to_float16(onnx_model, keep_io_types=True)
 
     try:
+        import onnxsim  # Linux-only dependency: elsewhere the graph is saved unsimplified
+
         onnx_model, check = onnxsim.simplify(onnx_model)
         assert check
         logger.info("ONNX simplified and exported")
@@ -315,7 +337,9 @@ def export_to_onnx(
         return output_path
 
 
-def export_to_openvino(onnx_path: Path, x_test, dynamic_input: bool, max_batch_size: int) -> None:
+def export_to_openvino(
+    onnx_path: Path, xml_path: Path, x_test, dynamic_input: bool, max_batch_size: int
+) -> Path:
     import openvino as ov
 
     channels = int(x_test.shape[1])
@@ -335,8 +359,9 @@ def export_to_openvino(onnx_path: Path, x_test, dynamic_input: bool, max_batch_s
         # in IR rt_info so OVModel can resolve it (explicit args still win).
         model.set_rt_info(f"{x_test.shape[2]}x{x_test.shape[3]}", ["model_info", "img_size"])
 
-    ov.serialize(model, str(onnx_path.with_suffix(".xml")), str(onnx_path.with_suffix(".bin")))
+    ov.serialize(model, str(xml_path), str(xml_path.with_suffix(".bin")))
     logger.info("OpenVINO model exported")
+    return xml_path
 
 
 class _ExportGroupNorm(nn.Module):
@@ -378,7 +403,7 @@ def export_to_coreml(
     x_test: torch.Tensor,
     half: bool,
     max_batch_size: int,
-) -> None:
+) -> Path:
     """Convert PyTorch model to CoreML (.mlpackage) for iOS / macOS.
 
     Mirrors the TensorRT path: converts the fused model (with postprocessor).
@@ -431,16 +456,16 @@ def export_to_coreml(
     op_config = OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8")
     quant_config = OptimizationConfig(global_config=op_config)
     mlmodel_int8 = linear_quantize_weights(mlmodel, config=quant_config)
-    int8_path = model_path.with_name("model_int8").with_suffix(".mlpackage")
-    mlmodel_int8.save(str(int8_path))
+    mlmodel_int8.save(str(_int8_path(model_path, ".mlpackage")))
     logger.info("CoreML INT8 model exported")
+    return output_path
 
 
 def export_to_litert(
     model: nn.Module,
     model_path: Path,
     x_test: torch.Tensor,
-) -> None:
+) -> Path:
     """Convert PyTorch model to LiteRT (.tflite) for on-device inference.
 
     Uses litert_torch for direct PyTorch -> TFLite conversion.
@@ -489,22 +514,15 @@ def export_to_litert(
         granularity=QuantGranularity.CHANNELWISE,
     )
     result = qt.quantize()
-    int8_path = model_path.with_name("model_int8").with_suffix(".tflite")
-    with open(int8_path, "wb") as f:
+    with open(_int8_path(model_path, ".tflite"), "wb") as f:
         f.write(result.quantized_model)
     logger.info("LiteRT INT8 model exported")
+    return output_path
 
 
-def export_to_tensorrt(
-    onnx_file_path: Path,
-    half: bool,
-    max_batch_size: int,
-    opt_bs: int = 1,
-) -> None:
+def export_to_tensorrt(onnx_file_path: Path, half: bool, max_batch_size: int) -> Path:
     import onnx
     import tensorrt as trt
-
-    opt_bs = min(opt_bs, max_batch_size)
 
     tr_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(tr_logger)
@@ -513,10 +531,8 @@ def export_to_tensorrt(
 
     with open(onnx_file_path, "rb") as model:
         if not parser.parse(model.read()):
-            print("ERROR: Failed to parse the ONNX file.")
-            for error in range(parser.num_errors):
-                print(parser.get_error(error))
-            return
+            errors = "\n".join(str(parser.get_error(i)) for i in range(parser.num_errors))
+            raise RuntimeError(f"TensorRT could not parse {onnx_file_path}:\n{errors}")
 
     config = builder.create_builder_config()
     # Increase workspace memory to help with larger batch sizes
@@ -582,9 +598,11 @@ def export_to_tensorrt(
             "Check the TensorRT logs above for more details."
         )
 
-    with open(onnx_file_path.with_suffix(".engine"), "wb") as f:
+    engine_path = onnx_file_path.with_suffix(".engine")
+    with open(engine_path, "wb") as f:
         f.write(engine)
     logger.info("TensorRT model exported")
+    return engine_path
 
 
 def _to_np(x) -> np.ndarray:
@@ -603,18 +621,37 @@ def _cosine(ref, out) -> float:
     return float(a @ b / denom)
 
 
-def _parity_input(cfg, raw_model, x_test) -> tuple:
-    """One real training image (fallback: x_test) as (torch [1,C,H,W], numpy) pair."""
+@dataclass(frozen=True)
+class _Parity:
+    """What the parity checks need to know about one export."""
+
+    out: Path  # <output_dir>/<name>.pt: each format swaps in its own suffix
+    formats: Tuple[str, ...]
+    task: str
+    num_classes: int
+    img_size: Tuple[int, int]
+    half: bool
+    dynamic_input: bool
+    image: Optional[Path]
+
+
+def _parity_input(p: _Parity, raw_model, x_test) -> tuple:
+    """p.image (fallback: x_test) as (torch [1,C,H,W], numpy) pair."""
     # CoreML/LiteRT export move the shared model params to CPU in place, so run torch on its device
     dev = next(raw_model.parameters()).device
-    # a real training image anchors parity on true predictions (randn has none)
-    img_dir = Path(cfg.train.data_path) / "images"
-    imgs = sorted(img_dir.glob("*.jpg")) or sorted(img_dir.glob("*.png"))
-    if imgs:
+    if p.image is not None:
         import cv2
 
-        h, w = cfg.train.img_size
-        img = cv2.resize(cv2.imread(str(imgs[0])), (w, h))[:, :, ::-1]  # BGR->RGB
+        img = read_image(p.image)  # BGR for jpg/png, RGB(+extras) for .npy
+        if p.image.suffix.lower() != ".npy":
+            img = img[:, :, ::-1]
+        if img.shape[2] != x_test.shape[1]:
+            raise ValueError(
+                f"parity image {p.image.name} has {img.shape[2]} channels, the model takes "
+                f"{x_test.shape[1]}"
+            )
+        h, w = p.img_size
+        img = cv2.resize(np.ascontiguousarray(img), (w, h))
         x1 = torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1), np.float32) / 255.0)[
             None
         ]
@@ -624,11 +661,11 @@ def _parity_input(cfg, raw_model, x_test) -> tuple:
     return x1, x1.detach().cpu().numpy().astype(np.float32)
 
 
-def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
-    """n_out is only for LiteRT: it exports the raw head, so it decodes labels with the
-    class count. Every other backend reads what it needs off its own graph."""
-    conf, kr = cfg.train.conf_thresh, cfg.train.keep_ratio
-    common = dict(model_path=str(path), conf_thresh=conf, keep_ratio=kr, apply_nms=False)
+def _build_parity_backend(key: str, path: Path, p: _Parity):
+    """num_classes is only for LiteRT: it exports the raw head, so it decodes labels with the
+    class count. Every other backend reads what it needs off its own graph. Thresholds and
+    keep_ratio stay at defaults: _predict runs on the prepared input and returns raw outputs."""
+    common = dict(model_path=str(path), apply_nms=False)
     if key == "onnx":
         from dfine_seg.infer.onnx_model import ONNXModel
 
@@ -637,15 +674,15 @@ def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
         from dfine_seg.infer.ov_model import OVModel
 
         return OVModel(
-            rect=cfg.export.dynamic_input,
-            half=cfg.export.half and platform.system() != "Darwin",
+            rect=p.dynamic_input,
+            half=p.half and platform.system() != "Darwin",
             max_batch_size=1,
             **common,
         )
     if key == "litert":
         from dfine_seg.infer.litert_model import LiteRTModel
 
-        return LiteRTModel(n_outputs=n_out, rect=False, **common)
+        return LiteRTModel(n_outputs=p.num_classes, rect=False, **common)
     if key == "coreml":
         from dfine_seg.infer.coreml_model import CoreMLModel
 
@@ -655,33 +692,33 @@ def _build_parity_backend(key: str, path: Path, cfg, n_out: int):
     return TRTModel(rect=False, **common)
 
 
-def _run_parity_backends(cfg, x1, x_np, want, models_path: Path, add, extract) -> None:
+def _run_parity_backends(p: _Parity, x1, x_np, add, extract) -> None:
     """Shared per-backend scaffolding: build each exported wrapper, run the parity
     input, and feed extract(key, raw_outputs) into add(tag, is_int8, value)."""
-    n_out = len(cfg.train.label_to_name)
     plat = (
         [
-            ("coreml", "CoreML", "model.mlpackage", False),
-            ("coreml", "CoreML INT8", "model_int8.mlpackage", True),
+            ("coreml", "CoreML", ".mlpackage", False),
+            ("coreml", "CoreML INT8", ".mlpackage", True),
         ]
         if platform.system() == "Darwin"
         else [
-            ("tensorrt", "TensorRT", "model.engine", False),
-            ("tensorrt", "TensorRT INT8", "model_int8.engine", True),
+            ("tensorrt", "TensorRT", ".engine", False),
+            ("tensorrt", "TensorRT INT8", ".engine", True),
         ]
     )
     variants = [
-        ("onnx", "ONNX", "model.onnx", False),
-        ("openvino", "OpenVINO", "model.xml", False),
-        ("openvino", "OpenVINO INT8", "model_int8.xml", True),
-        ("litert", "LiteRT", "model.tflite", False),
-        ("litert", "LiteRT INT8", "model_int8.tflite", True),
+        ("onnx", "ONNX", ".onnx", False),
+        ("openvino", "OpenVINO", ".xml", False),
+        ("openvino", "OpenVINO INT8", ".xml", True),
+        ("litert", "LiteRT", ".tflite", False),
+        ("litert", "LiteRT INT8", ".tflite", True),
     ] + plat
-    for key, tag, fn, is8 in variants:
-        if not (want(key) and (models_path / fn).exists()):
+    for key, tag, suffix, is8 in variants:
+        path = _int8_path(p.out, suffix) if is8 else p.out.with_suffix(suffix)
+        if not (key in p.formats and path.exists()):
             continue
         try:
-            m = _build_parity_backend(key, models_path / fn, cfg, n_out)
+            m = _build_parity_backend(key, path, p)
             if key == "tensorrt":
                 # Mirror __call__: _predict enqueues on m._stream, but the metric's
                 # .cpu() read runs on the default stream - without this the async
@@ -710,7 +747,7 @@ def _parity_report(rows, low, metric_names: list[str], models_path: Path) -> Non
         logger.info("Parity OK: exported backends match torch within threshold")
 
 
-def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
+def run_parity(p: _Parity, raw_model, model, x_test) -> None:
     """Compare each exported backend's detection scores against torch on one input.
 
     Scores (sorted top-K confidences) are the reorder-stable, end-to-end signal: they
@@ -718,7 +755,7 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
     boxes/logits/masks are dominated by background queries that never clear conf
     filtering, so comparing them is just noise - bench covers surviving-box geometry.
     """
-    x1, x_np = _parity_input(cfg, raw_model, x_test)
+    x1, x_np = _parity_input(p, raw_model, x_test)
     with torch.no_grad():
         ref = model(x1)[2]  # [1, K] sorted top-K confidences from the fused torch postproc
 
@@ -739,8 +776,8 @@ def run_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
             return torch.topk(flat, min(n_queries, flat.shape[1]), dim=-1).values
         return outs[2]  # fused: scores at index 2
 
-    _run_parity_backends(cfg, x1, x_np, want, models_path, add, extract)
-    _parity_report(rows, low, ["scores_cosine"], models_path)
+    _run_parity_backends(p, x1, x_np, add, extract)
+    _parity_report(rows, low, ["scores_cosine"], p.out.parent)
 
 
 def _sem_seg_outputs(outs) -> list[np.ndarray]:
@@ -750,7 +787,7 @@ def _sem_seg_outputs(outs) -> list[np.ndarray]:
     return sorted((_to_np(o)[0] for o in outs), key=np.ndim)
 
 
-def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
+def run_parity_sem_seg(p: _Parity, raw_model, model, x_test) -> None:
     """Per-pixel argmax agreement of each exported backend vs torch on one input, plus the
     probs cosine when the graph has the sem_seg_probs output.
 
@@ -758,7 +795,7 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
     reorder-free by construction; disagreement is confined to class-boundary pixels where
     near-tied logits flip under precision.
     """
-    x1, x_np = _parity_input(cfg, raw_model, x_test)
+    x1, x_np = _parity_input(p, raw_model, x_test)
     with torch.no_grad():
         ref = _sem_seg_outputs(model(x1))
 
@@ -778,32 +815,32 @@ def run_parity_sem_seg(cfg, raw_model, model, x_test, want, models_path: Path) -
         rows.append(row)
 
     metrics = ["pixel_agreement"] + (["probs_cosine"] if len(ref) > 1 else [])
-    _run_parity_backends(cfg, x1, x_np, want, models_path, add, lambda _, o: _sem_seg_outputs(o))
-    _parity_report(rows, low, metrics, models_path)
+    _run_parity_backends(p, x1, x_np, add, lambda _, o: _sem_seg_outputs(o))
+    _parity_report(rows, low, metrics, p.out.parent)
 
 
-def run_dynamic_size_parity(cfg, raw_model, model, x_test, want, models_path: Path) -> None:
-    """Regression guard for export.dynamic_input: ONNX must track torch at a second size.
+def run_dynamic_size_parity(p: _Parity, raw_model, model, x_test) -> None:
+    """Regression guard for dynamic_input: ONNX must track torch at a second size.
 
     Standard parity runs at the training resolution, where a graph with baked size
     constants still produces correct output. Rescaling the parity input by 3/4
     (stride-aligned) fails on any baked positional embedding, anchor, or box scale.
     `model` must be the img_size=None export model, so torch itself follows the input size.
     """
-    if not (cfg.export.dynamic_input and want("onnx")):
+    if not (p.dynamic_input and "onnx" in p.formats):
         return
     import onnxruntime as ort
     from torchvision.ops import box_iou
 
-    onnx_path = models_path / "model.onnx"
+    onnx_path = p.out.with_suffix(".onnx")
     if not onnx_path.exists():
         return
-    h, w = cfg.train.img_size
+    h, w = p.img_size
     h2, w2 = max(320, round(h * 0.75 / 32) * 32), max(320, round(w * 0.75 / 32) * 32)
     if (h2, w2) == (h, w):
         return
 
-    x1, _ = _parity_input(cfg, raw_model, x_test)
+    x1, _ = _parity_input(p, raw_model, x_test)
     x_small = F.interpolate(x1, size=(h2, w2), mode="bilinear", align_corners=False)
     with torch.no_grad():
         ref = model(x_small)
@@ -816,7 +853,7 @@ def run_dynamic_size_parity(cfg, raw_model, model, x_test, want, models_path: Pa
             f"baked into the graph. {e}"
         ) from e
 
-    if cfg.task == "sem_seg":
+    if p.task == "sem_seg":
         ref, outs = _sem_seg_outputs(ref), _sem_seg_outputs(outs)
         metrics = {"pixel_agreement": float((outs[0] == ref[0]).mean())}
         if len(ref) > 1:
@@ -827,7 +864,7 @@ def run_dynamic_size_parity(cfg, raw_model, model, x_test, want, models_path: Pa
         metrics = {"scores_cosine": _cosine(ref_scores, np.sort(outs[2].flatten()))}
         # Scores alone miss a baked box scale. Match each confident torch box to its best
         # same-label ONNX box over all queries, which is robust to near-tied rank swaps.
-        keep = ref[2][0] >= cfg.train.conf_thresh
+        keep = ref[2][0] >= 0.5  # the confident torch boxes
         if keep.any():
             iou = box_iou(ref[1][0][keep], torch.from_numpy(outs[1][0]))
             same = ref[0][0][keep][:, None] == torch.from_numpy(outs[0][0])[None]
@@ -842,113 +879,231 @@ def run_dynamic_size_parity(cfg, raw_model, model, x_test, want, models_path: Pa
         logger.warning(msg + " (below threshold: 0.99, box_iou 0.95)")
 
 
-@hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)
-def main(cfg: DictConfig):
+def _resolve(ckpt: Path, task: Optional[str], img_size) -> Tuple[Dict[str, torch.Tensor], Dict]:
+    """-> (state_dict, spec): the checkpoint's own facts with the export's task and img_size.
+    img_size: explicit argument, else checkpoint meta, else sidecar config.yaml, else 640."""
+    state_dict, spec = load_and_describe(ckpt)
+    if task is not None:
+        if not _task_ok(spec["task"], task):
+            raise ValueError(f"{ckpt.name} is a {spec['task']} checkpoint, not {task}")
+        spec["task"] = task
+    if isinstance(img_size, int):
+        img_size = (img_size, img_size)
+    spec["img_size"] = tuple(int(v) for v in img_size or spec["img_size"] or (640, 640))
+    return state_dict, spec
+
+
+def export(
+    ckpt: str | Path,
+    formats: str | Iterable[str] | None = ("onnx",),
+    *,
+    half: bool = True,
+    max_batch_size: int = 1,
+    img_size: int | Tuple[int, int] | None = None,
+    task: Optional[str] = None,
+    dynamic_input: bool = False,
+    sem_seg_probs: bool = False,
+    device: Optional[str] = None,
+    output_dir: str | Path | None = None,
+    name: Optional[str] = None,
+    parity: bool = False,
+    parity_image: str | Path | None = None,
+) -> Dict[str, Path]:
+    """Export a `.pt` checkpoint, no config needed; -> {format: artifact path}.
+
+    ```python
+    from dfine_seg import export
+
+    paths = export("weights/coco_s.pt", ["tensorrt"])  # {"tensorrt": weights/coco_s.engine}
+    ```
+
+    The architecture is read from the weights. Input size (h, w): `img_size` (an int means
+    square), else the checkpoint's metadata, else a `config.yaml` next to it, else 640x640.
+    `task` defaults to the checkpoint's own; the one alternative is "detect" from segment
+    weights. A missing released checkpoint name is downloaded, as in `load_model`.
+
+    formats: any of onnx, tensorrt, openvino, coreml, litert (paused); None = all but litert.
+    half: fp16 TensorRT engine.
+    max_batch_size: > 1 gives the graphs a dynamic batch axis up to this size.
+    dynamic_input: dynamic H/W for ONNX and OpenVINO; TensorRT and CoreML stay static.
+    sem_seg_probs: sem_seg only, adds the 1/4-scale softmax output.
+    output_dir, name: artifacts are `<output_dir>/<name>.<ext>`; defaults are the checkpoint's
+        directory and stem, so `weights/a.pt` -> `weights/a.onnx`, `weights/a.engine`.
+        TensorRT leaves its source ONNX there too.
+    parity: compare each artifact with torch on `parity_image` (jpg/png, or an RGB(+extras)
+        .npy; default: random input), print the table and write `parity.csv` next to the
+        artifacts. Low agreement only warns; a dynamic-H/W ONNX graph that fails at a second
+        size raises.
+
+    Raises if a requested format is not produced, e.g. TensorRT builds no engine.
+    """
+    if formats is None:
+        formats = DEFAULT_FORMATS
+    formats = (formats,) if isinstance(formats, str) else tuple(formats)
+    if unknown := [f for f in formats if f not in FORMATS]:
+        raise ValueError(f"unknown export format(s) {unknown}; choose from {FORMATS}")
+    ckpt = Path(ensure_pretrained(ckpt))
+    state_dict, spec = _resolve(ckpt, task, img_size)
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    # ".pt" is a placeholder suffix: every artifact swaps in its own (dots in `name` survive)
+    out = Path(ckpt.parent if output_dir is None else output_dir) / f"{name or ckpt.stem}.pt"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
     input_name = "input"
-    sem_seg = cfg.task == "sem_seg"
-    enable_mask_head = cfg.task == "segment"
+    sem_seg = spec["task"] == "sem_seg"
+    enable_mask_head = spec["task"] == "segment"
     output_names = ["sem_seg"] if sem_seg else ["labels", "boxes", "scores"]
-    if sem_seg and cfg.export.get("sem_seg_probs", False):
+    if sem_seg and sem_seg_probs:
         output_names.append("sem_seg_probs")
     if enable_mask_head:
         output_names.append("masks")
-    if cfg.task == "kpts":
+    if spec["task"] == "kpts":
         output_names.append("kpts")
-
-    device = cfg.train.device
-    # from_pretrained needs no trained run - it writes into today's fresh output dir.
-    if not cfg.export.from_pretrained:
-        cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
-
-    # from_pretrained exports before any training run, so the output dir may not exist yet
-    Path(cfg.train.path_to_save).mkdir(parents=True, exist_ok=True)
-    model_path = Path(cfg.train.path_to_save) / "model.pt"
 
     # TensorRT, CoreML and LiteRT are always static, fixed size for them.
     # dynamic_input adds an img_size=None model used only for the ONNX and OpenVINO
-    raw_model, model = prepare_export_models(cfg, device)
+    raw_model, model = prepare_export_models(spec, state_dict, device, sem_seg_probs)
     dyn_raw, dyn_model = raw_model, model
-    if cfg.export.dynamic_input:
-        dyn_raw, dyn_model = prepare_export_models(cfg, device, dynamic=True)
+    if dynamic_input:
+        dyn_raw, dyn_model = prepare_export_models(
+            spec, state_dict, device, sem_seg_probs, dynamic=True
+        )
 
-    x_test = torch.randn(cfg.export.max_batch_size, cfg.train.in_channels, *cfg.train.img_size).to(
-        device
-    )
+    x_test = torch.randn(max_batch_size, spec["in_channels"], *spec["img_size"]).to(device)
     _ = model(x_test)
 
-    # null = all shipped backends; a list (e.g. [tensorrt]) restricts what is built (research loop).
-    # litert is paused (litert-torch caps torch<2.13), so it is built only when asked for by name.
-    default_formats = ["onnx", "tensorrt", "openvino", "coreml"]
-    formats = cfg.export.get("formats", None)
-    want = (lambda f: f in default_formats) if formats is None else (lambda f: f in formats)
-
+    paths: Dict[str, Path] = {}
     # Openvino currently doesn't supprort some operations in the detection postprocessor,
     # so it gets the raw head; sem_seg's fused argmax graph is OV-supported as-is.
-    if want("openvino"):
+    if "openvino" in formats:
         raw_output_names = ["logits", "boxes"]
         if enable_mask_head:
             raw_output_names.append("masks")
-        if cfg.task == "kpts":
+        if spec["task"] == "kpts":
             raw_output_names.append("kpts")
-        raw_onnx_path = export_to_onnx(
-            dyn_model if sem_seg else dyn_raw,
-            model_path,
-            x_test,
-            cfg.export.max_batch_size,
-            half=False,
-            dynamic_input=cfg.export.dynamic_input,
-            input_name=input_name,
-            output_names=output_names if sem_seg else raw_output_names,
-        )
-        export_to_openvino(raw_onnx_path, x_test, cfg.export.dynamic_input, max_batch_size=1)
+        # The raw-head ONNX is only OpenVINO's input. Saved as <name>.onnx it would pass for
+        # the fused graph (and ONNXModel would read its two outputs as sem_seg).
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_onnx_path = export_to_onnx(
+                dyn_model if sem_seg else dyn_raw,
+                Path(tmp) / out.name,  # same file name: OpenVINO records it in the IR
+                x_test,
+                max_batch_size,
+                half=False,
+                dynamic_input=dynamic_input,
+                input_name=input_name,
+                output_names=output_names if sem_seg else raw_output_names,
+            )
+            paths["openvino"] = export_to_openvino(
+                raw_onnx_path, out.with_suffix(".xml"), x_test, dynamic_input, max_batch_size=1
+            )
 
     # TensorRT is always static, so it is built from a static model.onnx. With dynamic_input,
     # model.onnx is then re-exported as the dynamic graph (same path, replaces the static one).
-    if want("tensorrt") or (want("onnx") and not cfg.export.dynamic_input):
-        full_onnx_path = export_to_onnx(
+    if "tensorrt" in formats or ("onnx" in formats and not dynamic_input):
+        paths["onnx"] = export_to_onnx(
             model,
-            model_path,
+            out,
             x_test,
-            cfg.export.max_batch_size,
+            max_batch_size,
             half=False,
             dynamic_input=False,
             input_name=input_name,
             output_names=output_names,
         )
-        if want("tensorrt"):
-            export_to_tensorrt(
-                full_onnx_path,
-                cfg.export.half,
-                cfg.export.max_batch_size,
-                opt_bs=cfg.export.get("opt_batch_size", 1) or 1,
-            )
-    if want("onnx") and cfg.export.dynamic_input:
-        export_to_onnx(
+        if "tensorrt" in formats:
+            paths["tensorrt"] = export_to_tensorrt(paths["onnx"], half, max_batch_size)
+    if "onnx" in formats and dynamic_input:
+        paths["onnx"] = export_to_onnx(
             dyn_model,
-            model_path,
+            out,
             x_test,
-            cfg.export.max_batch_size,
+            max_batch_size,
             half=False,
             dynamic_input=True,
             input_name=input_name,
             output_names=output_names,
         )
 
-    if want("coreml"):
-        export_to_coreml(
-            model, model_path, x_test, half=False, max_batch_size=cfg.export.max_batch_size
+    if "coreml" in formats:
+        paths["coreml"] = export_to_coreml(
+            model, out, x_test, half=False, max_batch_size=max_batch_size
         )
 
-    if want("litert"):
+    if "litert" in formats:
         # sem_seg ships the fused wrapper (adapter passes non-dict outputs through)
-        export_to_litert(model if sem_seg else raw_model, model_path, x_test)
+        paths["litert"] = export_to_litert(model if sem_seg else raw_model, out, x_test)
 
-    logger.info(f"Exports saved to: {model_path.parent}")
+    logger.info(f"Exports saved to: {out.parent}")
 
-    if cfg.export.get("parity", True):
-        parity_fn = run_parity_sem_seg if sem_seg else run_parity
-        parity_fn(cfg, raw_model, model, x_test, want, model_path.parent)
-        run_dynamic_size_parity(cfg, dyn_raw, dyn_model, x_test, want, model_path.parent)
+    if parity:
+        p = _Parity(
+            out=out,
+            formats=formats,
+            task=spec["task"],
+            num_classes=spec["num_classes"],
+            img_size=spec["img_size"],
+            half=half,
+            dynamic_input=dynamic_input,
+            image=Path(parity_image) if parity_image is not None else None,
+        )
+        (run_parity_sem_seg if sem_seg else run_parity)(p, raw_model, model, x_test)
+        run_dynamic_size_parity(p, dyn_raw, dyn_model, x_test)
+    return {f: paths[f] for f in formats}
+
+
+def run_from_config(cfg: DictConfig) -> Dict[str, Path]:
+    """`dfine export`: maps the config onto export(), writing into train.path_to_save."""
+    pretrained = cfg.export.from_pretrained
+    if pretrained:
+        # A released checkpoint, no trained run: export into today's fresh output dir.
+        ckpt = ensure_pretrained(cfg.train.pretrained_model_path)
+    else:
+        cfg.exp = get_latest_experiment_name(cfg.exp, cfg.train.path_to_save)
+        ckpt = Path(cfg.train.path_to_save) / "model.pt"
+        if not ckpt.exists():
+            raise FileNotFoundError(
+                f"{ckpt} not found. Train first, or set export.from_pretrained=True "
+                "to export pretrained weights directly."
+            )
+    _check_config(
+        ckpt,
+        cfg.task,
+        len(cfg.train.label_to_name),
+        cfg.train.img_size,
+        n_kpts=num_kpts(cfg),
+        in_channels=cfg.train.in_channels,
+        pretrained=pretrained,
+    )
+
+    # null = all shipped backends; a list (e.g. [tensorrt]) restricts what is built (research loop).
+    formats = cfg.export.get("formats", None)
+    # a real training image anchors parity on true predictions (randn has none)
+    img_dir = Path(cfg.train.data_path) / "images"
+    images = sorted(img_dir.glob("*.jpg")) or sorted(img_dir.glob("*.png"))
+    return export(
+        ckpt,
+        None if formats is None else list(formats),
+        half=cfg.export.half,
+        max_batch_size=cfg.export.max_batch_size,
+        img_size=cfg.train.img_size,
+        task=cfg.task,
+        dynamic_input=cfg.export.dynamic_input,
+        sem_seg_probs=cfg.export.get("sem_seg_probs", False),
+        device=cfg.train.device,
+        output_dir=cfg.train.path_to_save,
+        name="model",
+        parity=cfg.export.get("parity", True),
+        parity_image=images[0] if images else None,
+    )
+
+
+def main():
+    # Decorated on call, not at import: `from dfine_seg import export` must not run Hydra's
+    # config discovery (a set-but-wrong $DFINE_SEG_CONFIG_DIR raises there).
+    hydra.main(version_base=None, config_path=config_dir(), config_name=CONFIG_NAME)(
+        run_from_config
+    )()
 
 
 if __name__ == "__main__":

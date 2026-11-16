@@ -51,6 +51,11 @@ def test_import_api_symbols_is_light():
     assert _leaked("from dfine_seg import load_model, read_image, Visualizer") == []
 
 
+def test_star_import_is_light():
+    """`export` is imported lazily and kept out of __all__: a star import must not load it."""
+    assert _leaked("from dfine_seg import *") == []
+
+
 def test_torch_wrapper_import_is_light():
     assert _leaked("from dfine_seg.infer.torch_model import TorchModel") == []
 

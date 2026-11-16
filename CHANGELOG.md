@@ -171,6 +171,7 @@ COCO val2017 (first 1000 images), S detect, TensorRT fp16, box mAP 50-95 (PyTorc
 
 The fix resulted in a slight CPU backends slowdown: S detect at 640 went from 52.1 to 53.7 ms on OpenVINO (+3%) and from 77.4 to 80.2 ms on ONNX Runtime (+4%).
 
-## 2026-11-16 - Custom UI for demo
+## 2026-11-16 - Custom UI for demo and python api update
 
 Dropping Gradio for a custom UI, same functionality.
+Python api now supports export functionality

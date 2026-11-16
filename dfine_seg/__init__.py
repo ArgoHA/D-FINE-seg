@@ -8,14 +8,22 @@ img = read_image("path/to/image.jpg")
 out = model(img)[0]
 print(out["boxes"], out["scores"], [model.names[int(i)] for i in out["labels"]])
 drawn = Visualizer(model)(img, out)           # annotated BGR copy, any task
+
+from dfine_seg import export
+export("runs/exp/model.pt", ["tensorrt"])     # {"tensorrt": Path("runs/exp/model.engine")}
 ```
 
 `load_model` returns the same inference wrapper you would build by hand
 (`TorchModel`, `TRTModel`, …), so its output contract is the wrapper's own.
 """
 
+from typing import TYPE_CHECKING
+
 from dfine_seg.api.loader import SIZES, TASKS, load_model, pretrained_path, read_image
 from dfine_seg.viz import Visualizer
+
+if TYPE_CHECKING:
+    from dfine_seg.dl.export import export as export
 
 __all__ = [
     "load_model",
@@ -26,6 +34,17 @@ __all__ = [
     "TASKS",
     "__version__",
 ]
+
+
+def __getattr__(name: str):
+    # export() lives with the training stack (Hydra, pandas), which `import dfine_seg` must not
+    # load, so it is imported on first use.
+    if name == "export":
+        from dfine_seg.dl.export import export
+
+        return export
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 try:  # installed distribution
     from importlib.metadata import version

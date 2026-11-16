@@ -288,6 +288,17 @@ Enable **DDP** (multi-GPU) by setting `train.ddp.enabled: True` and `train.ddp.n
 
 After export, a parity self-check (`export.parity`, on by default) runs each backend on a shared input and writes one cosine per backend - over the sorted top-K detection scores vs torch - to `parity.csv` next to the weights.
 
+From Python, `export` needs only a checkpoint, no config or run directory: the architecture comes from the weights and the input size from the checkpoint's metadata (else a `config.yaml` next to it, else 640x640). Artifacts are written next to the checkpoint under the same name, and it raises if a requested format is not produced. `dfine export` maps the config onto this same function.
+
+```python
+from dfine_seg import export
+
+paths = export("weights/coco_s.pt", ["tensorrt"], half=True, max_batch_size=1)
+paths["tensorrt"]  # Path("weights/coco_s.engine")
+```
+
+Other options: `img_size`, `task` (`"detect"` from segment weights), `dynamic_input`, `sem_seg_probs`, `device`, `output_dir` / `name` (where the artifacts go) and `parity` / `parity_image`.
+
 For `task: kpts` the graph has one more output, `kpts` `[B, K_top, num_kpts, 4]`: x, y in input pixels plus the presence and visible scores, gathered with the same top-K as the boxes. ONNX, TensorRT, OpenVINO and CoreML carry it.
 
 For `task: sem_seg` every backend gets the same fused-argmax graph: a single int32 `sem_seg` output `[B, H, W]` (label map at input resolution, no detection postprocessor), and parity compares per-pixel argmax agreement instead of score cosine.
