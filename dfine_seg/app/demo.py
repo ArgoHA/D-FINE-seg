@@ -1,70 +1,84 @@
 """
-D-FINE-seg Gradio Demo - detection, instance segmentation, semantic segmentation
+D-FINE-seg demo - a small browser UI for detection, instance and semantic segmentation,
+keypoints and SAM3. Standard library only: `http.server` serves the page in
+`dfine_seg/app/demo_ui/` and a JSON / raw-bytes API.
 
-Just run it - COCO detection weights download on first use:
     dfine demo          (or: python -m dfine_seg.app.demo)
 
-Everything is set from the UI; nothing here needs editing. The "Model" panel swaps in
-your own checkpoint at runtime (size preset or a path/upload) and lets you name its
-classes, so a freshly trained model can be tried on your images and videos immediately.
-
-Backends selectable in the UI:
-  D-FINE-seg - size preset (n|s|m|l|x) or a local artifact, format picked by extension:
-    .pt      -> PyTorch   (CUDA / MPS / CPU)
-    .engine  -> TensorRT  (CUDA)
-    .onnx    -> ONNXRuntime
-    .xml     -> OpenVINO  (CPU / iGPU)
-  SAM3       - text-promptable instance segmentation (facebook/sam3, lazy-loaded);
-              comma- or newline-separated prompts = classes (e.g. `car, person`)
-
-Tabs:
-  1. Images - upload or webcam snapshot -> annotated result
-  2. Video  - upload a video file -> annotated output
+COCO detection `s` loads at startup; everything else is picked in the page:
+  D-FINE-seg - a released preset (n|s|m|l|x per task) or your own artifact, by extension:
+    .pt -> PyTorch (CUDA / MPS / CPU), .engine -> TensorRT, .onnx -> ONNX Runtime,
+    .xml -> OpenVINO
+  SAM3       - text-promptable instance segmentation (facebook/sam3, lazy-loaded;
+               needs `pip install 'dfine-seg[label]'`)
+Inputs: an image (upload, drop or paste), the webcam (live, frame by frame) or a video file
+(rendered to H.264 with ffmpeg when it is installed).
 """
 
+import importlib.util
+import ipaddress
+import json
 import re
+import shutil
+import socket
 import subprocess
 import tempfile
+import threading
 import time
-import warnings
+import uuid
 from dataclasses import dataclass, field
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 import cv2
-import gradio as gr
 import numpy as np
 
 from dfine_seg import load_model
 from dfine_seg.api.loader import SIZES
 from dfine_seg.viz import Visualizer, classes_from_model
 
-# ─── Startup defaults (all overridable in the UI) ───────────────────────
-DEFAULT_MODEL = "s"  # size (n|s|m|l|x) -> COCO weights, or a path to .pt/.engine/.onnx/.xml
+DEFAULT_MODEL = "s"  # size (n|s|m|l|x) -> released weights, or a path to an artifact
 DEFAULT_TASK = "auto"  # auto | detect | segment | sem_seg | kpts
-DEFAULT_INPUT_SIZE = ""  # blank: a .pt reads its own config, a graph reads the graph
-DEFAULT_CONF_THRESH = 0.5  # initial slider value
-# ─────────────────────────────────────────────────────────────────────────
+DEFAULT_CONF_THRESH = 0.5
+UI_DIR = Path(__file__).with_name("demo_ui")
+STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+}
 
-# Released checkpoints a size preset resolves, label -> load_model(size, task). Labels
-# mirror the Python call, and anything not in here is treated as a path, so one field
-# covers both. sem_seg presets download the Cityscapes weights on first pick.
-PRESETS = {f"{s} ({t})": (s, t) for t in ("detect", "segment", "sem_seg", "kpts") for s in SIZES}
+# Released checkpoints, label -> load_model(size, task). Anything else is treated as a path.
+TASKS = ("detect", "segment", "sem_seg", "kpts")
+PRESETS = {f"{s} ({t})": (s, t) for t in TASKS for s in SIZES}
+WEIGHT_SUFFIXES = (".pt", ".onnx", ".engine")  # OpenVINO needs its .bin sibling: use a path
+
+SAM3_MODEL_ID = "facebook/sam3"
+SAM3_AVAILABLE = importlib.util.find_spec("transformers") is not None
 
 
-# ─── Model loading (driven by the UI) ────────────────────────────────────
+# ─── State ───────────────────────────────────────────────────────────────
 @dataclass
 class Loaded:
-    """The D-FINE backend currently serving both tabs."""
+    """The D-FINE backend currently serving every input."""
 
     model: object = None
-    # Fixed at load time, not per frame: its colors come from the model's class count, not
-    # from the labels present in one frame, which would repaint every class as the scene changes.
+    # Fixed at load time, not per frame: colors come from the model's class count, not
+    # from the labels present in one frame, which would repaint classes as the scene changes.
     vis: Optional[Visualizer] = None
-    names: Dict[int, str] = field(default_factory=dict)
+    info: dict = field(default_factory=dict)
 
 
 CURRENT = Loaded()
+# One forward at a time: webcam frames, image runs and video jobs share one GPU model.
+INFER_LOCK = threading.Lock()
+LOAD_LOCK = threading.Lock()  # one load at a time; INFER_LOCK is held only for the swap
+SAM_LOCK = threading.Lock()
+_sam_model = None
+WORK_DIR: Optional[Path] = None  # uploads and video results; created by main()
 
 
 def parse_names(text: str) -> Optional[Dict[int, str]]:
@@ -82,7 +96,7 @@ def parse_names(text: str) -> Optional[Dict[int, str]]:
 
 
 def parse_size(text: str) -> Tuple[int, int]:
-    """`640` -> (640, 640); `1024x2048` / `1024, 2048` -> (1024, 2048). Blank is handled above."""
+    """`640` -> (640, 640); `1024x2048` / `1024, 2048` -> (1024, 2048)."""
     parts = re.split(r"[x,\s]+", str(text).strip())  # unfiltered: `12x` must not read as 12
     if len(parts) == 1:
         parts *= 2
@@ -91,355 +105,420 @@ def parse_size(text: str) -> Tuple[int, int]:
     return int(parts[0]), int(parts[1])
 
 
-def load_backend(spec: str, names_text: str, input_size: str, task: str = "auto") -> str:
-    """(Re)load the D-FINE backend from the UI controls; returns a status line."""
-    src = (spec or "").strip() or DEFAULT_MODEL
-    src, preset_task = PRESETS.get(src, (src, None))  # a preset carries its own task
+def load_backend(spec: str, names_text: str = "", input_size: str = "", task: str = "auto"):
+    """(Re)load the D-FINE backend. Raises on failure and keeps the working model."""
+    spec = (spec or "").strip() or DEFAULT_MODEL
+    if spec in SIZES:  # `dfine demo m --task segment` -> its preset entry
+        spec = f"{spec} ({'detect' if task == 'auto' else task})"
+    src, preset_task = PRESETS.get(spec, (spec, None))  # a preset carries its own task
     task = preset_task or task
     suffix = Path(src).suffix.lower()
-    given = parse_names(names_text)
 
     kwargs = {"conf_thresh": DEFAULT_CONF_THRESH}
-    # Blank means "let the wrapper decide": a .pt reads train.img_size off the config frozen
-    # beside it, graph artifacts read the graph. Only override when asked.
-    if suffix in ("", ".pt") and str(input_size).strip():  # "" = a size preset
-        try:
-            kwargs["input_height"], kwargs["input_width"] = parse_size(input_size)
-        except ValueError as e:
-            return f"❌ {e}"
-    # task selects the weights for a size preset and the architecture for a .pt; graph
+    # Blank = let the wrapper decide: a .pt reads train.img_size off the config frozen beside
+    # it, graph artifacts read the graph.
+    if suffix in ("", ".pt") and str(input_size).strip():
+        kwargs["input_height"], kwargs["input_width"] = parse_size(input_size)
+    # task picks the weights for a size preset and the architecture for a .pt; graph
     # artifacts have it baked in, and their wrappers take no task=.
     picked = None if task == "auto" or suffix not in ("", ".pt") else task
 
-    try:
-        model = load_model(src, task=picked, names=given, **kwargs)
-    except Exception as e:  # keep the working model rather than leaving the demo dead
-        kept = f" - keeping {Path(CURRENT.model.model_path).name}" if CURRENT.model else ""
-        return f"❌ {type(e).__name__}: {e}{kept}"
-
-    # Fused-postprocess graphs (.onnx/.engine/.mlpackage) carry no class count anywhere, so
-    # their wrappers have no n_outputs at all and the names box is all we have.
-    known, names = classes_from_model(model)
-    CURRENT.model = model
-    CURRENT.names = names
-    CURRENT.vis = Visualizer(model)
-
-    h, w = getattr(model, "input_size", (None, None))
-    note = f" ({len(names)} named)" if 0 < len(names) < known else ("" if names else " (unnamed)")
-    # Plain text: this line is both the UI status and the console log, so no markup.
-    return (
-        f"✅ {type(model).__name__} | {Path(src).name} | "
-        f"task: {getattr(model, 'task', 'from graph')} | "
-        f"classes: {known or '? - name them above'}{note if known else ''} | "
-        f"device: {getattr(model, 'device', '?')} | input: {h}x{w}"
-    )
-
-
-# ─── SAM3 (text-promptable) backend ─────────────────────────────────────
-SAM3_MODEL_ID = "facebook/sam3"
-
-_sam_model = None
+    # Load outside INFER_LOCK: a first-use download or engine build must not stall
+    # running webcam frames and video jobs.
+    with LOAD_LOCK:
+        model = load_model(src, task=picked, names=parse_names(names_text), **kwargs)
+        known, names = classes_from_model(model)
+        h, w = getattr(model, "input_size", (None, None))
+        vis = Visualizer(model)
+        info = {
+            "spec": spec,
+            "preset": spec in PRESETS,
+            "name": spec if spec in PRESETS else Path(src).name,
+            "backend": type(model).__name__,
+            "task": getattr(model, "task", None),
+            "classes": known,
+            "named": len(names),
+            "device": str(getattr(model, "device", "")) or None,
+            "input": f"{h}x{w}" if h else None,
+        }
+        with INFER_LOCK:
+            CURRENT.model, CURRENT.vis, CURRENT.info = model, vis, info
+    print(f"[load] {json.dumps(CURRENT.info)}", flush=True)
+    return CURRENT.info
 
 
 def _get_sam_model():
     """Lazy-load SAM3 on first use - seconds from the HF cache, a ~6.5 GB download without."""
     global _sam_model
-    if _sam_model is None:
-        from dfine_seg.infer.sam3_model import SAM3Model
+    with SAM_LOCK:
+        if _sam_model is None:
+            from dfine_seg.infer.sam3_model import SAM3Model
 
-        gr.Info(f"Loading {SAM3_MODEL_ID} - downloads ~6.5 GB if it isn't cached yet")
-        print(f"Loading {SAM3_MODEL_ID} …", flush=True)
-        t0 = time.perf_counter()
-        _sam_model = SAM3Model(model_path=SAM3_MODEL_ID, conf_thresh=DEFAULT_CONF_THRESH)
-        print(f"Loaded {SAM3_MODEL_ID} in {time.perf_counter() - t0:.1f}s", flush=True)
+            print(f"Loading {SAM3_MODEL_ID} (~6.5 GB download if not cached) …", flush=True)
+            t0 = time.perf_counter()
+            _sam_model = SAM3Model(model_path=SAM3_MODEL_ID, conf_thresh=DEFAULT_CONF_THRESH)
+            print(f"Loaded {SAM3_MODEL_ID} in {time.perf_counter() - t0:.1f}s", flush=True)
     return _sam_model
 
 
-# ─── Initialization ─────────────────────────────────────────────────────
-DEFAULT_BACKEND = "D-FINE-seg"
+@dataclass
+class Run:
+    """Settings of one image / webcam frame / video job, parsed from the query string."""
+
+    backend: str = "dfine"  # dfine | sam3
+    prompt: str = "person"
+    conf: float = DEFAULT_CONF_THRESH
+    minimize: bool = False
+    stride: int = 1
+
+    @classmethod
+    def from_query(cls, q: dict) -> "Run":
+        one = {k: v[-1] for k, v in q.items()}
+        return cls(
+            backend="sam3" if one.get("backend") == "sam3" else "dfine",
+            prompt=one.get("prompt", "person"),
+            conf=float(np.clip(float(one.get("conf", DEFAULT_CONF_THRESH)), 0.0, 1.0)),
+            minimize=one.get("minimize") in ("1", "true"),
+            stride=max(1, int(one.get("stride", 1))),
+        )
+
+    def predictor(self):
+        """-> (callable frame -> result dict, Visualizer), both fixed for this run."""
+        if self.backend == "sam3":
+            if not SAM3_AVAILABLE:
+                raise RuntimeError("SAM3 needs transformers: pip install 'dfine-seg[label]'")
+            model = _get_sam_model()
+            prompts = model.parse_prompts(self.prompt)
+            vis = Visualizer(n_classes=len(prompts), class_names=dict(enumerate(prompts)))
+
+            def predict(img):
+                with INFER_LOCK:
+                    # Prompts persist on the shared model; setting them drops the cached text
+                    # embeddings, so only do it when another run changed them.
+                    if model.prompts != prompts:
+                        model.prompts = prompts
+                    return model(img, conf_thresh=self.conf)[0]
+
+            return predict, vis
+
+        model, vis = CURRENT.model, CURRENT.vis
+        if model is None:
+            raise RuntimeError("no model loaded")
+
+        def predict(img):
+            with INFER_LOCK:
+                return model(img, conf_thresh=self.conf)[0]
+
+        return predict, vis
 
 
-# ─── Inference helpers ───────────────────────────────────────────────────
-def _select_backend(backend: str, prompt: str):
-    """Return (model, visualizer) for the chosen backend, applying the prompt."""
-    if backend == "SAM3":
-        m = _get_sam_model()
-        m.prompts = m.parse_prompts(prompt)
-        return m, Visualizer(n_classes=len(m.prompts), class_names=dict(enumerate(m.prompts)))
-    if CURRENT.model is None:
-        raise gr.Error("No model loaded - fix the model settings above and press Load.")
-    return CURRENT.model, CURRENT.vis
+def _summary(out: dict) -> str:
+    if "sem_seg" in out:
+        labels = out["sem_seg"]
+        labels = np.asarray(labels.cpu() if hasattr(labels, "cpu") else labels)
+        n = len(np.unique(labels[labels != 255]))
+        return f"{n} class{'es' * (n != 1)}"
+    n = len(out.get("labels", []))
+    return f"{n} object{'s' * (n != 1)}"
 
 
-def _clamp_conf(conf_thresh: float) -> float:
-    """The slider bounds it, but Gradio API clients can send anything."""
-    return float(np.clip(conf_thresh, 0.0, 1.0))
-
-
-def _run_on_bgr(img_bgr, model_obj, vis_obj, conf_thresh: float, minimize: bool = False):
-    """Run model + visualizer on a single BGR frame. Returns annotated BGR."""
-    out = model_obj(img_bgr, conf_thresh=_clamp_conf(conf_thresh))[0]
-    return vis_obj(img_bgr, out, minimize=minimize)
-
-
-# ─── Tab 1: Images (single upload or webcam snapshot) ───────────────────
-def predict_image(
-    img: np.ndarray | None,
-    backend: str = DEFAULT_BACKEND,
-    prompt: str = "person",
-    conf_thresh: float = DEFAULT_CONF_THRESH,
-    minimize: bool = False,
-):
-    """Accept a single RGB image, return annotated RGB."""
-    if img is None:
-        return None
-    # Logged before the work starts, so a slow click is distinguishable from a queued one.
-    print(f"[image] {backend} {img.shape[1]}x{img.shape[0]} …", flush=True)
-    model_obj, vis_obj = _select_backend(backend, prompt)
-    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+def annotate(img: np.ndarray, run: Run) -> Tuple[np.ndarray, float, str]:
+    """BGR frame -> (annotated BGR, model ms, summary)."""
+    predict, vis = run.predictor()
     t0 = time.perf_counter()
-    vis = _run_on_bgr(img_bgr, model_obj, vis_obj, conf_thresh, minimize=minimize)
+    out = predict(img)
     ms = (time.perf_counter() - t0) * 1000
-    print(f"[image] {backend} {ms:.1f} ms")
-    return cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+    return vis(img, out, minimize=run.minimize), ms, _summary(out)
 
 
-# ─── Tab 2: Video ───────────────────────────────────────────────────────
-def predict_video(
-    video_path: str | None,
-    backend: str = DEFAULT_BACKEND,
-    prompt: str = "person",
-    conf_thresh: float = DEFAULT_CONF_THRESH,
-    stride: int = 1,
-    minimize: bool = False,
-):
-    """Process every `stride`-th frame; copy annotations to skipped frames."""
-    if video_path is None:
-        return None
-    model_obj, vis_obj = _select_backend(backend, prompt)
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise gr.Error(f"Cannot open video: {video_path}")
+# ─── Video jobs ──────────────────────────────────────────────────────────
+@dataclass
+class Job:
+    src: Path
+    run: Run
+    out: Path = None
+    status: str = "queued"  # queued | running | encoding | done | error | cancelled
+    frames: int = 0
+    total: int = 0
+    fps: float = 0.0
+    error: str = ""
+    preview: bytes = b""  # latest annotated frame (JPEG) for the live preview
+    playable: bool = True  # False = mp4v fallback without ffmpeg, download only
+    cancel: bool = False
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    stride = max(1, int(stride))
-    print(f"[video] {backend} {w}x{h}, {total} frames, stride {stride} …", flush=True)
+    def public(self) -> dict:
+        keys = ("status", "frames", "total", "fps", "error", "playable")
+        return {k: getattr(self, k) for k in keys}
 
-    out_path = tempfile.mktemp(suffix=".mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
 
-    idx = 0
-    last_results = None
-    t0 = time.perf_counter()
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if idx % stride == 0:
-            results = model_obj(frame, conf_thresh=_clamp_conf(conf_thresh))
-            last_results = results[0]
-        if last_results is not None:
-            frame = vis_obj(frame, last_results, minimize=minimize)
-        writer.write(frame)
-        idx += 1
-        if idx % 100 == 0:
-            elapsed = time.perf_counter() - t0
-            print(f"[video] {idx}/{total} frames  ({idx / elapsed:.1f} fps)")
+JOBS: Dict[str, Job] = {}
 
-    cap.release()
-    writer.release()
-    elapsed = time.perf_counter() - t0
-    print(f"[video] done - {idx} frames in {elapsed:.1f}s ({idx / elapsed:.1f} fps)")
 
-    # Re-encode to H.264 so browsers can play it
-    h264_path = tempfile.mktemp(suffix=".mp4")
+class VideoWriter:
+    """Pipes raw frames into ffmpeg (H.264 in one pass, so browsers can play the result);
+    without ffmpeg it falls back to OpenCV's mp4v, which browsers cannot play."""
+
+    def __init__(self, path: Path, fps: float, w: int, h: int):
+        self.proc = self.cv = None
+        if shutil.which("ffmpeg"):
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps:.3f}",
+                "-i", "-", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",  # yuv420p needs even sides
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", str(path),
+            ]  # fmt: skip
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        else:
+            self.cv = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+
+    def write(self, frame: np.ndarray) -> None:
+        if self.proc:
+            self.proc.stdin.write(frame.tobytes())
+        else:
+            self.cv.write(frame)
+
+    def close(self) -> bool:
+        """Finish the file; returns whether a browser can play it."""
+        if not self.proc:
+            self.cv.release()
+            return False
+        _, err = self.proc.communicate()
+        if self.proc.returncode:
+            raise RuntimeError(f"ffmpeg failed: {err.decode(errors='replace')[-300:]}")
+        return True
+
+    def abort(self) -> None:
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+        elif self.cv:
+            self.cv.release()
+
+
+def run_video(job: Job) -> None:
+    """Process every `stride`-th frame; skipped frames reuse the last result."""
+    cap, writer = cv2.VideoCapture(str(job.src)), None
     try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                out_path,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "23",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-an",
-                h264_path,
-            ],
-            check=True,
-            capture_output=True,
-        )
-        Path(out_path).unlink(missing_ok=True)
-        return h264_path
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"[video] ffmpeg re-encode failed ({e}), returning mp4v file")
-        return out_path
+        if not cap.isOpened():
+            raise RuntimeError("cannot open this video")
+        predict, vis = job.run.predictor()
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        job.total, job.status = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), "running"
+        writer = VideoWriter(job.out, fps, w, h)
+        last, t0, shown = None, time.perf_counter(), 0.0
+        while not job.cancel:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if job.frames % job.run.stride == 0:
+                last = predict(frame)
+            frame = vis(frame, last, minimize=job.run.minimize)
+            writer.write(frame)
+            job.frames += 1
+            now = time.perf_counter()
+            job.fps = job.frames / (now - t0)
+            if now - shown > 0.25:  # a preview a few times per second is enough
+                job.preview, shown = _jpeg(frame, 80), now
+        job.status = "encoding"
+        job.playable, writer = writer.close(), None
+        job.status = "cancelled" if job.cancel else "done"
+        print(f"[video] {job.status}: {job.frames} frames, {job.fps:.1f} fps", flush=True)
+    except Exception as e:
+        job.status, job.error = "error", f"{type(e).__name__}: {e}"
+        print(f"[video] {job.error}", flush=True)
+        if writer:
+            writer.abort()
+    finally:
+        cap.release()
 
 
-# ─── Build Gradio app ───────────────────────────────────────────────────
-def build_ui(model: str = DEFAULT_MODEL, task: str = DEFAULT_TASK) -> gr.Blocks:
-    """Build the app; loads the startup model first so the UI opens ready to run."""
-    startup_status = load_backend(model, "", DEFAULT_INPUT_SIZE, task)
-    print(startup_status)
-    # Show the startup model as its preset entry when it is one, else as the raw path.
-    wanted = (model, "detect" if task == "auto" else task)
-    initial = next((label for label, v in PRESETS.items() if v == wanted), model)
+def start_job(src: Path, run: Run) -> str:
+    """Start a video job. Finished jobs' results are deleted to keep the temp dir small;
+    their sources are kept while the new job uses them, so "process again" needs no upload."""
+    for jid, old in list(JOBS.items()):
+        if old.status not in ("queued", "running", "encoding"):
+            JOBS.pop(jid).out.unlink(missing_ok=True)
+            if old.src != src:
+                old.src.unlink(missing_ok=True)
+    jid = uuid.uuid4().hex[:12]
+    JOBS[jid] = job = Job(src=src, run=run, out=WORK_DIR / f"{jid}.mp4")
+    threading.Thread(target=run_video, args=(job,), daemon=True).start()
+    return jid
 
-    with gr.Blocks(title="D-FINE-seg + SAM3 Demo") as demo:
-        gr.Markdown(
-            f"# D-FINE-seg + SAM3 Demo\nSecond backend: `{SAM3_MODEL_ID}` (text-promptable)"
-        )
-        model_status = gr.Markdown(startup_status)  # outside the accordion: always visible
 
-        with gr.Accordion("Change model", open=False) as model_panel:
-            with gr.Row():
-                model_spec = gr.Dropdown(
-                    choices=list(PRESETS),
-                    value=initial,
-                    label="Model",
-                    info="a released COCO checkpoint, or type/upload a path to your own "
-                    "(.pt / .engine / .onnx / .xml) - task is read from it",
-                    allow_custom_value=True,
-                    scale=3,
+def _jpeg(img: np.ndarray, quality: int = 92) -> bytes:
+    return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes()
+
+
+# ─── HTTP ────────────────────────────────────────────────────────────────
+class Handler(BaseHTTPRequestHandler):
+    server_version = "dfine-demo"
+
+    def log_message(self, fmt, *args):  # quiet: webcam mode is a request per frame
+        pass
+
+    # responses
+    def _send(self, body: bytes, ctype: str, status=HTTPStatus.OK, headers: dict = None):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _json(self, obj, status=HTTPStatus.OK):
+        self._send(json.dumps(obj).encode(), "application/json", status)
+
+    def _error(self, msg: str, status=HTTPStatus.BAD_REQUEST):
+        self._json({"error": msg}, status)
+
+    def _file(self, path: Path, ctype: str):
+        """Serve a file with single-range support, so the browser can seek in the video."""
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
+        if m and (m[1] or m[2]):
+            if m[1]:
+                start, end = int(m[1]), min(int(m[2] or end), end)
+            else:  # suffix range: the last N bytes
+                start = max(size - int(m[2]), 0)
+            if start > end:  # past EOF, inverted, or `bytes=-0`
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+        partial = end - start + 1 < size
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if partial else HTTPStatus.OK)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        with open(path, "rb") as f:
+            f.seek(start)
+            left = end - start + 1
+            while left > 0 and (chunk := f.read(min(1 << 20, left))):
+                self.wfile.write(chunk)
+                left -= len(chunk)
+
+    # requests
+    def _host_ok(self) -> bool:
+        """DNS-rebinding guard: a rebound attacker domain makes its page same-origin (so the
+        X-DFine header no longer helps), but its requests still carry the attacker's Host.
+        Accept IP literals, localhost and this machine's own names only."""
+        host = (urlsplit(f"//{self.headers.get('Host', '')}").hostname or "").lower()
+        try:
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            return host in self.server.allowed_hosts
+
+    def _body(self) -> bytes:
+        return self.rfile.read(int(self.headers.get("Content-Length", 0)))
+
+    def _body_to(self, path: Path) -> Path:
+        left = int(self.headers.get("Content-Length", 0))
+        with open(path, "wb") as f:
+            while left > 0 and (chunk := self.rfile.read(min(1 << 20, left))):
+                f.write(chunk)
+                left -= len(chunk)
+        return path
+
+    def do_GET(self):
+        if not self._host_ok():
+            return self._error("unexpected Host header", HTTPStatus.FORBIDDEN)
+        url = urlsplit(self.path)
+        parts = url.path.strip("/").split("/")
+        if url.path in STATIC:
+            name, ctype = STATIC[url.path]
+            return self._send((UI_DIR / name).read_bytes(), ctype)
+        if url.path == "/api/state":
+            return self._json(
+                {
+                    "presets": [{"key": k, "size": s, "task": t} for k, (s, t) in PRESETS.items()],
+                    "model": CURRENT.info,
+                    "sam3": SAM3_AVAILABLE,
+                    "ffmpeg": shutil.which("ffmpeg") is not None,
+                }
+            )
+        if len(parts) >= 3 and parts[:2] == ["api", "video"] and parts[2] in JOBS:
+            job = JOBS[parts[2]]
+            if len(parts) == 3:
+                return self._json(job.public())
+            if parts[3] == "preview" and job.preview:
+                return self._send(job.preview, "image/jpeg")
+            if parts[3] == "result" and job.status in ("done", "cancelled"):
+                return self._file(job.out, "video/mp4")
+        self._error("not found", HTTPStatus.NOT_FOUND)
+
+    do_HEAD = do_GET
+
+    def do_POST(self):
+        if not self._host_ok():
+            return self._error("unexpected Host header", HTTPStatus.FORBIDDEN)
+        # A custom header forces a CORS preflight that this server never answers, so other
+        # websites open in the same browser cannot drive the API (it loads local files).
+        if self.headers.get("X-DFine") != "1":
+            return self._error("missing X-DFine header", HTTPStatus.FORBIDDEN)
+        url = urlsplit(self.path)
+        q = parse_qs(url.query)
+        try:
+            if url.path == "/api/load":
+                req = json.loads(self._body() or b"{}")
+                info = load_backend(
+                    req.get("model", ""), req.get("names", ""), req.get("input_size", "")
                 )
-                model_size = gr.Textbox(
-                    value=DEFAULT_INPUT_SIZE,
-                    label="Input size",
-                    info="PyTorch only - blank reads it from the checkpoint's config; "
-                    "else `640` or `1024x2048`",
-                    placeholder="auto",
-                    scale=1,
-                )
-            with gr.Row():
-                # OpenVINO needs its .bin sibling, which an upload drops - use the path box.
-                model_file = gr.File(
-                    label="…or upload weights (.pt / .onnx / .engine)",
-                    file_types=[".pt", ".onnx", ".engine"],
-                    type="filepath",
-                    scale=1,
-                )
-                model_names = gr.Textbox(
-                    label="Class names (optional)",
-                    info="comma- or newline-separated, in class-id order; blank = the model's own",
-                    placeholder="person, car, dog",
-                    lines=3,
-                    scale=2,
-                )
-            load_btn = gr.Button("Load model", variant="secondary")
+                return self._json({"model": info})
+            if url.path == "/api/upload":  # weights, raw body; the client then calls /api/load
+                suffix = Path(q.get("name", [""])[-1]).suffix.lower()
+                if suffix not in WEIGHT_SUFFIXES:
+                    return self._error(f"expected one of {', '.join(WEIGHT_SUFFIXES)}")
+                stem = re.sub(r"[^\w.-]", "_", Path(q["name"][-1]).stem)[:60] or "weights"
+                (WORK_DIR / "weights").mkdir(exist_ok=True)
+                path = self._body_to(WORK_DIR / "weights" / f"{stem}{suffix}")
+                return self._json({"path": str(path)})
+            if url.path == "/api/image":
+                buf = np.frombuffer(self._body(), np.uint8)
+                img = cv2.imdecode(buf, cv2.IMREAD_COLOR) if buf.size else None
+                if img is None:
+                    return self._error("could not decode the image")
+                run = Run.from_query(q)
+                vis, ms, summary = annotate(img, run)
+                quality = int(q.get("quality", ["92"])[-1])
+                headers = {"X-Infer-Ms": f"{ms:.1f}", "X-Summary": summary}
+                return self._send(_jpeg(vis, quality), "image/jpeg", headers=headers)
+            if url.path == "/api/video":
+                src = self._body_to(WORK_DIR / f"{uuid.uuid4().hex[:12]}_in")
+                return self._json({"job": start_job(src, Run.from_query(q))})
+            parts = url.path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "video"] and parts[2] in JOBS:
+                job = JOBS[parts[2]]
+                if parts[3] == "cancel":
+                    job.cancel = True
+                    return self._json({"ok": True})
+                if parts[3] == "rerun":  # same uploaded source, the settings in the query
+                    if not job.src.exists():
+                        return self._error("the source video is gone, open it again")
+                    return self._json({"job": start_job(job.src, Run.from_query(q))})
+        except Exception as e:  # report to the page; the server and current model stay up
+            return self._error(f"{type(e).__name__}: {e}", HTTPStatus.UNPROCESSABLE_ENTITY)
+        self._error("not found", HTTPStatus.NOT_FOUND)
 
-        def load_and_collapse(*args):
-            """Collapse the panel once loaded - but stay open on ❌ so the cause is in view."""
-            status = load_backend(*args)
-            return status, gr.Accordion(open=status.startswith("❌"))
 
-        model_file.change(lambda p: p or "", inputs=model_file, outputs=model_spec)
-        load_btn.click(  # one round-trip: status and panel state come back together
-            fn=load_and_collapse,
-            inputs=[model_spec, model_names, model_size],
-            outputs=[model_status, model_panel],
-        )
-
-        with gr.Tabs():
-            # ── Images: upload or webcam snapshot via bottom icons ───────
-            with gr.TabItem("Images"):
-                with gr.Row():
-                    with gr.Column():
-                        img_in = gr.Image(
-                            sources=["upload", "webcam"],
-                            type="numpy",
-                            label="Upload or Capture",
-                        )
-                        img_backend = gr.Radio(
-                            ["D-FINE-seg", "SAM3"], value=DEFAULT_BACKEND, label="Backend"
-                        )
-                        img_prompt = gr.Textbox(
-                            value="person",
-                            label="Text prompts",
-                            info="SAM3 only - comma- or newline-separated; each prompt = a class",
-                        )
-                        img_conf_thresh = gr.Slider(
-                            minimum=0.0,
-                            maximum=1.0,
-                            step=0.01,
-                            value=DEFAULT_CONF_THRESH,
-                            label="Confidence threshold",
-                        )
-                        img_minimize = gr.Checkbox(
-                            value=False,
-                            label="Minimize visualization (boxes only, no labels)",
-                        )
-                        img_btn = gr.Button("Run", variant="primary")
-                    with gr.Column():
-                        img_out = gr.Image(type="numpy", label="Result", format="png")
-                img_btn.click(
-                    fn=predict_image,
-                    inputs=[img_in, img_backend, img_prompt, img_conf_thresh, img_minimize],
-                    outputs=img_out,
-                )
-
-            # ── Video: upload file ───────────────────────────────────────
-            with gr.TabItem("Video"):
-                with gr.Row():
-                    with gr.Column():
-                        vid_in = gr.Video(
-                            sources=["upload"],
-                            label="Upload Video",
-                            format="mp4",
-                        )
-                        vid_backend = gr.Radio(
-                            ["D-FINE-seg", "SAM3"], value=DEFAULT_BACKEND, label="Backend"
-                        )
-                        vid_prompt = gr.Textbox(
-                            value="person",
-                            label="Text prompts",
-                            info="SAM3 only - comma- or newline-separated; each prompt = a class",
-                        )
-                        vid_conf_thresh = gr.Slider(
-                            minimum=0.0,
-                            maximum=1.0,
-                            step=0.01,
-                            value=DEFAULT_CONF_THRESH,
-                            label="Confidence threshold",
-                        )
-                        vid_stride = gr.Slider(
-                            minimum=1,
-                            maximum=30,
-                            step=1,
-                            value=1,
-                            label="Frame stride (1 = every frame)",
-                        )
-                        vid_minimize = gr.Checkbox(
-                            value=False,
-                            label="Minimize visualization (boxes only, no labels)",
-                        )
-                        vid_btn = gr.Button("Run", variant="primary")
-                    with gr.Column():
-                        vid_out = gr.Video(label="Annotated Video")
-                vid_btn.click(
-                    fn=predict_video,
-                    inputs=[
-                        vid_in,
-                        vid_backend,
-                        vid_prompt,
-                        vid_conf_thresh,
-                        vid_stride,
-                        vid_minimize,
-                    ],
-                    outputs=vid_out,
-                )
-
-    return demo
+def make_server(host: str, port: int) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((host, port), Handler)
+    server.daemon_threads = True
+    name = socket.gethostname().lower()
+    server.allowed_hosts = {"localhost", host.lower(), name, f"{name}.local"}
+    return server
 
 
 def main(
@@ -447,12 +526,14 @@ def main(
     task: str = DEFAULT_TASK,
     host: str = "0.0.0.0",  # LAN-reachable: the page loads arbitrary local paths as models
     port: int = 7860,
-    share: bool = False,
 ) -> None:
-    # gradio 6.16 trips this inside its own queue route, once per request
-    warnings.filterwarnings("ignore", "'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated")
+    global WORK_DIR
+    # Load before serving, so the page opens ready to run.
+    load_backend(model, task=task)
+    server = make_server(host, port)
+    WORK_DIR = Path(tempfile.mkdtemp(prefix="dfine_demo_"))  # after anything that can fail
     if host not in ("127.0.0.1", "localhost"):
-        # The Model panel loads any path the browser sends, so this hands local-file
+        # The model panel loads any path the browser sends, so this hands local-file
         # probing and untrusted-graph deserialization to everyone who can reach the port.
         print(
             f"WARNING: serving on {host} - anyone who can reach this port can load "
@@ -460,8 +541,14 @@ def main(
         )
     # 0.0.0.0 is a bind address, not a thing a browser can open.
     click = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-    print(f"Open http://{click}:{port} in your browser")
-    build_ui(model, task).launch(server_name=host, server_port=port, share=share)
+    print(f"Open http://{click}:{server.server_port} in your browser", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        shutil.rmtree(WORK_DIR, ignore_errors=True)
 
 
 if __name__ == "__main__":

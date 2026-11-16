@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>D-FINE-seg demo</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <!-- Same fonts as dfine-seg.argoai.space; offline, the system fallbacks in style.css apply. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="wrap wide nav-inner">
+      <a class="brand" href="/"><img src="favicon.svg" alt="" width="22" height="22">D-FINE-seg <span class="brand-tag mono">demo</span></a>
+      <div class="nav-links">
+        <span class="pill mono" id="pill"><i></i><span>starting…</span></span>
+        <a href="https://dfine-seg.argoai.space" target="_blank" rel="noopener">Showcase</a>
+        <a href="https://github.com/ArgoHA/D-FINE-seg" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="wrap wide layout">
+    <aside class="side">
+      <section class="panel">
+        <div class="panel-head"><h3>Model</h3></div>
+        <div class="tabs tabs-sm seg" role="tablist" id="backend">
+          <button class="tab" role="tab" data-backend="dfine" aria-selected="true">D-FINE-seg</button>
+          <button class="tab" role="tab" data-backend="sam3" aria-selected="false">SAM3</button>
+        </div>
+
+        <div id="dfine-controls" class="stack">
+          <label class="ctrl">Weights
+            <select id="model"></select>
+          </label>
+          <div id="custom-row" class="row" hidden>
+            <input id="path" class="input mono" placeholder="/path/to/model.pt | .engine | .onnx | .xml" spellcheck="false">
+            <button class="btn btn-ghost btn-sm" id="load-path">Load</button>
+          </div>
+          <label class="btn btn-ghost btn-sm upload">
+            <input type="file" id="weights" accept=".pt,.onnx,.engine" hidden>
+            Upload weights <span class="muted mono">.pt .onnx .engine</span>
+          </label>
+          <details class="fold">
+            <summary>Advanced <span class="muted small">class names, input size</span></summary>
+            <div class="fold-body stack">
+              <label class="ctrl">Class names
+                <textarea id="names" class="input" rows="3" placeholder="person, car, dog   (blank = the model's own)"></textarea>
+              </label>
+              <label class="ctrl">Input size <span class="muted small">PyTorch only</span>
+                <input id="size" class="input mono" placeholder="auto  |  640  |  1024x2048">
+              </label>
+              <button class="btn btn-ghost btn-sm" id="apply">Reload with these</button>
+            </div>
+          </details>
+          <p class="model-info small" id="model-info"></p>
+        </div>
+
+        <div id="sam-controls" class="stack" hidden>
+          <label class="ctrl">Text prompts <span class="muted small">comma-separated, each one is a class</span>
+            <input id="prompt" class="input" value="person" spellcheck="false">
+          </label>
+          <p class="small muted">facebook/sam3 loads on first use (a ~6.5 GB download if it isn't cached yet).</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h3>Settings</h3></div>
+        <label class="ctrl">
+          <span class="ctrl-row">Confidence threshold <output id="conf-val" class="mono">0.50</output></span>
+          <input type="range" id="conf" min="0" max="1" step="0.01" value="0.5">
+        </label>
+        <label class="ctrl ctrl-check"><input type="checkbox" id="minimize"> Boxes and masks only, no labels</label>
+        <label class="ctrl" id="stride-ctrl" hidden>
+          <span class="ctrl-row">Frame stride <output id="stride-val" class="mono">1</output></span>
+          <input type="range" id="stride" min="1" max="30" step="1" value="1">
+        </label>
+      </section>
+    </aside>
+
+    <section class="main">
+      <div class="tabs" role="tablist" id="modes">
+        <button class="tab" role="tab" data-mode="file" aria-selected="true">Image / video</button>
+        <button class="tab" role="tab" data-mode="webcam" aria-selected="false">Webcam</button>
+      </div>
+
+      <!-- image or video file -->
+      <div class="view" data-view="file">
+        <div class="canvas-area" id="file-area">
+          <label class="drop" id="drop">
+            <input type="file" id="file" accept="image/*,video/*" hidden>
+            <strong>Drop an image or a video here</strong>
+            <span class="muted">or click to browse, or paste an image with Ctrl+V</span>
+          </label>
+          <div class="compare" id="compare" hidden>
+            <img id="img-out" alt="Result">
+            <img id="img-in" class="compare-top" alt="Input">
+            <div class="wipe" id="wipe" tabindex="0" role="slider" aria-label="Compare input and result" aria-valuemin="0" aria-valuemax="100"><span class="wipe-knob">⇆</span></div>
+            <span class="tag tag-l">Input</span><span class="tag tag-r">Result</span>
+          </div>
+          <video id="vid-in" class="media" controls muted playsinline hidden></video>
+          <img id="vid-preview" class="media" alt="Processing preview" hidden>
+          <video id="vid-out" class="media" controls playsinline hidden></video>
+          <div class="busy" id="busy" hidden><span class="spinner"></span><span id="busy-text">Running…</span></div>
+        </div>
+        <div class="progress" id="vid-progress" hidden><i></i></div>
+        <div class="bar">
+          <span class="stats mono" id="file-stats"></span>
+          <span class="bar-actions">
+            <button class="btn btn-ghost btn-sm" id="file-new" hidden title="Drop or paste another file here at any time">Clear</button>
+            <button class="btn btn-ghost btn-sm" id="vid-cancel" hidden>Cancel</button>
+            <button class="btn btn-primary btn-sm" id="vid-run" hidden>Process video</button>
+            <a class="btn btn-primary btn-sm" id="file-dl" hidden>Download</a>
+          </span>
+        </div>
+      </div>
+
+      <!-- webcam -->
+      <div class="view" data-view="webcam" hidden>
+        <div class="canvas-area">
+          <div class="drop drop-static" id="cam-idle">
+            <strong>Live webcam</strong>
+            <span class="muted" id="cam-note">Each frame runs through the model as fast as it returns.</span>
+            <button class="btn btn-primary" id="cam-start">Start camera</button>
+          </div>
+          <canvas id="cam-out" class="media" hidden></canvas>
+          <video id="cam-src" playsinline muted hidden></video>
+        </div>
+        <div class="bar">
+          <span class="stats mono" id="cam-stats"></span>
+          <span class="bar-actions"><button class="btn btn-ghost btn-sm" id="cam-stop" hidden>Stop</button></span>
+        </div>
+      </div>
+
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

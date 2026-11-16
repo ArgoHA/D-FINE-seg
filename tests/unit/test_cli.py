@@ -450,7 +450,7 @@ def test_main_dispatch(monkeypatch):
 
 
 def _fake_demo(monkeypatch):
-    """Stand in for dfine_seg.app.demo so no UI is built and gradio isn't needed."""
+    """Stand in for dfine_seg.app.demo so no model loads and no server starts."""
     import sys as _sys
     import types
 
@@ -465,22 +465,14 @@ def test_demo_defaults(monkeypatch):
     seen = _fake_demo(monkeypatch)
     assert run(monkeypatch, "demo") == 0
     # LAN-reachable by default (the page loads arbitrary local paths as models)
-    assert seen["args"] == ("s", "auto", "0.0.0.0", 7860, False)
+    assert seen["args"] == ("s", "auto", "0.0.0.0", 7860)
 
 
 def test_demo_forwards_model_and_server_flags(monkeypatch):
     seen = _fake_demo(monkeypatch)
     argv = ["demo", "runs/model.pt", "--task", "segment", "--host", "127.0.0.1", "--port", "8080"]
     assert run(monkeypatch, *argv) == 0
-    assert seen["args"] == ("runs/model.pt", "segment", "127.0.0.1", 8080, False)
-
-
-def test_demo_without_gradio_points_at_the_extra(monkeypatch, capsys):
-    import sys as _sys
-
-    monkeypatch.setitem(_sys.modules, "dfine_seg.app.demo", None)  # makes the import raise
-    assert cli._demo([]) == 1
-    assert "dfine-seg[demo]" in capsys.readouterr().err
+    assert seen["args"] == ("runs/model.pt", "segment", "127.0.0.1", 8080)
 
 
 def test_demo_needs_no_config(clean_cwd, monkeypatch):

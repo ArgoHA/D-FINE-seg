@@ -9,6 +9,7 @@ from loguru import logger
 from numpy.typing import NDArray
 from PIL import Image
 from transformers import Sam3Model, Sam3Processor
+from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 MODEL_ID = "facebook/sam3"
 
@@ -183,9 +184,9 @@ class SAM3Model:
             )
             for start in range(0, total, size):
                 idx = torch.arange(start, start + size, device=embeds.device).clamp(max=total - 1)
-                out = self.model(
-                    vision_embeds=vision, text_embeds=embeds[idx], attention_mask=mask[idx]
-                )
+                # transformers 5.x takes the text-encoder output object, not the bare tensor
+                text = BaseModelOutputWithPooling(pooler_output=embeds[idx])
+                out = self.model(vision_embeds=vision, text_embeds=text, attention_mask=mask[idx])
                 yield start, min(size, total - start), out
 
     @torch.inference_mode()

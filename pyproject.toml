@@ -79,12 +79,9 @@ export = [
 trt = ["tensorrt-cu12==10.13.3.9; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 # SAM3 pre-annotation (dfine_seg/etl/sam_labels.py).
 label = ["transformers>=5.15.0"]
-# Gradio UI (dfine_seg/app/demo.py). Capped: the UI is written against gradio 6 components.
-demo = [
-    "gradio>=6.16.0,<7",
-    "python-multipart>=0.0.31",
-    "starlette>=1.3.1",
-]
+# The demo (dfine_seg/app/demo.py) is standard library only now. Kept empty so existing
+# `pip install 'dfine-seg[demo]'` commands keep working; drop it in a later release.
+demo = []
 # Niche single-script ETL helpers: remove_dups.py, preprocess.py.
 extra = [
     "difPy>=4.2.1",
@@ -156,8 +153,6 @@ filterwarnings = [
 # The dev group depends on dfine-seg[all], so a plain `uv sync` still installs every
 # extra and the clone workflow is unchanged. (uv 0.11 has no `default-extras` key.)
 default-groups = ["dev"]
-# Lock-only security override: gradio 6.x caps pillow<13. Drop it when moving to gradio 7.
-override-dependencies = ["pillow>=13.0.0"]
 # Lock for both dev (Apple Silicon mac; torch ships no Intel-mac wheels) and training (linux).
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",

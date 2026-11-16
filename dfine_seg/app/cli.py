@@ -37,7 +37,7 @@ USAGE = f"""dfine <command> [hydra overrides]
   init            write a config.yaml into the current directory
   predict         run a model on an image or folder, no config needed
   hw_bench        benchmark torch inference throughput on this device (cuda/mps/cpu)
-  demo            launch the Gradio UI (needs `pip install 'dfine-seg[demo]'`)
+  demo            launch the browser demo (image, webcam, video; SAM3)
   main            train -> export -> bench in sequence (same as the bare `make` target)
 {_ROWS}
   version         print the installed version
@@ -189,21 +189,17 @@ def _hw_bench(argv: List[str]) -> int:
 
 
 def _demo(argv: List[str]) -> int:
-    """Launch the Gradio UI. Every model setting is changeable from the page itself."""
+    """Launch the browser demo. Every model setting is changeable from the page itself."""
     ap = argparse.ArgumentParser(prog="dfine demo")
     ap.add_argument("model", nargs="?", default="s", help="model to open with (size or path)")
     ap.add_argument("--task", choices=("detect", "segment", "sem_seg", "kpts"), default="auto")
     ap.add_argument("--host", default="0.0.0.0", help="bind address; 127.0.0.1 for local-only")
     ap.add_argument("--port", type=int, default=7860)
-    ap.add_argument("--share", action="store_true", help="public gradio.live tunnel")
     args = ap.parse_args(argv)
 
-    try:
-        from dfine_seg.app.demo import main as demo_main
-    except ImportError as e:
-        print(f"{e}. Install it with `pip install 'dfine-seg[demo]'`", file=sys.stderr)
-        return 1
-    demo_main(args.model, args.task, args.host, args.port, args.share)
+    from dfine_seg.app.demo import main as demo_main
+
+    demo_main(args.model, args.task, args.host, args.port)
     return 0
 
 

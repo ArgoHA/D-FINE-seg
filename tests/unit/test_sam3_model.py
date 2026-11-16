@@ -106,7 +106,7 @@ class _Net:
         return _Vision(fpn_hidden_states=(torch.zeros(1, 2, 4, 4),))
 
     def __call__(self, vision_embeds, text_embeds, attention_mask):
-        ids = text_embeds[:, 0, 0].long().tolist()
+        ids = text_embeds.pooler_output[:, 0, 0].long().tolist()  # as transformers 5.x reads it
         assert vision_embeds["fpn_hidden_states"][0].shape[0] == len(ids)
         self.batches.append(ids)
         return self.out_fn(ids)
