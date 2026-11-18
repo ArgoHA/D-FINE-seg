@@ -398,6 +398,7 @@ The [C++ core](https://github.com/ArgoHA/D-FINE-seg/blob/main/cpp/README.md) on 
 | Output | Location | Description |
 |:-------|:---------|:------------|
 | Models + logs | `output/models/{exp_name}_{date}/` | Weights, training metrics, confusion matrix, F1 vs threshold plots, per-class metrics, bench metrics, calculated optimal threshold |
+| Training history | `output/models/{exp_name}_{date}/history.jsonl` | One JSON line per epoch: val metrics, train loss, LR per param group, mosaic prob, best flag, epoch time |
 | Debug images | `output/debug_images/` | Preprocessed training images (with augmentations) |
 | Eval predictions | `output/eval_preds/` | Val set predictions with GT (green) and preds (blue) |
 | Bench images | `output/bench_imgs/` | Predictions from all exported models |

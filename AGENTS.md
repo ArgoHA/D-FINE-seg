@@ -20,6 +20,7 @@ training, export, accuracy or inference latency, follow the module guide in `scr
 - Four-channel input uses RGB+extra `.npy` arrays. Do not add TIFF support; OpenCV corrupts some
   four-channel TIFFs. `train.in_channels` supports only 3 or 4.
 - Detection weights (`dfine_<size>_<coco|obj2coco>.pt`) are the default init for every task; the released Cityscapes sem-seg weights were trained from them. `dfine_seg_*_coco.pt` is the only init with a trained MaskDecoder. Released semantic-segmentation weights are Cityscapes-only (`dfine_sem_*_cityscapes.pt`, auto-downloaded by `load_model(size, task="sem_seg")`) and are a non-commercial init for outdoor data (heads re-initialize on class-count change).
+- Training logs live in the run dir `train.path_to_save`: `train_log.txt` (human-readable), `history.jsonl` (one JSON line per epoch, read this one), `metrics.csv` / `extended_metrics.csv` (best epoch only).
 - `model.pt` is the best checkpoint and is used by validation, inference, export, and bench. `last.pt`
   is the latest state and is not resumable because checkpoints contain no optimizer or EMA state.
 

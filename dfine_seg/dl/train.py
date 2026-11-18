@@ -28,6 +28,7 @@ from dfine_seg.api.ckpt import load_and_describe
 from dfine_seg.config.resolve import CONFIG_NAME, config_dir
 from dfine_seg.dl.dataset import Loader
 from dfine_seg.dl.utils import (
+    append_history,
     auto_batch_size,
     calculate_remaining_time,
     cleanup_masks,
@@ -874,6 +875,9 @@ class Trainer:
         ema_iter = 0
         self.early_stopping_steps = 0
         one_epoch_time = None
+        history_path = self.path_to_save / "history.jsonl"
+        if self.is_main:  # a same-day rerun reuses the run dir; don't mix two runs' epochs
+            history_path.unlink(missing_ok=True)
 
         def optimizer_step(step_scheduler: bool):
             """
@@ -1016,7 +1020,23 @@ class Trainer:
 
             # Only rank 0 saves and logs
             if self.is_main:
+                prev_best = best_metric
                 best_metric = self.save_model(metrics, best_metric)
+                append_history(
+                    history_path,
+                    {
+                        "epoch": epoch,
+                        "val": metrics,
+                        "train_loss": np.mean(losses) * self.b_accum_steps,
+                        # end-of-epoch LR per param group
+                        "lr": {g["name"]: g["lr"] for g in self.optimizer.param_groups},
+                        "mosaic_prob": round(
+                            float(self.train_loader.dataset.mosaic_prob), 4
+                        ),  # float32
+                        "best": bool(best_metric > prev_best),
+                        "epoch_min": (time.time() - epoch_start_time) / 60,
+                    },
+                )
                 save_metrics(
                     {},
                     metrics,

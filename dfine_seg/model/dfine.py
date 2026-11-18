@@ -287,15 +287,28 @@ def build_optimizer(
         else:
             rest.append(param)
 
-    group1 = {"params": backbone_exclude_norm, "lr": backbone_lr, "initial_lr": backbone_lr}
+    # "name" is only a label (history.jsonl LR log); optimizers and the scheduler use group order
+    group1 = {
+        "name": "backbone",
+        "params": backbone_exclude_norm,
+        "lr": backbone_lr,
+        "initial_lr": backbone_lr,
+    }
     group2 = {
+        "name": "backbone_norm",
         "params": backbone_norm,
         "lr": backbone_lr,
         "weight_decay": 0.0,
         "initial_lr": backbone_lr,
     }
-    group3 = {"params": encdec_norm_bias, "weight_decay": 0.0, "lr": base_lr, "initial_lr": base_lr}
-    group4 = {"params": rest, "lr": base_lr, "initial_lr": base_lr}
+    group3 = {
+        "name": "encdec_norm_bias",
+        "params": encdec_norm_bias,
+        "weight_decay": 0.0,
+        "lr": base_lr,
+        "initial_lr": base_lr,
+    }
+    group4 = {"name": "rest", "params": rest, "lr": base_lr, "initial_lr": base_lr}
 
     param_groups = [group1, group2, group3, group4]
 
@@ -326,6 +339,7 @@ def build_optimizer(
     muon_lr = muon_lr if muon_lr is not None else base_lr * 10
     param_groups.append(
         {
+            "name": "muon",
             "params": muon,
             "use_muon": True,
             "lr": muon_lr,

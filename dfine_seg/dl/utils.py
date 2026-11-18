@@ -123,6 +123,16 @@ def log_metrics_locally(
             extended_metrics.to_csv(path_to_save / "extended_metrics.csv")
 
 
+def append_history(path: Path, record: Dict) -> None:
+    """Append one epoch as a JSON line: per-epoch history next to the human-readable log."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:  # numpy/torch values -> python, anything else -> str
+        f.write(
+            json.dumps(record, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o))
+        )
+        f.write("\n")
+
+
 def save_metrics(train_metrics, metrics, loss, epoch, path_to_save, use_wandb) -> None:
     log_metrics_locally(
         all_metrics={"train": train_metrics, "val": metrics}, path_to_save=path_to_save, epoch=epoch
