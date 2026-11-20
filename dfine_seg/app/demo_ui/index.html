@@ -16,7 +16,6 @@
     <div class="wrap wide nav-inner">
       <a class="brand" href="/"><img src="favicon.svg" alt="" width="22" height="22">D-FINE-seg <span class="brand-tag mono">demo</span></a>
       <div class="nav-links">
-        <span class="pill mono" id="pill"><i></i><span>starting…</span></span>
         <a href="https://dfine-seg.argoai.space" target="_blank" rel="noopener">Showcase</a>
         <a href="https://github.com/ArgoHA/D-FINE-seg" target="_blank" rel="noopener">GitHub</a>
       </div>
@@ -26,7 +25,7 @@
   <main class="wrap wide layout">
     <aside class="side">
       <section class="panel">
-        <div class="panel-head"><h3>Model</h3></div>
+        <div class="panel-head"><h3>Model</h3><span class="pill mono" id="pill"><i></i><span>starting…</span></span></div>
         <div class="tabs tabs-sm seg" role="tablist" id="backend">
           <button class="tab" role="tab" data-backend="dfine" aria-selected="true">D-FINE-seg</button>
           <button class="tab" role="tab" data-backend="sam3" aria-selected="false">SAM3</button>
@@ -40,9 +39,13 @@
             <input id="path" class="input mono" placeholder="/path/to/model.pt | .engine | .onnx | .xml" spellcheck="false">
             <button class="btn btn-ghost btn-sm" id="load-path">Load</button>
           </div>
-          <label class="btn btn-ghost btn-sm upload">
+          <label class="wdrop" id="wdrop">
             <input type="file" id="weights" accept=".pt,.onnx,.engine" hidden>
-            Upload weights <span class="muted mono">.pt .onnx .engine</span>
+            <span id="wdrop-idle">Drop weights or <u>browse</u> <span class="muted mono">.pt .onnx .engine</span></span>
+            <span id="wdrop-busy" class="wdrop-busy" hidden>
+              <span class="wdrop-row"><span id="wdrop-name" class="mono"></span><span id="wdrop-pct" class="mono"></span></span>
+              <span class="progress" id="wdrop-bar"><i></i></span>
+            </span>
           </label>
           <details class="fold">
             <summary>Advanced <span class="muted small">class names, input size</span></summary>
@@ -104,7 +107,7 @@
           <video id="vid-in" class="media" controls muted playsinline hidden></video>
           <img id="vid-preview" class="media" alt="Processing preview" hidden>
           <video id="vid-out" class="media" controls playsinline hidden></video>
-          <div class="busy" id="busy" hidden><span class="spinner"></span><span id="busy-text">Running…</span></div>
+          <div class="stage-busy" id="busy" hidden><span class="spinner"></span><span id="busy-text">Running…</span></div>
         </div>
         <div class="progress" id="vid-progress" hidden><i></i></div>
         <div class="bar">

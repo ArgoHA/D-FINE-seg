@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 from dfine_seg.infer.torch_model import TorchModel
 from dfine_seg.viz import Visualizer, overlay_sem_seg, sem_seg_palette
 
-ROOT = Path("/home/argo/Desktop/Projects/cityscapes")
+ROOT = Path("/home/argo/Desktop/projects/cityscapes")
 IMG_DIR = ROOT / "data/dataset/images"
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 

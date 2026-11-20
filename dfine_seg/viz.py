@@ -67,13 +67,14 @@ class Visualizer:
 
     @staticmethod
     def generate_colors(n: int) -> List[tuple]:
-        """Evenly spaced hues on a violet→red arc -> BGR tuples. Class 0 = deep purple, last = red."""
+        """Evenly spaced hues -> BGR tuples: class 0 = logo blue, then cyan, green, yellow, red,
+        wrapping past red through magenta to violet for the last class."""
         colors = []
         n = max(n, 1)
-        hue_start = 135  # deep violet in OpenCV's [0, 179] hue range
+        hue_start, span = 108, 153  # OpenCV hue [0, 179]: 108 = blue, 108 - 153 wraps to 135 violet
         denom = max(n - 1, 1)
         for i in range(n):
-            hue = int(hue_start * (n - 1 - i) / denom)
+            hue = (hue_start - int(span * i / denom)) % 180
             hsv = np.array([[[hue, 230, 200]]], dtype=np.uint8)
             bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
             colors.append(tuple(int(c) for c in bgr))

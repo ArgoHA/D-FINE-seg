@@ -181,18 +181,17 @@ def resize_rgb(rgb: torch.Tensor, out_w: int, out_h: int) -> torch.Tensor:
 
 
 def class_colors(n: int) -> List[tuple]:
-    """Evenly spaced hues on a violet->red arc -> RGB tuples. Class 0 = deep purple.
+    """Evenly spaced hues, blue -> red -> violet -> RGB tuples. Class 0 = logo blue.
 
-    Mirrors Visualizer.generate_colors in dfine_seg/dl/utils.py (which returns BGR, for
-    cv2) so annotations match the rest of the repo. Kept inline rather than
-    imported because dfine_seg.dl.utils pulls in wandb / pandas / albumentations.
+    Mirrors Visualizer.generate_colors in dfine_seg/viz.py (which returns BGR, for
+    cv2) so annotations match the rest of the repo.
     """
     colors = []
     n = max(n, 1)
-    hue_start = 135  # deep violet in OpenCV's [0, 179] hue range
+    hue_start, span = 108, 153  # OpenCV hue [0, 179]: 108 = blue, 108 - 153 wraps to 135 violet
     denom = max(n - 1, 1)
     for i in range(n):
-        hue = int(hue_start * (n - 1 - i) / denom)
+        hue = (hue_start - int(span * i / denom)) % 180
         hsv = np.array([[[hue, 230, 200]]], dtype=np.uint8)
         b, g, r = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
         colors.append((int(r), int(g), int(b)))

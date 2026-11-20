@@ -74,9 +74,14 @@ def test_init_accepts_an_int_and_the_legacy_keywords():
     assert (vis.n_classes, vis.class_names[1]) == (2, "b")
 
 
-def test_colors_run_violet_to_red():
+def test_colors_start_blue_and_end_violet():
     colors = Visualizer(5).colors  # BGR
-    assert colors[0][0] > colors[0][2] and colors[-1][2] > colors[-1][0]
+    b, g, r = colors[0]
+    assert b > g > r  # logo blue
+    assert colors[3][2] > max(colors[3][:2])  # red before the wrap
+    b, g, r = colors[-1]
+    assert b > r > g  # violet
+    assert Visualizer(1).colors[0] == colors[0]  # one class is blue, not the red end
 
 
 # ── boxes / masks ───────────────────────────────────────────────────────

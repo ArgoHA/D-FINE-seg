@@ -135,10 +135,10 @@ static void out_size(int w, int h, int max_dim, int& ow, int& oh) {
   ow &= ~1; oh &= ~1;
 }
 
-// Visualizer.generate_colors: hues on a violet->red arc via OpenCV's 8-bit HSV->RGB.
+// Visualizer.generate_colors: blue -> red -> violet hues via OpenCV's 8-bit HSV->RGB.
 static void class_rgb(int i, int n, int& r, int& g, int& b) {
   int denom = std::max(n - 1, 1);
-  int hue = (int)(135LL * (n - 1 - i) / denom);
+  int hue = ((108 - (int)(153LL * i / denom)) % 180 + 180) % 180;
   float h = hue * (6.f / 180.f), s = 230.f / 255.f, v = 200.f / 255.f;
   static const int sector_data[6][3] = {{1, 3, 0}, {1, 0, 2}, {3, 0, 1}, {0, 2, 1}, {0, 1, 3}, {2, 1, 0}};
   int sector = (int)std::floor(h);

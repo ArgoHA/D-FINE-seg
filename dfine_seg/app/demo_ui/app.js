@@ -10,6 +10,7 @@ const TASK_GROUPS = {
   kpts: ['Keypoints · COCO person', 'keypoints'],
 };
 const CUSTOM = '__custom';
+const WEIGHTS = /\.(pt|onnx|engine)$/i;
 
 const S = {
   backend: 'dfine',
@@ -24,6 +25,7 @@ const S = {
   cam: null, // MediaStream while the webcam runs
   job: null, // running video job
   lastJob: null, // finished job whose uploaded source "Process again" reuses
+  weightsBusy: false, // a weights upload or load is running
 };
 
 // ─── helpers ────────────────────────────────────────────────────────────
@@ -39,6 +41,23 @@ async function api(path, { json, body, query } = {}) {
   }
   return res;
 }
+
+// fetch() reports no upload progress, so large bodies go through XHR.
+function upload(path, body, query, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${path}?${new URLSearchParams(query)}`);
+    xhr.setRequestHeader('X-DFine', '1');
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+    xhr.onload = () => (xhr.status < 300 ? resolve(xhr.response)
+      : reject(new Error(xhr.response?.error || `${xhr.status} ${xhr.statusText}`)));
+    xhr.onerror = () => reject(new Error('upload failed: network error'));
+    xhr.send(body);
+  });
+}
+
+const mb = (n) => (n / 1e6).toFixed(n < 1e8 ? 1 : 0);
 
 let toastTimer;
 function toast(msg) {
@@ -88,39 +107,69 @@ function showModel(m) {
   S.model = m;
   $('model-info').className = 'model-info small';
   $('model-info').innerHTML = `<b>${esc(m.name)}</b><br>${esc(describe(m))}`;
-  if (S.backend === 'dfine') setPill('ok', m.preset ? m.spec : `${m.name} · ${m.task || 'graph'}`);
+  if (S.backend === 'dfine') setPill('ok', 'ready');
 }
 
-function syncSelect(spec) {
+// An uploaded or typed-in model shows as its own dropdown entry, so no "Load" row lingers.
+function syncSelect(m) {
   const sel = $('model');
-  const preset = [...sel.options].some((o) => o.value === spec);
-  sel.value = preset ? spec : CUSTOM;
-  $('custom-row').hidden = preset;
-  if (!preset) $('path').value = spec;
+  const cur = $('loaded-custom');
+  const preset = [...sel.options].some((o) => o !== cur && o.value === m.spec);
+  cur.hidden = preset;
+  if (!preset) { cur.value = m.spec; cur.textContent = `Custom · ${m.name}`; }
+  sel.value = m.spec;
+  $('custom-row').hidden = true;
 }
 
-async function loadModel(spec) {
-  setPill('busy', `loading ${spec}…`);
-  $('model-info').textContent = 'loading…';
+// Weights drop zone: 'idle' | 'upload' (determinate bar) | 'load' (indeterminate bar)
+function weightsState(state, name = '', loaded = 0, total = 0) {
+  const busy = state !== 'idle';
+  S.weightsBusy = busy;
+  $('wdrop').classList.toggle('busy', busy);
+  $('weights').disabled = busy;
+  $('wdrop-idle').hidden = busy;
+  $('wdrop-busy').hidden = !busy;
+  if (!busy) return;
+  const up = state === 'upload';
+  $('wdrop-name').textContent = name;
+  $('wdrop-name').title = name;
+  $('wdrop-pct').textContent = !up ? 'loading model…'
+    : total ? `${Math.round((100 * loaded) / total)}% · ${mb(loaded)}/${mb(total)} MB` : 'uploading…';
+  $('wdrop-bar').classList.toggle('indet', !up);
+  $('wdrop-bar').firstElementChild.style.width = up && total ? `${(100 * loaded) / total}%` : '0';
+}
+
+async function loadModel(spec, label = spec) {
+  setPill('busy', 'loading');
+  $('model-info').textContent = `loading ${label}…`;
   try {
     const res = await api('/api/load', { json: { model: spec, names: $('names').value, input_size: $('size').value } });
     showModel((await res.json()).model);
-    syncSelect(S.model.spec);
+    syncSelect(S.model);
     runImage();
   } catch (e) {
-    toast(`Could not load ${spec}: ${e.message}`);
-    if (S.model) { showModel(S.model); syncSelect(S.model.spec); } else setPill('bad', 'no model');
+    toast(`Could not load ${label}: ${e.message}`);
+    if (!S.model) { setPill('bad', 'no model'); $('model-info').textContent = ''; return; }
+    showModel(S.model);
+    if ($('model').value !== CUSTOM) syncSelect(S.model); // keep a mistyped path editable
   }
 }
 
 async function uploadWeights(file) {
-  setPill('busy', `uploading ${file.name}…`);
+  if (S.weightsBusy) return toast('Weights are already uploading, wait for them to finish.');
+  if (!WEIGHTS.test(file.name)) return toast(`${file.name}: expected .pt, .onnx or .engine weights.`);
+  weightsState('upload', file.name, 0, file.size);
+  setPill('busy', 'uploading');
   try {
-    const res = await api('/api/upload', { body: file, query: { name: file.name } });
-    await loadModel((await res.json()).path);
+    const { path } = await upload('/api/upload', file, { name: file.name },
+      (loaded, total) => weightsState('upload', file.name, loaded, total));
+    weightsState('load', file.name);
+    await loadModel(path, file.name);
   } catch (e) {
     toast(`Upload failed: ${e.message}`);
-    if (S.model) showModel(S.model);
+    if (S.model) showModel(S.model); else setPill('bad', 'no model');
+  } finally {
+    weightsState('idle');
   }
 }
 
@@ -129,8 +178,9 @@ function setBackend(b) {
   for (const t of $('backend').children) t.setAttribute('aria-selected', String(t.dataset.backend === b));
   $('dfine-controls').hidden = b !== 'dfine';
   $('sam-controls').hidden = b !== 'sam3';
-  if (b === 'sam3') setPill('ok', `SAM3 · ${$('prompt').value}`);
+  if (b === 'sam3') setPill('ok', 'ready');
   else if (S.model) showModel(S.model);
+  else setPill('bad', 'no model');
   runImage();
 }
 
@@ -158,6 +208,7 @@ function setRunButton(text, primary) {
 
 function openFile(file) {
   if (!file) return;
+  if (WEIGHTS.test(file.name)) return uploadWeights(file);
   const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : null;
   if (!kind) return toast(`${file.name}: not an image or a video.`);
   clearFile();
@@ -322,8 +373,13 @@ async function startJob() {
       return (await (await api(`/api/video/${S.lastJob}/rerun`, { query })).json()).job;
     } catch (_) { /* source gone (server restarted?): upload again */ }
   }
-  $('file-stats').textContent = 'uploading…';
-  return (await (await api('/api/video', { body: S.file, query })).json()).job;
+  const bar = $('vid-progress').firstElementChild;
+  const res = await upload('/api/video', S.file, query, (loaded, total) => {
+    bar.style.width = `${(100 * loaded) / total}%`;
+    $('file-stats').textContent = `uploading · ${mb(loaded)}/${mb(total)} MB`;
+  });
+  bar.style.width = '0';
+  return res.job;
 }
 
 async function runVideo() {
@@ -426,8 +482,11 @@ async function init() {
     for (const p of st.presets.filter((x) => x.task === task)) g.append(new Option(`${p.size.toUpperCase()} · ${short}`, p.key));
     sel.append(g);
   }
-  sel.append(new Option('Custom path…', CUSTOM));
-  if (st.model?.spec) { showModel(st.model); syncSelect(st.model.spec); }
+  const cur = new Option('', '');
+  cur.id = 'loaded-custom';
+  cur.hidden = true;
+  sel.append(cur, new Option('Custom path…', CUSTOM));
+  if (st.model?.spec) { showModel(st.model); syncSelect(st.model); } else setPill('bad', 'no model');
 
   const samTab = $('backend').children[1];
   if (!st.sam3) {
@@ -444,9 +503,10 @@ async function init() {
   $('path').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('load-path').click(); });
   $('apply').addEventListener('click', () => S.model && loadModel(S.model.spec));
   $('weights').addEventListener('change', (e) => { if (e.target.files[0]) uploadWeights(e.target.files[0]); e.target.value = ''; });
+  dropZone($('wdrop'), uploadWeights);
 
   for (const t of $('backend').children) t.addEventListener('click', () => !t.disabled && setBackend(t.dataset.backend));
-  $('prompt').addEventListener('change', () => { if (S.backend === 'sam3') setPill('ok', `SAM3 · ${$('prompt').value}`); runImage(); });
+  $('prompt').addEventListener('change', runImage);
   $('conf').addEventListener('input', () => { $('conf-val').textContent = Number($('conf').value).toFixed(2); runImage(); });
   $('minimize').addEventListener('change', runImage);
   $('stride').addEventListener('input', () => { $('stride-val').textContent = $('stride').value; });
